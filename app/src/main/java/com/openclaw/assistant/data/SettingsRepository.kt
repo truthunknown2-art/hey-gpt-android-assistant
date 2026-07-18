@@ -234,7 +234,7 @@ class SettingsRepository(context: Context) {
 
     // TTS Speed
     var ttsSpeed: Float
-        get() = prefs.getFloat(KEY_TTS_SPEED, 1.2f)
+        get() = prefs.getFloat(KEY_TTS_SPEED, 1.0f)
         set(value) = prefs.edit().putFloat(KEY_TTS_SPEED, value).apply()
 
     // TTS Engine

@@ -1,6 +1,9 @@
 package com.openclaw.assistant.speech
 
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
@@ -35,9 +38,12 @@ class AndroidTTSProvider(private val context: Context) : TTSProvider {
     }
     
     private fun initialize() {
-        val preferredEngine = settings.ttsEngine
+        val preferredEngine = selectAndroidTtsEngine(
+            configuredEngine = settings.ttsEngine,
+            installedEngines = installedTtsEngines(),
+        )
         
-        if (preferredEngine.isNotEmpty()) {
+        if (preferredEngine != null) {
             Log.d(TAG, "Initializing with preferred engine: $preferredEngine")
             tts = TextToSpeech(context.applicationContext, { status ->
                 if (status == TextToSpeech.SUCCESS) {
@@ -51,6 +57,20 @@ class AndroidTTSProvider(private val context: Context) : TTSProvider {
         } else {
             tryDefaultEngine()
         }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun installedTtsEngines(): Set<String> {
+        val intent = Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE)
+        val services = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.packageManager.queryIntentServices(
+                intent,
+                PackageManager.ResolveInfoFlags.of(0),
+            )
+        } else {
+            context.packageManager.queryIntentServices(intent, 0)
+        }
+        return services.mapNotNullTo(linkedSetOf()) { it.serviceInfo?.packageName }
     }
     
     private fun tryDefaultEngine() {
@@ -90,15 +110,31 @@ class AndroidTTSProvider(private val context: Context) : TTSProvider {
         tts.setSpeechRate(settings.ttsSpeed)
         tts.setPitch(1.0f)
         
-        // Try to select high-quality voice
+        // Prefer the engine's best installed voice for the configured locale.
         try {
-            val targetLang = tts.language?.language
-            val voices = tts.voices
-            val bestVoice = voices?.filter { it.locale.language == targetLang }
-                ?.firstOrNull { !it.isNetworkConnectionRequired }
-                ?: voices?.firstOrNull { it.locale.language == targetLang }
-            
-            bestVoice?.let { tts.voice = it }
+            val voices = tts.voices.orEmpty()
+            val selectedName = selectBestAndroidTtsVoice(
+                candidates = voices.map { voice ->
+                    AndroidTtsVoiceCandidate(
+                        name = voice.name,
+                        languageTag = voice.locale.toLanguageTag(),
+                        quality = voice.quality,
+                        latency = voice.latency,
+                        networkRequired = voice.isNetworkConnectionRequired,
+                        installed = TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED !in voice.features.orEmpty(),
+                    )
+                },
+                targetLocale = tts.language ?: locale,
+            )
+            val selectedVoice = voices.firstOrNull { it.name == selectedName }
+            selectedVoice?.let {
+                tts.voice = it
+                Log.i(
+                    TAG,
+                    "Selected voice=${it.name} locale=${it.locale} quality=${it.quality} " +
+                        "network=${it.isNetworkConnectionRequired}",
+                )
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Error selecting voice: ${e.message}")
         }

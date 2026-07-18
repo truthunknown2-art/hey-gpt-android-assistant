@@ -31,4 +31,14 @@ class VoiceConversationRouteTest {
             chooseVoiceConversationRoute(true, hasTranscript = false, openClawReady = true),
         )
     }
+
+    @Test
+    fun `unlocked Hey GPT wake launches Live without a second capture`() {
+        assertEquals(true, shouldLaunchChatGptImmediately(isDeviceLocked = false))
+    }
+
+    @Test
+    fun `securely locked Hey GPT wake captures an OpenClaw question`() {
+        assertEquals(false, shouldLaunchChatGptImmediately(isDeviceLocked = true))
+    }
 }

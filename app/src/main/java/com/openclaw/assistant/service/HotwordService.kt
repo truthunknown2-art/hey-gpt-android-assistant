@@ -20,7 +20,6 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -37,6 +36,8 @@ import com.openclaw.assistant.chatgpt.VoiceConversationRoute
 import com.openclaw.assistant.chatgpt.chooseVoiceConversationRoute
 import com.openclaw.assistant.chatgpt.limitLockedVoiceReply
 import com.openclaw.assistant.chatgpt.localTtsTimeoutMs
+import com.openclaw.assistant.chatgpt.shouldLaunchChatGptImmediately
+import com.openclaw.assistant.speech.TTSManager
 import com.openclaw.assistant.speech.TTSUtils
 import kotlinx.coroutines.*
 import org.vosk.Model
@@ -45,8 +46,6 @@ import org.vosk.android.RecognitionListener as VoskRecognitionListener
 import org.vosk.android.SpeechService
 import org.vosk.android.StorageService
 import java.io.IOException
-import java.util.Locale
-import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import org.json.JSONObject
@@ -65,12 +64,11 @@ class HotwordService : Service(), VoskRecognitionListener {
         private const val SAMPLE_RATE = 16000.0f
         private const val LOCAL_COMMAND_TIMEOUT_MS = 4_000
         private const val LOCAL_COMMAND_SILENCE_MS = 1_200L
+        private const val CHATGPT_WAKE_TONE_SETTLE_MS = 220L
         private const val MICROPHONE_RELEASE_TIMEOUT_MS = 3_000L
         private const val OPENCLAW_CONNECT_GRACE_MS = 8_000L
         private const val LOCKED_TURN_WAKE_LOCK_TIMEOUT_MS = 3 * 60 * 1000L
         private const val HOTWORD_RESUME_SETTLE_MS = 500L
-        private const val CALL_AUDIO_START_TIMEOUT_MS = 30_000L
-        private const val CALL_AUDIO_END_TIMEOUT_MS = 2 * 60 * 60 * 1000L
         private const val AUDIO_IDLE_DEBOUNCE_MS = 3_500L
         const val ACTION_RESUME_HOTWORD = "com.openclaw.assistant.ACTION_RESUME_HOTWORD"
         const val ACTION_PAUSE_HOTWORD = "com.openclaw.assistant.ACTION_PAUSE_HOTWORD"
@@ -124,6 +122,7 @@ class HotwordService : Service(), VoskRecognitionListener {
     private var speechService: SpeechService? = null
     
     private lateinit var settings: SettingsRepository
+    private lateinit var ttsManager: TTSManager
 
     @Volatile private var isListeningForCommand = false
     @Volatile private var isSessionActive = false
@@ -138,7 +137,6 @@ class HotwordService : Service(), VoskRecognitionListener {
     private var chatGptMonitorJob: Job? = null
     private var chatGptIdleJob: Job? = null
     private var localCommandCaptureJob: Job? = null
-    private var postActionMicJob: Job? = null
     private var chatGptHandoffActive = false
     private val chatGptHandoffTracker = ChatGptHandoffTracker()
     private val SESSION_TIMEOUT_MS = 5 * 60 * 1000L // 5 minutes
@@ -237,6 +235,7 @@ class HotwordService : Service(), VoskRecognitionListener {
         }
 
         settings = SettingsRepository.getInstance(this)
+        ttsManager = TTSManager(this)
 
         createNotificationChannel()
         
@@ -313,7 +312,7 @@ class HotwordService : Service(), VoskRecognitionListener {
         scope.cancel()
         speechService?.shutdown()
         localCommandCaptureJob?.cancel()
-        postActionMicJob?.cancel()
+        if (::ttsManager.isInitialized) ttsManager.shutdown()
         runCatching {
             getSystemService(AudioManager::class.java).unregisterAudioRecordingCallback(recordingCallback)
         }
@@ -730,7 +729,21 @@ class HotwordService : Service(), VoskRecognitionListener {
             if (isChatGptHandoff) {
                 pendingInterruptLaunch = false
                 isSessionActive = true
-                captureLocalCommandOrLaunchChatGpt()
+                val isDeviceLocked = getSystemService(KeyguardManager::class.java).isDeviceLocked
+                if (shouldLaunchChatGptImmediately(isDeviceLocked)) {
+                    delay(CHATGPT_WAKE_TONE_SETTLE_MS)
+                    val lockedAfterTone =
+                        getSystemService(KeyguardManager::class.java).isDeviceLocked
+                    if (lockedAfterTone) {
+                        Log.i(TAG, "chatgpt_device_locked_during_handoff")
+                        captureLockedConversation()
+                        return@launch
+                    }
+                    Log.i(TAG, "chatgpt_hotword_direct_handoff")
+                    beginChatGptHandoff()
+                } else {
+                    captureLockedConversation()
+                }
                 return@launch
             } else {
                 delay(350) // Give an existing session a moment to claim the interrupt
@@ -793,19 +806,15 @@ class HotwordService : Service(), VoskRecognitionListener {
         }
     }
 
-    /**
-     * The hotword recognizer uses a restricted grammar, so v0.1 captures one
-     * short unrestricted Vosk utterance after the wake tone. Deterministic
-     * device commands stay local; unknown language falls through to ChatGPT.
-     */
-    private fun captureLocalCommandOrLaunchChatGpt() {
+    /** Captures one unrestricted question for the secure-lock conversation lane. */
+    private fun captureLockedConversation() {
         localCommandCaptureJob?.cancel()
         localCommandCaptureJob = scope.launch {
-            delay(220) // Keep the acknowledgement tone out of command audio.
+            delay(CHATGPT_WAKE_TONE_SETTLE_MS)
             val currentModel = model
             if (currentModel == null) {
-                Log.w(TAG, "Local command model unavailable; using lock-aware fallback")
-                handleCapturedLocalCommand("")
+                Log.w(TAG, "Locked conversation model unavailable")
+                handleCapturedLockedConversation("")
                 return@launch
             }
 
@@ -823,7 +832,7 @@ class HotwordService : Service(), VoskRecognitionListener {
                         runCatching { commandSpeechService.stop() }
                         runCatching { commandSpeechService.shutdown() }
                         if (speechService === commandSpeechService) speechService = null
-                        handleCapturedLocalCommand(transcript.trim())
+                        handleCapturedLockedConversation(transcript.trim())
                     }
                 }
 
@@ -849,7 +858,7 @@ class HotwordService : Service(), VoskRecognitionListener {
                     }
 
                     override fun onError(exception: Exception?) {
-                        Log.w(TAG, "Offline local-command capture failed", exception)
+                        Log.w(TAG, "Offline locked-conversation capture failed", exception)
                         finishCapture(lastTranscript.get())
                     }
 
@@ -859,13 +868,13 @@ class HotwordService : Service(), VoskRecognitionListener {
                 }
 
                 speechService = commandSpeechService
-                Log.i(TAG, "local_command_capture_started")
+                Log.i(TAG, "locked_conversation_capture_started")
                 if (!commandSpeechService.startListening(listener, LOCAL_COMMAND_TIMEOUT_MS)) {
                     finishCapture("")
                 }
             } catch (error: Exception) {
-                Log.w(TAG, "Unable to start offline local-command capture", error)
-                handleCapturedLocalCommand("")
+                Log.w(TAG, "Unable to start offline locked-conversation capture", error)
+                handleCapturedLockedConversation("")
             }
         }
     }
@@ -881,49 +890,8 @@ class HotwordService : Service(), VoskRecognitionListener {
             .getOrDefault("")
     }
 
-    private suspend fun handleCapturedLocalCommand(transcript: String) {
-        Log.i(TAG, "local_command_captured length=${transcript.length}")
-        val command = LocalVoiceCommandParser.parse(transcript)
-        if (command == null) {
-            routeConversation(transcript)
-            return
-        }
-
-        val runtime = (application as OpenClawApplication).ensureRuntime()
-        val result = withContext(Dispatchers.IO) {
-            LocalVoiceCommandExecutor(this@HotwordService, runtime).execute(command)
-        }
-        when (result) {
-            is LocalVoiceCommandExecutor.Result.Completed -> {
-                result.spokenFeedback?.let { speakLocalFeedback(it) }
-                if (result.waitForMicIdle) {
-                    beginPostActionMicWait("local call completed")
-                } else {
-                    finishLocalCommand("local command completed")
-                }
-            }
-            is LocalVoiceCommandExecutor.Result.Failed -> {
-                postLocalCommandNotification(result.message)
-                speakLocalFeedback(result.message)
-                finishLocalCommand("local command failed")
-            }
-        }
-    }
-
-    /**
-     * Official ChatGPT Live remains the preferred path while Android considers
-     * the device unlocked. Under a secure keyguard the installed ChatGPT
-     * assistant refuses to launch, so use the persistent OpenClaw conversation
-     * and local Android TTS without weakening the lock.
-     */
-    private suspend fun routeConversation(transcript: String) {
-        val isDeviceLocked = getSystemService(KeyguardManager::class.java).isDeviceLocked
-        if (!isDeviceLocked) {
-            Log.i(TAG, "local_command_unmatched; handing off to ChatGPT Live")
-            beginChatGptHandoff()
-            return
-        }
-
+    private suspend fun handleCapturedLockedConversation(transcript: String) {
+        Log.i(TAG, "locked_conversation_captured length=${transcript.length}")
         val wakeLock = acquireLockedTurnWakeLock()
         try {
             routeSecureConversation(transcript)
@@ -1026,11 +994,6 @@ class HotwordService : Service(), VoskRecognitionListener {
         }
     }
 
-    private fun finishLocalCommand(reason: String) {
-        completeLocalCommand(reason)
-        resumeHotwordDetection()
-    }
-
     private suspend fun finishSecureLocalCommand(reason: String) {
         completeLocalCommand(reason)
         audioRetryCount = 0
@@ -1045,82 +1008,20 @@ class HotwordService : Service(), VoskRecognitionListener {
 
     private fun completeLocalCommand(reason: String) {
         Log.i(TAG, "$reason; hotword_resume_requested")
-        postActionMicJob = null
         cancelWatchdog()
         isSessionActive = false
         isListeningForCommand = false
     }
 
-    /**
-     * ACTION_CALL returns as soon as the dialer accepts the intent, before the
-     * telephony stack necessarily owns the microphone. Keep Vosk stopped until
-     * call audio becomes active and later settles, or until the safety timeout.
-     */
-    private fun beginPostActionMicWait(reason: String) {
-        cancelWatchdog()
-        postActionMicJob?.cancel()
-        postActionMicJob = scope.launch {
-            val audioManager = getSystemService(AudioManager::class.java)
-            val callAudioStarted = withTimeoutOrNull(CALL_AUDIO_START_TIMEOUT_MS) {
-                while (!isCallAudioBusy(audioManager)) delay(250)
-                true
-            } ?: false
-
-            if (callAudioStarted) {
-                Log.i(TAG, "call_audio_started; wake word remains paused")
-                val endedNormally = withTimeoutOrNull(CALL_AUDIO_END_TIMEOUT_MS) {
-                    while (isCallAudioBusy(audioManager)) delay(1_000)
-                    true
-                } ?: false
-                if (!endedNormally) Log.w(TAG, "call_audio_end_timeout")
-            } else {
-                Log.i(TAG, "call_audio_not_observed; resuming after grace period")
-            }
-
-            delay(AUDIO_IDLE_DEBOUNCE_MS)
-            if (isSessionActive && !chatGptHandoffActive) {
-                finishLocalCommand("$reason; microphone idle")
-            }
-        }
-    }
-
-    private fun isCallAudioBusy(audioManager: AudioManager): Boolean {
-        val callMode = audioManager.mode == AudioManager.MODE_IN_CALL ||
-            audioManager.mode == AudioManager.MODE_IN_COMMUNICATION
-        return callMode || hasActiveRecording()
-    }
-
-    private suspend fun speakLocalFeedback(text: String): Boolean = withContext(Dispatchers.Main) {
-        val done = CompletableDeferred<Boolean>()
-        var engine: TextToSpeech? = null
-        val utteranceId = "local-command-${UUID.randomUUID()}"
-        engine = TextToSpeech(this@HotwordService) { status ->
-            if (status != TextToSpeech.SUCCESS) {
-                done.complete(false)
-                return@TextToSpeech
-            }
-            val readyEngine = engine ?: run {
-                done.complete(false)
-                return@TextToSpeech
-            }
-            readyEngine.language = Locale.getDefault()
-            readyEngine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(utteranceId: String?) = Unit
-                override fun onDone(utteranceId: String?) { done.complete(true) }
-                @Deprecated("Deprecated in Java")
-                override fun onError(utteranceId: String?) { done.complete(false) }
-                override fun onError(utteranceId: String?, errorCode: Int) { done.complete(false) }
-            })
-            if (readyEngine.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId) == TextToSpeech.ERROR) {
-                done.complete(false)
-            }
-        }
-        try {
-            withTimeoutOrNull(localTtsTimeoutMs(text)) { done.await() } ?: false
-        } finally {
-            runCatching { engine?.stop() }
-            runCatching { engine?.shutdown() }
-        }
+    private suspend fun speakLocalFeedback(text: String): Boolean = try {
+        val spoken = withTimeoutOrNull(localTtsTimeoutMs(text)) {
+            withContext(Dispatchers.Main.immediate) { ttsManager.speak(text) }
+        } ?: false
+        if (!spoken) withContext(Dispatchers.Main.immediate) { ttsManager.stop() }
+        spoken
+    } catch (cancelled: CancellationException) {
+        withContext(NonCancellable + Dispatchers.Main.immediate) { ttsManager.stop() }
+        throw cancelled
     }
 
     private fun postLocalCommandNotification(message: String) {
