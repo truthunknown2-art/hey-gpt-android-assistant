@@ -77,6 +77,54 @@ class HotwordServiceTest {
     }
 
     @Test
+    fun coldChatGptHandoffFinish_initializesVoskBeforeListeningCanResume() {
+        val events = mutableListOf<String>()
+
+        HotwordService.resumeAfterChatGptHandoff(
+            modelReady = false,
+            initialize = { events += "initialize" },
+            resume = { events += "resume" },
+        )
+
+        assertEquals(listOf("initialize"), events)
+    }
+
+    @Test
+    fun warmChatGptHandoffFinish_resumesExistingVoskModel() {
+        val events = mutableListOf<String>()
+
+        HotwordService.resumeAfterChatGptHandoff(
+            modelReady = true,
+            initialize = { events += "initialize" },
+            resume = { events += "resume" },
+        )
+
+        assertEquals(listOf("resume"), events)
+    }
+
+    @Test
+    fun duplicateVoskInitialization_isRejectedWhileFirstLoadIsActive() {
+        assertFalse(
+            HotwordService.shouldStartVoskInitialization(
+                modelReady = false,
+                initializationActive = true,
+            ),
+        )
+        assertTrue(
+            HotwordService.shouldStartVoskInitialization(
+                modelReady = false,
+                initializationActive = false,
+            ),
+        )
+        assertFalse(
+            HotwordService.shouldStartVoskInitialization(
+                modelReady = true,
+                initializationActive = false,
+            ),
+        )
+    }
+
+    @Test
     fun ttsResumeMarker_isRecognizedAsBargeInCandidate() {
         assertTrue(
             HotwordService.isBargeInCandidate(

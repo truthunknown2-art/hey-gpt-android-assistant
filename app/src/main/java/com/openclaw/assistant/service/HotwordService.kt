@@ -132,6 +132,17 @@ class HotwordService : Service(), VoskRecognitionListener {
         internal fun shouldInitializeVosk(startAction: String?): Boolean =
             startAction != ACTION_REQUEST_CHATGPT_HANDOFF
 
+        internal fun shouldStartVoskInitialization(modelReady: Boolean, initializationActive: Boolean): Boolean =
+            !modelReady && !initializationActive
+
+        internal fun resumeAfterChatGptHandoff(
+            modelReady: Boolean,
+            initialize: () -> Unit,
+            resume: () -> Unit,
+        ) {
+            if (modelReady) resume() else initialize()
+        }
+
         internal fun isBargeInCandidate(
             isSessionActive: Boolean,
             existingSessionCanClaimInterrupt: Boolean,
@@ -144,6 +155,7 @@ class HotwordService : Service(), VoskRecognitionListener {
     
     private var model: Model? = null
     private var speechService: SpeechService? = null
+    private var voskInitJob: Job? = null
     
     private lateinit var settings: SettingsRepository
     private lateinit var ttsManager: TTSManager
@@ -439,6 +451,13 @@ class HotwordService : Service(), VoskRecognitionListener {
             if (!isSessionActive) startHotwordListening()
             return
         }
+        if (!shouldStartVoskInitialization(
+                modelReady = model != null,
+                initializationActive = voskInitJob?.isActive == true,
+            )
+        ) {
+            return
+        }
         debugLog("Vosk: initializing model...")
         val prefs = getSharedPreferences("hotword_prefs", Context.MODE_PRIVATE)
 
@@ -464,7 +483,7 @@ class HotwordService : Service(), VoskRecognitionListener {
             }
         }
 
-        scope.launch(Dispatchers.IO) {
+        voskInitJob = scope.launch(Dispatchers.IO) {
             try {
                 val modelPath = copyAssets()
                 if (modelPath != null) {
@@ -501,6 +520,10 @@ class HotwordService : Service(), VoskRecognitionListener {
                         setCustomKey("is_session_active", isSessionActive)
                         recordException(e)
                     }
+                }
+            } finally {
+                withContext(NonCancellable + Dispatchers.Main.immediate) {
+                    voskInitJob = null
                 }
             }
         }
@@ -1254,7 +1277,11 @@ class HotwordService : Service(), VoskRecognitionListener {
         isSessionActive = false
         isListeningForCommand = false
         if (settings.hotwordEnabled) {
-            resumeHotwordDetection()
+            resumeAfterChatGptHandoff(
+                modelReady = model != null,
+                initialize = ::initVosk,
+                resume = ::resumeHotwordDetection,
+            )
         } else {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
