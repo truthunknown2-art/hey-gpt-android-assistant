@@ -30,7 +30,7 @@ private const val TAG = "PocketTTSProvider"
 private const val DEFAULT_SAMPLE_RATE = 24_000
 private const val MAX_RESPONSE_BYTES = 16 * 1024 * 1024L
 
-class PocketTTSProvider(
+class PocketTTSProvider internal constructor(
     private val context: Context,
     private val endpointProvider: () -> String? = {
         val configuredUrl = SettingsRepository.getInstance(context).pocketTtsUrl
@@ -51,11 +51,12 @@ class PocketTTSProvider(
         .followRedirects(false)
         .followSslRedirects(false)
         .build(),
+    private val sinkFactory: (Int) -> PcmPlaybackSink? = ::createPcmPlaybackSink,
+    private val audioFocusController: PocketAudioFocusController = AndroidPocketAudioFocusController(context),
 ) : TTSProvider {
-    private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val stateLock = Any()
     private var currentCall: Call? = null
-    private var currentTrack: AudioTrack? = null
+    private var currentTrack: PcmPlaybackSink? = null
     @Volatile internal var startedLastAttempt: Boolean = false
         private set
 
@@ -81,13 +82,9 @@ class PocketTTSProvider(
         val call = client.newCall(request)
         synchronized(stateLock) { currentCall = call }
         val completionHandle = currentCoroutineContext()[Job]?.invokeOnCompletion { call.cancel() }
-        var attemptTrack: AudioTrack? = null
-
-        val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
-            .setAudioAttributes(speechAudioAttributes())
-            .setAcceptsDelayedFocusGain(false)
-            .build()
+        var attemptTrack: PcmPlaybackSink? = null
         var focusGranted = false
+        var normalCompletion = false
 
         try {
             call.execute().use { response ->
@@ -106,11 +103,10 @@ class PocketTTSProvider(
                     ?.toIntOrNull()
                     ?.takeIf { it in 8_000..48_000 }
                     ?: DEFAULT_SAMPLE_RATE
-                val track = createAudioTrack(sampleRate) ?: return@withContext false
+                val track = sinkFactory(sampleRate) ?: return@withContext false
                 attemptTrack = track
                 synchronized(stateLock) { currentTrack = track }
-                focusGranted = audioManager.requestAudioFocus(focusRequest) ==
-                    AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+                focusGranted = audioFocusController.request()
                 if (!focusGranted) {
                     Log.w(TAG, "Pocket TTS could not acquire audio focus")
                     return@withContext false
@@ -135,6 +131,11 @@ class PocketTTSProvider(
                             onPlaybackStarted()
                         }
                     }
+                    if (receivedBytes % PCM_FRAME_BYTES != 0L) {
+                        throw IOException("Pocket TTS returned unaligned PCM audio")
+                    }
+                    finishPcmPlayback(track, receivedBytes / PCM_FRAME_BYTES)
+                    normalCompletion = true
                 }
                 startedLastAttempt
             }
@@ -150,59 +151,24 @@ class PocketTTSProvider(
                 if (currentCall === call) currentCall = null
                 if (currentTrack === attemptTrack) currentTrack = null
             }
-            releaseTrack(attemptTrack)
-            if (focusGranted) audioManager.abandonAudioFocusRequest(focusRequest)
+            if (!normalCompletion) attemptTrack?.abort()
+            if (focusGranted) audioFocusController.abandon()
         }
     }
 
-    private fun createAudioTrack(sampleRate: Int): AudioTrack? {
-        val minBuffer = AudioTrack.getMinBufferSize(
-            sampleRate,
-            AudioFormat.CHANNEL_OUT_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-        )
-        if (minBuffer <= 0) return null
-        return AudioTrack.Builder()
-            .setAudioAttributes(speechAudioAttributes())
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setSampleRate(sampleRate)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                    .build(),
-            )
-            .setBufferSizeInBytes(maxOf(minBuffer, sampleRate * 2 / 5))
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
-            .build()
-            .takeIf { it.state == AudioTrack.STATE_INITIALIZED }
-    }
-
-    private fun writeFully(track: AudioTrack, buffer: ByteArray, length: Int) {
+    private suspend fun writeFully(track: PcmPlaybackSink, buffer: ByteArray, length: Int) {
         var offset = 0
         while (offset < length) {
-            val written = track.write(buffer, offset, length - offset, AudioTrack.WRITE_BLOCKING)
+            currentCoroutineContext().ensureActive()
+            val written = track.write(buffer, offset, length - offset)
             if (written <= 0) throw IllegalStateException("AudioTrack write failed: $written")
             offset += written
         }
     }
 
-    private fun speechAudioAttributes(): AudioAttributes = AudioAttributes.Builder()
-        .setUsage(AudioAttributes.USAGE_ASSISTANT)
-        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-        .build()
-
-    private fun releaseTrack(track: AudioTrack?) {
-        if (track == null) return
-        runCatching { track.pause() }
-        runCatching { track.flush() }
-        runCatching { track.stop() }
-        runCatching { track.release() }
-    }
-
     override fun stop() {
         val call: Call?
-        val track: AudioTrack?
+        val track: PcmPlaybackSink?
         synchronized(stateLock) {
             call = currentCall
             track = currentTrack
@@ -210,7 +176,7 @@ class PocketTTSProvider(
             currentTrack = null
         }
         call?.cancel()
-        releaseTrack(track)
+        track?.abort()
     }
 
     override fun shutdown() = stop()
@@ -236,5 +202,62 @@ class PocketTTSProvider(
         } else {
             send(TTSState.Error(context.getString(R.string.tts_error_pocket_unavailable)))
         }
+    }
+}
+
+private const val PCM_FRAME_BYTES = 2L
+
+private fun speechAudioAttributes(): AudioAttributes = AudioAttributes.Builder()
+    .setUsage(AudioAttributes.USAGE_ASSISTANT)
+    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+    .build()
+
+private fun createPcmPlaybackSink(sampleRate: Int): PcmPlaybackSink? {
+    val minBuffer = AudioTrack.getMinBufferSize(
+        sampleRate,
+        AudioFormat.CHANNEL_OUT_MONO,
+        AudioFormat.ENCODING_PCM_16BIT,
+    )
+    if (minBuffer <= 0) return null
+    val track = AudioTrack.Builder()
+        .setAudioAttributes(speechAudioAttributes())
+        .setAudioFormat(
+            AudioFormat.Builder()
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setSampleRate(sampleRate)
+                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                .build(),
+        )
+        .setBufferSizeInBytes(maxOf(minBuffer, sampleRate * 2 / 5))
+        .setTransferMode(AudioTrack.MODE_STREAM)
+        .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+        .build()
+    return if (track.state == AudioTrack.STATE_INITIALIZED) {
+        AudioTrackPcmPlaybackSink(track)
+    } else {
+        runCatching { track.release() }
+        null
+    }
+}
+
+internal interface PocketAudioFocusController {
+    fun request(): Boolean
+    fun abandon()
+}
+
+private class AndroidPocketAudioFocusController(
+    context: Context,
+) : PocketAudioFocusController {
+    private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+        .setAudioAttributes(speechAudioAttributes())
+        .setAcceptsDelayedFocusGain(false)
+        .build()
+
+    override fun request(): Boolean =
+        audioManager.requestAudioFocus(focusRequest) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+
+    override fun abandon() {
+        audioManager.abandonAudioFocusRequest(focusRequest)
     }
 }

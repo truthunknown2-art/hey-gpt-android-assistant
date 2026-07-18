@@ -12,6 +12,7 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pocket_tts import TTSModel
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 
 LOGGER = logging.getLogger("hey-gpt-tts")
@@ -100,20 +101,36 @@ async def synthesize(
     if not runtime.generation_lock.acquire(blocking=False):
         raise HTTPException(status_code=429, detail="TTS is already speaking")
 
+    release_guard = threading.Lock()
+    released = False
+
+    def release_once() -> None:
+        nonlocal released
+        with release_guard:
+            if released:
+                return
+            released = True
+            runtime.generation_lock.release()
+
     def stream_and_release() -> Iterator[bytes]:
         try:
             yield from _pcm_stream(text)
         finally:
-            runtime.generation_lock.release()
+            release_once()
 
     sample_rate = runtime.model.sample_rate if runtime.model is not None else 24_000
-    return StreamingResponse(
-        stream_and_release(),
-        media_type=f"audio/L16;rate={sample_rate};channels=1",
-        headers={
-            "Cache-Control": "no-store",
-            "X-Audio-Sample-Rate": str(sample_rate),
-            "X-Audio-Channels": "1",
-            "X-Audio-Encoding": "pcm_s16le",
-        },
-    )
+    try:
+        return StreamingResponse(
+            stream_and_release(),
+            media_type=f"audio/L16;rate={sample_rate};channels=1",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Audio-Sample-Rate": str(sample_rate),
+                "X-Audio-Channels": "1",
+                "X-Audio-Encoding": "pcm_s16le",
+            },
+            background=BackgroundTask(release_once),
+        )
+    except BaseException:
+        release_once()
+        raise
