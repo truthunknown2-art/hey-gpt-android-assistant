@@ -8,6 +8,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -17,9 +18,9 @@ import com.openclaw.assistant.R
  * Opens the official ChatGPT Android app without depending on private activities,
  * deep links, web APIs, or a Platform API key.
  *
- * In ChatGPT, enable Settings -> Voice -> Start with Voice so its normal launcher
- * activity begins a Live conversation. Background Conversations lets that official
- * session continue after the phone is locked.
+ * When ChatGPT is Android's selected digital assistant, the launcher invokes the
+ * platform Assist gesture. Background Conversations can then keep that official
+ * session active after the phone is locked.
  */
 object ChatGptLiveLauncher {
     const val CHATGPT_PACKAGE = "com.openai.chatgpt"
@@ -42,6 +43,31 @@ object ChatGptLiveLauncher {
             return openStore(context)
         }
 
+        // The current official ChatGPT VoiceInteractionService declares that it
+        // cannot launch from a secure keyguard. Fail immediately instead of
+        // waiting for a recorder that can never start. Smart Lock / Extend
+        // Unlock reports deviceLocked=false and may still use the official path.
+        val keyguardManager = context.getSystemService(KeyguardManager::class.java)
+        if (keyguardManager.isDeviceLocked) {
+            Log.i(TAG, "Secure keyguard blocks the official ChatGPT assistant")
+            postFallback(context, launchIntent, locked = true)
+            return Result.FAILED
+        }
+
+        // Newer ChatGPT builds expose an official Android digital-assistant
+        // service. When the user selected it, invoke Android's public Assist
+        // global action through our least-privilege accessibility service. This
+        // starts Voice without naming or automating a private ChatGPT activity.
+        if (isChatGptDefaultAssistant(context)) {
+            if (AssistTriggerAccessibilityService.triggerSystemAssistant()) {
+                Log.i(TAG, "ChatGPT invoked through Android's assistant role")
+                return Result.LAUNCHED
+            }
+            Log.w(TAG, "ChatGPT is the default assistant, but the Hey GPT trigger is not enabled")
+            postFallback(context, launchIntent, locked = false)
+            return Result.FAILED
+        }
+
         launchIntent.addFlags(
             Intent.FLAG_ACTIVITY_NEW_TASK or
                 Intent.FLAG_ACTIVITY_CLEAR_TOP or
@@ -53,7 +79,7 @@ object ChatGptLiveLauncher {
             // is intended for voice-compatible activities and is not a reliable
             // universal launcher for third-party ACTION_MAIN activities.
             context.startActivity(launchIntent)
-            if (context.getSystemService(KeyguardManager::class.java).isKeyguardLocked) {
+            if (keyguardManager.isKeyguardLocked) {
                 if (!postFallback(context, launchIntent, locked = true)) {
                     Log.w(TAG, "ChatGPT launched while locked, but notification permission is unavailable")
                 }
@@ -61,10 +87,28 @@ object ChatGptLiveLauncher {
             Result.LAUNCHED
         } catch (error: Exception) {
             Log.e(TAG, "Unable to open the official ChatGPT app", error)
-            postFallback(context, launchIntent, locked = true)
+            postFallback(context, launchIntent, locked = keyguardManager.isKeyguardLocked)
             Result.FAILED
         }
     }
+
+    internal fun isChatGptDefaultAssistant(context: Context): Boolean {
+        val component = runCatching {
+            Settings.Secure.getString(context.contentResolver, "assistant")
+        }.getOrNull()
+        if (isChatGptAssistantComponent(component)) return true
+
+        val resolvedPackage = runCatching {
+            context.packageManager.resolveActivity(
+                Intent(Intent.ACTION_ASSIST),
+                android.content.pm.PackageManager.MATCH_DEFAULT_ONLY,
+            )?.activityInfo?.packageName
+        }.getOrNull()
+        return resolvedPackage == CHATGPT_PACKAGE
+    }
+
+    internal fun isChatGptAssistantComponent(component: String?): Boolean =
+        component?.startsWith("$CHATGPT_PACKAGE/") == true
 
     /** Posts a user-controlled retry when Android accepted a launch but no recording appeared. */
     fun postFallbackNotification(context: Context): Boolean {

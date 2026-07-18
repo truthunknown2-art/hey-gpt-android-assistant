@@ -254,6 +254,21 @@
                 android:resource="@xml/agent_voice_accessibility_service" />
         </service>
 
+        <!-- Least-privilege bridge used only to invoke Android's current
+             digital-assistant action after the offline "Hey GPT" wake word. -->
+        <service
+            android:name="com.openclaw.assistant.chatgpt.AssistTriggerAccessibilityService"
+            android:label="@string/assist_trigger_service_name"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/assist_trigger_accessibility_service" />
+        </service>
+
         <!-- Notification Listener Service -->
         <service
             android:name="com.openclaw.assistant.service.OpenClawNotificationListenerService"

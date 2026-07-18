@@ -5,6 +5,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.KeyguardManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -30,6 +31,10 @@ import com.google.firebase.crashlytics.FirebaseCrashlytics
 import com.openclaw.assistant.data.SettingsRepository
 import com.openclaw.assistant.chatgpt.ChatGptHandoffTracker
 import com.openclaw.assistant.chatgpt.ChatGptLiveLauncher
+import com.openclaw.assistant.chatgpt.LockedConversationController
+import com.openclaw.assistant.chatgpt.VoiceConversationRoute
+import com.openclaw.assistant.chatgpt.chooseVoiceConversationRoute
+import com.openclaw.assistant.speech.TTSUtils
 import kotlinx.coroutines.*
 import org.vosk.Model
 import org.vosk.Recognizer
@@ -58,6 +63,7 @@ class HotwordService : Service(), VoskRecognitionListener {
         private const val LOCAL_COMMAND_TIMEOUT_MS = 4_000
         private const val LOCAL_COMMAND_SILENCE_MS = 1_200L
         private const val MICROPHONE_RELEASE_TIMEOUT_MS = 3_000L
+        private const val OPENCLAW_CONNECT_GRACE_MS = 8_000L
         private const val CALL_AUDIO_START_TIMEOUT_MS = 30_000L
         private const val CALL_AUDIO_END_TIMEOUT_MS = 2 * 60 * 60 * 1000L
         private const val AUDIO_IDLE_DEBOUNCE_MS = 3_500L
@@ -859,8 +865,7 @@ class HotwordService : Service(), VoskRecognitionListener {
         Log.i(TAG, "local_command_transcript=${transcript.take(80)}")
         val command = LocalVoiceCommandParser.parse(transcript)
         if (command == null) {
-            Log.i(TAG, "local_command_unmatched; handing off to ChatGPT")
-            beginChatGptHandoff()
+            routeConversation(transcript)
             return
         }
 
@@ -882,6 +887,92 @@ class HotwordService : Service(), VoskRecognitionListener {
                 speakLocalFeedback(result.message)
                 finishLocalCommand("local command failed")
             }
+        }
+    }
+
+    /**
+     * Official ChatGPT Live remains the preferred path while Android considers
+     * the device unlocked. Under a secure keyguard the installed ChatGPT
+     * assistant refuses to launch, so use the persistent OpenClaw conversation
+     * and local Android TTS without weakening the lock.
+     */
+    private suspend fun routeConversation(transcript: String) {
+        val isDeviceLocked = getSystemService(KeyguardManager::class.java).isDeviceLocked
+        if (!isDeviceLocked) {
+            Log.i(TAG, "local_command_unmatched; handing off to ChatGPT Live")
+            beginChatGptHandoff()
+            return
+        }
+
+        val runtime = (application as OpenClawApplication).ensureRuntime()
+        val openClawReady =
+            (runtime.isConnected.value && !runtime.isOperatorOffline.value) ||
+                withTimeoutOrNull(OPENCLAW_CONNECT_GRACE_MS) {
+                    while (!runtime.isConnected.value || runtime.isOperatorOffline.value) delay(200)
+                    true
+                } == true
+
+        when (
+            chooseVoiceConversationRoute(
+                isDeviceLocked = true,
+                hasTranscript = transcript.isNotBlank(),
+                openClawReady = openClawReady,
+            )
+        ) {
+            VoiceConversationRoute.CHATGPT_LIVE -> beginChatGptHandoff()
+            VoiceConversationRoute.LOCKED_OPENCLAW -> runLockedOpenClawConversation(runtime, transcript)
+            VoiceConversationRoute.UNLOCK_REQUIRED -> {
+                Log.i(TAG, "secure_lock_fallback_unavailable")
+                ChatGptLiveLauncher.postFallbackNotification(this)
+                speakLocalFeedback(getString(R.string.locked_conversation_unlock_required))
+                finishLocalCommand("Secure-lock conversation unavailable")
+            }
+        }
+    }
+
+    private suspend fun runLockedOpenClawConversation(
+        runtime: com.openclaw.assistant.node.NodeRuntime,
+        transcript: String,
+    ) {
+        Log.i(TAG, "secure_lock_openclaw_started")
+        playLockedConversationSound()
+        val response = runCatching {
+            LockedConversationController(runtime::requestGateway)
+                .ask(runtime.deviceId, transcript)
+        }.getOrElse { error ->
+            Log.w(TAG, "secure_lock_openclaw_request_failed", error)
+            null
+        }
+
+        if (response.isNullOrBlank()) {
+            Log.w(TAG, "secure_lock_openclaw_timeout")
+            val error = runtime.chatError.value
+                ?.takeIf { it.isNotBlank() }
+                ?: getString(R.string.locked_conversation_timeout)
+            postLocalCommandNotification(error)
+            speakLocalFeedback(error)
+            finishLocalCommand("Secure-lock conversation failed")
+            return
+        }
+
+        val speechText = TTSUtils.stripMarkdownForSpeech(response)
+            .take(TextToSpeech.getMaxSpeechInputLength() - 100)
+        Log.i(TAG, "secure_lock_openclaw_response_received")
+        speakLocalFeedback(speechText)
+        finishLocalCommand("Secure-lock OpenClaw conversation completed")
+    }
+
+    /** Distinguishes the tool-free locked lane from the official Live handoff. */
+    private fun playLockedConversationSound() {
+        runCatching {
+            val generator = ToneGenerator(AudioManager.STREAM_MUSIC, 70)
+            generator.startTone(ToneGenerator.TONE_PROP_BEEP2, 120)
+            scope.launch {
+                delay(160)
+                generator.release()
+            }
+        }.onFailure { error ->
+            Log.w(TAG, "Failed to play locked conversation sound", error)
         }
     }
 
