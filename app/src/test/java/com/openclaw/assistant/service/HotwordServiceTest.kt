@@ -1,10 +1,39 @@
 package com.openclaw.assistant.service
 
+import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HotwordServiceTest {
+
+    @Test
+    fun secureResume_attemptsRecorderRestartBeforeCallerCanReleaseWakeLock() = runTest {
+        val events = mutableListOf<String>()
+
+        HotwordService.restartHotwordBeforeWakeLockRelease(
+            settleDelayMs = 500,
+            shouldRestart = { true },
+            restart = { events += "restart" },
+        )
+        events += "release"
+
+        assertEquals(listOf("restart", "release"), events)
+    }
+
+    @Test
+    fun secureResume_skipsRestartWhenAnotherSessionBecameActive() = runTest {
+        var restarted = false
+
+        HotwordService.restartHotwordBeforeWakeLockRelease(
+            settleDelayMs = 500,
+            shouldRestart = { false },
+            restart = { restarted = true },
+        )
+
+        assertFalse(restarted)
+    }
 
     @Test
     fun shouldCopyModel_returnsFalse_whenVersionsMatchAndDirValid() {

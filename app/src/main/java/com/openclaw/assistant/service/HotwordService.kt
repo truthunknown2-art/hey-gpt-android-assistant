@@ -68,6 +68,7 @@ class HotwordService : Service(), VoskRecognitionListener {
         private const val MICROPHONE_RELEASE_TIMEOUT_MS = 3_000L
         private const val OPENCLAW_CONNECT_GRACE_MS = 8_000L
         private const val LOCKED_TURN_WAKE_LOCK_TIMEOUT_MS = 3 * 60 * 1000L
+        private const val HOTWORD_RESUME_SETTLE_MS = 500L
         private const val CALL_AUDIO_START_TIMEOUT_MS = 30_000L
         private const val CALL_AUDIO_END_TIMEOUT_MS = 2 * 60 * 60 * 1000L
         private const val AUDIO_IDLE_DEBOUNCE_MS = 3_500L
@@ -99,6 +100,21 @@ class HotwordService : Service(), VoskRecognitionListener {
 
         fun shouldCopyModel(currentVersion: Int, savedVersion: Int, targetDirExists: Boolean, targetDirNotEmpty: Boolean): Boolean {
             return !(savedVersion == currentVersion && targetDirExists && targetDirNotEmpty)
+        }
+
+        /**
+         * Keeps the secure-turn caller suspended until the recorder restart has
+         * actually been attempted, so its CPU wake lock cannot be released in
+         * the settling gap.
+         */
+        internal suspend fun restartHotwordBeforeWakeLockRelease(
+            settleDelayMs: Long,
+            shouldRestart: () -> Boolean,
+            restart: () -> Unit,
+        ) {
+            require(settleDelayMs >= 0)
+            if (settleDelayMs > 0) delay(settleDelayMs)
+            if (shouldRestart()) restart()
         }
     }
 
@@ -921,7 +937,7 @@ class HotwordService : Service(), VoskRecognitionListener {
             Log.i(TAG, "secure_lock_blank_capture")
             ChatGptLiveLauncher.postFallbackNotification(this)
             speakLocalFeedback(getString(R.string.locked_conversation_unlock_required))
-            finishLocalCommand("Secure-lock capture unavailable")
+            finishSecureLocalCommand("Secure-lock capture unavailable")
             return
         }
 
@@ -946,7 +962,7 @@ class HotwordService : Service(), VoskRecognitionListener {
                 Log.i(TAG, "secure_lock_fallback_unavailable")
                 ChatGptLiveLauncher.postFallbackNotification(this)
                 speakLocalFeedback(getString(R.string.locked_conversation_unlock_required))
-                finishLocalCommand("Secure-lock conversation unavailable")
+                finishSecureLocalCommand("Secure-lock conversation unavailable")
             }
         }
     }
@@ -973,7 +989,7 @@ class HotwordService : Service(), VoskRecognitionListener {
                 ?: getString(R.string.locked_conversation_timeout)
             postLocalCommandNotification(error)
             speakLocalFeedback(error)
-            finishLocalCommand("Secure-lock conversation failed")
+            finishSecureLocalCommand("Secure-lock conversation failed")
             return
         }
 
@@ -981,7 +997,7 @@ class HotwordService : Service(), VoskRecognitionListener {
             .take(TextToSpeech.getMaxSpeechInputLength() - 100)
         Log.i(TAG, "secure_lock_openclaw_response_received")
         speakLocalFeedback(speechText)
-        finishLocalCommand("Secure-lock OpenClaw conversation completed")
+        finishSecureLocalCommand("Secure-lock OpenClaw conversation completed")
     }
 
     private fun acquireLockedTurnWakeLock(): PowerManager.WakeLock? = runCatching {
@@ -1011,12 +1027,28 @@ class HotwordService : Service(), VoskRecognitionListener {
     }
 
     private fun finishLocalCommand(reason: String) {
-        Log.i(TAG, "$reason; hotword_resumed")
+        completeLocalCommand(reason)
+        resumeHotwordDetection()
+    }
+
+    private suspend fun finishSecureLocalCommand(reason: String) {
+        completeLocalCommand(reason)
+        audioRetryCount = 0
+        updateNotification()
+        restartHotwordBeforeWakeLockRelease(
+            settleDelayMs = HOTWORD_RESUME_SETTLE_MS,
+            shouldRestart = { !isSessionActive && speechService == null },
+            restart = { startHotwordListening() },
+        )
+        Log.i(TAG, "$reason; secure_hotword_restart_attempted")
+    }
+
+    private fun completeLocalCommand(reason: String) {
+        Log.i(TAG, "$reason; hotword_resume_requested")
         postActionMicJob = null
         cancelWatchdog()
         isSessionActive = false
         isListeningForCommand = false
-        resumeHotwordDetection()
     }
 
     /**
@@ -1117,7 +1149,7 @@ class HotwordService : Service(), VoskRecognitionListener {
         audioRetryCount = 0
         updateNotification()
         scope.launch {
-            delay(500)
+            delay(HOTWORD_RESUME_SETTLE_MS)
             if (!isSessionActive && speechService == null) {
                 startHotwordListening()
             }
