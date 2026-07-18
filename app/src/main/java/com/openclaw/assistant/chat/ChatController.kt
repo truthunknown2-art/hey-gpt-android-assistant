@@ -20,6 +20,36 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 
+internal fun buildChatSendParams(
+  sessionKey: String,
+  message: String,
+  thinking: String,
+  runId: String,
+  attachments: List<OutgoingAttachment>,
+): JsonObject =
+  buildJsonObject {
+    put("sessionKey", JsonPrimitive(sessionKey))
+    put("message", JsonPrimitive(message))
+    put("thinking", JsonPrimitive(thinking))
+    put("timeoutMs", JsonPrimitive(30_000))
+    put("idempotencyKey", JsonPrimitive(runId))
+    if (attachments.isNotEmpty()) {
+      put(
+        "attachments",
+        JsonArray(
+          attachments.map { attachment ->
+            buildJsonObject {
+              put("type", JsonPrimitive(attachment.type))
+              put("mimeType", JsonPrimitive(attachment.mimeType))
+              put("fileName", JsonPrimitive(attachment.fileName))
+              put("content", JsonPrimitive(attachment.base64))
+            }
+          },
+        ),
+      )
+    }
+  }
+
 class ChatController(
   private val scope: CoroutineScope,
   private val session: GatewaySession,
@@ -178,30 +208,20 @@ class ChatController(
 
     scope.launch {
       try {
+        // Current Gateway protocol applies model overrides through sessions.patch;
+        // chat.send is strict and rejects a root-level model property.
+        modelName
+          ?.trim()
+          ?.takeIf { it.isNotEmpty() && !it.equals("default", ignoreCase = true) }
+          ?.let { Log.w("ChatDbg", "Ignoring unsupported per-message model override: $it") }
         val params =
-          buildJsonObject {
-            put("sessionKey", JsonPrimitive(sessionKey))
-            put("message", JsonPrimitive(text))
-            put("thinking", JsonPrimitive(thinking))
-            modelName?.takeIf { it.isNotBlank() }?.let { put("model", JsonPrimitive(it)) }
-            put("timeoutMs", JsonPrimitive(30_000))
-            put("idempotencyKey", JsonPrimitive(runId))
-            if (attachments.isNotEmpty()) {
-              put(
-                "attachments",
-                JsonArray(
-                  attachments.map { att ->
-                    buildJsonObject {
-                      put("type", JsonPrimitive(att.type))
-                      put("mimeType", JsonPrimitive(att.mimeType))
-                      put("fileName", JsonPrimitive(att.fileName))
-                      put("content", JsonPrimitive(att.base64))
-                    }
-                  },
-                ),
-              )
-            }
-          }
+          buildChatSendParams(
+            sessionKey = sessionKey,
+            message = text,
+            thinking = thinking,
+            runId = runId,
+            attachments = attachments,
+          )
         Log.d("ChatDbg", "chat.send start idempotencyKey=$runId sessionKey=$sessionKey")
         Log.d("ChatDbg", "chat.send payload: ${params.toString().take(1000)}")
         val res = session.request("chat.send", params.toString(), timeoutMs = 35_000)
