@@ -1,0 +1,18 @@
+[Unit]
+Description=Hey GPT Pocket TTS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/hey-gpt-tts/service
+EnvironmentFile=%h/hey-gpt-tts/service/hey-gpt-tts.env
+Environment=OMP_NUM_THREADS=2
+Environment=MKL_NUM_THREADS=2
+ExecStart=%h/hey-gpt-tts/venv/bin/uvicorn hey_gpt_tts_server:app --host 127.0.0.1 --port 18080
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target

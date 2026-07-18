@@ -7,6 +7,7 @@ import com.openclaw.assistant.R
 import com.openclaw.assistant.data.SettingsRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.channelFlow
 
 private const val TAG = "TTSManager"
 
@@ -24,6 +25,7 @@ class TTSManager(private val context: Context) {
     init {
         // Initialize all providers
         providers[TTSProviderType.LOCAL] = AndroidTTSProvider(context)
+        providers[TTSProviderType.POCKET] = PocketTTSProvider(context)
         providers[TTSProviderType.ELEVENLABS] = ElevenLabsProvider(context)
         providers[TTSProviderType.OPENAI] = OpenAIProvider(context)
         if (BuildConfig.FLAVOR == "full") {
@@ -53,7 +55,8 @@ class TTSManager(private val context: Context) {
         if (!available || !configured) {
             Log.e(TAG, "isReady: ${provider.getDisplayName()} available=$available configured=$configured error=${provider.getConfigurationError()}")
         }
-        return available && configured
+        return (available && configured) ||
+            (provider is PocketTTSProvider && localProviderReady())
     }
     
     /**
@@ -63,6 +66,7 @@ class TTSManager(private val context: Context) {
         val provider = getCurrentProvider()
         return when {
             provider == null -> context.getString(R.string.tts_error_unknown_type, settings.ttsType)
+            provider is PocketTTSProvider && localProviderReady() -> null
             !provider.isConfigured() -> provider.getConfigurationError()
             !provider.isAvailable() -> context.getString(R.string.tts_error_provider_unavailable, provider.getDisplayName())
             else -> null
@@ -79,6 +83,17 @@ class TTSManager(private val context: Context) {
             return false
         }
         
+        val processedText = TTSUtils.stripMarkdownForSpeech(text)
+
+        if (provider is PocketTTSProvider) {
+            if (provider.isConfigured() && provider.isAvailable()) {
+                val success = provider.speak(processedText)
+                if (success || provider.startedLastAttempt) return success
+            }
+            Log.w(TAG, "Pocket TTS unavailable before playback; falling back to system TTS")
+            return providers[TTSProviderType.LOCAL]?.speak(processedText) == true
+        }
+
         if (!provider.isConfigured()) {
             Log.e(TAG, "Provider not configured: ${provider.getConfigurationError()}")
             return false
@@ -88,9 +103,6 @@ class TTSManager(private val context: Context) {
             Log.e(TAG, "Provider not available: ${provider.getDisplayName()}")
             return false
         }
-        
-        // Preprocess text (strip markdown, etc.)
-        val processedText = TTSUtils.stripMarkdownForSpeech(text)
         
         return provider.speak(processedText)
     }
@@ -106,6 +118,11 @@ class TTSManager(private val context: Context) {
                 close()
             }
         }
+
+        val processedText = TTSUtils.stripMarkdownForSpeech(text)
+        if (provider is PocketTTSProvider) {
+            return speakWithPocketFallback(provider, processedText)
+        }
         
         if (!provider.isConfigured()) {
             return callbackFlow {
@@ -114,8 +131,41 @@ class TTSManager(private val context: Context) {
             }
         }
         
-        val processedText = TTSUtils.stripMarkdownForSpeech(text)
         return provider.speakWithProgress(processedText)
+    }
+
+    private fun speakWithPocketFallback(provider: PocketTTSProvider, text: String): Flow<TTSState> = channelFlow {
+        if (provider.isConfigured() && provider.isAvailable()) {
+            var playbackStarted = false
+            var error: TTSState.Error? = null
+            provider.speakWithProgress(text).collect { state ->
+                when (state) {
+                    is TTSState.Speaking -> {
+                        playbackStarted = true
+                        send(state)
+                    }
+                    is TTSState.Error -> error = state
+                    else -> send(state)
+                }
+            }
+            if (error == null || playbackStarted) {
+                error?.let { send(it) }
+                return@channelFlow
+            }
+        }
+
+        Log.w(TAG, "Pocket TTS unavailable before playback; using system TTS progress path")
+        val local = providers[TTSProviderType.LOCAL]
+        if (local == null) {
+            send(TTSState.Error(context.getString(R.string.tts_error_pocket_unavailable)))
+            return@channelFlow
+        }
+        local.speakWithProgress(text).collect { send(it) }
+    }
+
+    private fun localProviderReady(): Boolean {
+        val local = providers[TTSProviderType.LOCAL] ?: return false
+        return local.isAvailable() && local.isConfigured()
     }
     
     /**
@@ -146,6 +196,7 @@ class TTSManager(private val context: Context) {
     fun reinitialize() {
         shutdown()
         providers[TTSProviderType.LOCAL] = AndroidTTSProvider(context)
+        providers[TTSProviderType.POCKET] = PocketTTSProvider(context)
         providers[TTSProviderType.ELEVENLABS] = ElevenLabsProvider(context)
         providers[TTSProviderType.OPENAI] = OpenAIProvider(context)
         if (BuildConfig.FLAVOR == "full") {
@@ -177,6 +228,13 @@ class TTSManager(private val context: Context) {
                 description = context.getString(R.string.tts_provider_local_description),
                 isAvailable = true,
                 isConfigured = true
+            ),
+            TTSProviderInfo(
+                type = TTSProviderType.POCKET,
+                displayName = "Pocket TTS",
+                description = context.getString(R.string.tts_provider_pocket_description),
+                isAvailable = providers[TTSProviderType.POCKET]?.isAvailable() == true,
+                isConfigured = providers[TTSProviderType.POCKET]?.isConfigured() == true
             ),
             TTSProviderInfo(
                 type = TTSProviderType.ELEVENLABS,

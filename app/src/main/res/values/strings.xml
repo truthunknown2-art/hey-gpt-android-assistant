@@ -392,6 +392,7 @@
     <string name="tts_engine_auto">Auto (Default)</string>
     <string name="tts_provider_label">TTS Provider</string>
     <string name="tts_provider_local">Local TTS</string>
+    <string name="tts_provider_pocket">Pocket TTS</string>
     <string name="tts_provider_elevenlabs">ElevenLabs</string>
     <string name="tts_provider_openai">OpenAI TTS</string>
     <string name="tts_provider_voicevox">VOICEVOX</string>
@@ -890,12 +891,18 @@
     <!-- TTS Provider Names and Descriptions -->
     <string name="tts_provider_local_name">ローカルTTS</string>
     <string name="tts_provider_local_description">Android標準の音声合成</string>
+    <string name="tts_provider_pocket_description">Gateway上で動くローカル高品質音声合成</string>
+    <string name="tts_pocket_endpoint_label">Pocket TTS HTTPS URL</string>
+    <string name="tts_pocket_endpoint_hint">https://device.tailnet.ts.net/hey-gpt-tts</string>
+    <string name="tts_pocket_endpoint_help">インストーラーが表示するTailscale Serve URL。HTTPSのみ。</string>
     <string name="tts_provider_elevenlabs_description">高品質クラウド音声合成</string>
     <string name="tts_provider_voicevox_description">日本語音声合成（ずんだもん等）</string>
 
     <!-- TTS Error Messages -->
     <string name="tts_error_unknown_type">不明なTTSタイプ: %1$s</string>
     <string name="tts_error_provider_unavailable">%1$sは利用できません</string>
+    <string name="tts_error_pocket_gateway_required">Pocket TTSにはHTTPS Gateway接続が必要です</string>
+    <string name="tts_error_pocket_unavailable">Pocket TTSを利用できません</string>
     <string name="tts_error_elevenlabs_no_apikey">ElevenLabs API Keyが設定されていません</string>
     <string name="tts_error_openai_no_apikey">OpenAI API Keyが設定されていません</string>
     <string name="tts_error_voicevox_dict_missing">OpenJTalk辞書が見つかりません</string>

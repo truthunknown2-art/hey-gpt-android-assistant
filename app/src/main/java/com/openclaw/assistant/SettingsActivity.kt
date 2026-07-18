@@ -308,6 +308,7 @@ fun SettingsScreen(
     
     // TTS Settings
     var ttsType by rememberSaveable { mutableStateOf(settings.ttsType) }
+    var pocketTtsUrl by rememberSaveable { mutableStateOf(settings.pocketTtsUrl) }
     var showTtsTypeMenu by rememberSaveable { mutableStateOf(false) }
     
     // ElevenLabs
@@ -501,6 +502,7 @@ fun SettingsScreen(
                                 settings.ttsSpeed = ttsSpeed
                                 settings.ttsEngine = ttsEngine
                                 settings.ttsType = ttsType
+                                settings.pocketTtsUrl = pocketTtsUrl
                                 settings.elevenLabsApiKey = elevenLabsApiKey
                                 settings.elevenLabsVoiceId = elevenLabsVoiceId
                                 settings.elevenLabsSpeed = elevenLabsSpeed
@@ -1141,6 +1143,7 @@ fun SettingsScreen(
                         ) {
                             val ttsTypeLabel = when (ttsType) {
                                 SettingsRepository.TTS_TYPE_LOCAL -> "System TTS"
+                                SettingsRepository.TTS_TYPE_POCKET -> "Pocket TTS"
                                 SettingsRepository.TTS_TYPE_ELEVENLABS -> "ElevenLabs"
                                 SettingsRepository.TTS_TYPE_OPENAI -> "OpenAI"
                                 SettingsRepository.TTS_TYPE_VOICEVOX -> "VOICEVOX"
@@ -1160,6 +1163,18 @@ fun SettingsScreen(
                                 expanded = showTtsTypeMenu,
                                 onDismissRequest = { showTtsTypeMenu = false }
                             ) {
+                                DropdownMenuItem(
+                                    text = { Text("Pocket TTS (local Gateway)") },
+                                    onClick = {
+                                        ttsType = SettingsRepository.TTS_TYPE_POCKET
+                                        showTtsTypeMenu = false
+                                    },
+                                    leadingIcon = {
+                                        if (ttsType == SettingsRepository.TTS_TYPE_POCKET) {
+                                            Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                        }
+                                    }
+                                )
                                 DropdownMenuItem(
                                     text = { Text("System TTS") },
                                     onClick = {
@@ -1215,6 +1230,19 @@ fun SettingsScreen(
 
                         // Provider-specific settings
                         when (ttsType) {
+                            SettingsRepository.TTS_TYPE_POCKET -> {
+                                Spacer(modifier = Modifier.height(16.dp))
+                                OutlinedTextField(
+                                    value = pocketTtsUrl,
+                                    onValueChange = { pocketTtsUrl = it },
+                                    label = { Text(stringResource(R.string.tts_pocket_endpoint_label)) },
+                                    placeholder = { Text(stringResource(R.string.tts_pocket_endpoint_hint)) },
+                                    supportingText = { Text(stringResource(R.string.tts_pocket_endpoint_help)) },
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
                             SettingsRepository.TTS_TYPE_ELEVENLABS -> {
                                 Spacer(modifier = Modifier.height(16.dp))
                                 ElevenLabsSettingsCard(
@@ -1310,7 +1338,9 @@ fun SettingsScreen(
                         }
 
                         // Voice Speed (All providers except ElevenLabs which has its own speed setting)
-                        if (ttsType != SettingsRepository.TTS_TYPE_ELEVENLABS) {
+                        if (ttsType != SettingsRepository.TTS_TYPE_ELEVENLABS &&
+                            ttsType != SettingsRepository.TTS_TYPE_POCKET
+                        ) {
                             Spacer(modifier = Modifier.height(16.dp))
                             Row(
                                 modifier = Modifier.fillMaxWidth(),

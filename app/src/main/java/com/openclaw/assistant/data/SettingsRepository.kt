@@ -242,10 +242,14 @@ class SettingsRepository(context: Context) {
         get() = prefs.getString(KEY_TTS_ENGINE, "") ?: ""
         set(value) = prefs.edit().putString(KEY_TTS_ENGINE, value).apply()
     
-    // TTS Type (local, elevenlabs, openai, voicevox)
+    // TTS Type (Pocket TTS, local, ElevenLabs, OpenAI, VOICEVOX)
     var ttsType: String
         get() = prefs.getString(KEY_TTS_TYPE, TTS_TYPE_LOCAL) ?: TTS_TYPE_LOCAL
         set(value) = prefs.edit().putString(KEY_TTS_TYPE, value).apply()
+
+    var pocketTtsUrl: String
+        get() = prefs.getString(KEY_POCKET_TTS_URL, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_POCKET_TTS_URL, value.trim()).apply()
     
     // ElevenLabs settings
     var elevenLabsApiKey: String
@@ -452,6 +456,7 @@ class SettingsRepository(context: Context) {
         
         // TTS settings keys
         private const val KEY_TTS_TYPE = "tts_type"
+        private const val KEY_POCKET_TTS_URL = "pocket_tts_url"
         private const val KEY_ELEVENLABS_API_KEY = "elevenlabs_api_key"
         private const val KEY_ELEVENLABS_VOICE_ID = "elevenlabs_voice_id"
         private const val KEY_ELEVENLABS_MODEL = "elevenlabs_model"
@@ -488,6 +493,7 @@ class SettingsRepository(context: Context) {
         
         // TTS Type constants
         const val TTS_TYPE_LOCAL = "local"
+        const val TTS_TYPE_POCKET = "pocket"
         const val TTS_TYPE_ELEVENLABS = "elevenlabs"
         const val TTS_TYPE_OPENAI = "openai"
         const val TTS_TYPE_VOICEVOX = "voicevox"

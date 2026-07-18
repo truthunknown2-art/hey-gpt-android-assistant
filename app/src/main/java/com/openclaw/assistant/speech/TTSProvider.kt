@@ -71,6 +71,7 @@ sealed class TTSState {
  */
 object TTSProviderType {
     const val LOCAL = "local"
+    const val POCKET = "pocket"
     const val ELEVENLABS = "elevenlabs"
     const val OPENAI = "openai"
     const val VOICEVOX = "voicevox"
