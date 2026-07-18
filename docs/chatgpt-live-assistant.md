@@ -141,7 +141,9 @@ proceeds only when it resolves to one distinct number, then invokes
   persistent context. Each reply is correlated to the exact `chat.send` turn
   using OpenClaw's stable mirror identity; stale history is never spoken. A
   locked turn is capped at 60 seconds and its exact server run is aborted on
-  timeout or cancellation.
+  timeout or cancellation. A three-minute maximum partial wake lock covers the
+  secure-lock route and TTS so the CPU cannot suspend mid-answer; it is released
+  in every exit path.
 - When the device is unlocked or trusted-unlocked, the wake listener uses Android's public
   global Assist action to invoke ChatGPT as the selected digital assistant. It
   does not name private ChatGPT activities or inspect/automate ChatGPT's UI.

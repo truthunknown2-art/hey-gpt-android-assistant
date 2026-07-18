@@ -18,6 +18,7 @@ import android.media.MediaRecorder
 import android.media.ToneGenerator
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
@@ -66,6 +67,7 @@ class HotwordService : Service(), VoskRecognitionListener {
         private const val LOCAL_COMMAND_SILENCE_MS = 1_200L
         private const val MICROPHONE_RELEASE_TIMEOUT_MS = 3_000L
         private const val OPENCLAW_CONNECT_GRACE_MS = 8_000L
+        private const val LOCKED_TURN_WAKE_LOCK_TIMEOUT_MS = 3 * 60 * 1000L
         private const val CALL_AUDIO_START_TIMEOUT_MS = 30_000L
         private const val CALL_AUDIO_END_TIMEOUT_MS = 2 * 60 * 60 * 1000L
         private const val AUDIO_IDLE_DEBOUNCE_MS = 3_500L
@@ -906,6 +908,15 @@ class HotwordService : Service(), VoskRecognitionListener {
             return
         }
 
+        val wakeLock = acquireLockedTurnWakeLock()
+        try {
+            routeSecureConversation(transcript)
+        } finally {
+            runCatching { if (wakeLock?.isHeld == true) wakeLock.release() }
+        }
+    }
+
+    private suspend fun routeSecureConversation(transcript: String) {
         if (transcript.isBlank()) {
             Log.i(TAG, "secure_lock_blank_capture")
             ChatGptLiveLauncher.postFallbackNotification(this)
@@ -972,6 +983,18 @@ class HotwordService : Service(), VoskRecognitionListener {
         speakLocalFeedback(speechText)
         finishLocalCommand("Secure-lock OpenClaw conversation completed")
     }
+
+    private fun acquireLockedTurnWakeLock(): PowerManager.WakeLock? = runCatching {
+        getSystemService(PowerManager::class.java).newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "OpenClawAssistant::LockedVoiceTurn",
+        ).apply {
+            setReferenceCounted(false)
+            acquire(LOCKED_TURN_WAKE_LOCK_TIMEOUT_MS)
+        }
+    }.onFailure { error ->
+        Log.w(TAG, "Unable to hold CPU for locked voice turn", error)
+    }.getOrNull()
 
     /** Distinguishes the tool-free locked lane from the official Live handoff. */
     private fun playLockedConversationSound() {
