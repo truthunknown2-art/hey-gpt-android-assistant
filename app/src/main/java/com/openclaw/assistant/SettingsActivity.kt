@@ -263,8 +263,10 @@ fun SettingsScreen(
     var resumeLatestSession by rememberSaveable { mutableStateOf(settings.resumeLatestSession) }
     var openClawWakeWord by rememberSaveable { mutableStateOf(settings.openClawWakeWord) }
     var hermesWakeWord by rememberSaveable { mutableStateOf(settings.hermesWakeWord) }
+    var chatGptWakeWord by rememberSaveable { mutableStateOf(settings.chatGptWakeWord) }
     var openClawWakeSound by rememberSaveable { mutableStateOf(settings.openClawWakeSound) }
     var hermesWakeSound by rememberSaveable { mutableStateOf(settings.hermesWakeSound) }
+    var chatGptWakeSound by rememberSaveable { mutableStateOf(settings.chatGptWakeSound) }
     var wakeWordSensitivity by rememberSaveable { mutableStateOf(settings.wakeWordSensitivity) }
     var speechSilenceTimeout by rememberSaveable { mutableStateOf(settings.speechSilenceTimeout.toFloat().coerceIn(5000f, 30000f)) }
     var speechLanguage by rememberSaveable { mutableStateOf(settings.speechLanguage) }
@@ -510,8 +512,10 @@ fun SettingsScreen(
                                 settings.resumeLatestSession = resumeLatestSession
                                 settings.openClawWakeWord = openClawWakeWord
                                 settings.hermesWakeWord = hermesWakeWord
+                                settings.chatGptWakeWord = chatGptWakeWord
                                 settings.openClawWakeSound = openClawWakeSound
                                 settings.hermesWakeSound = hermesWakeSound
+                                settings.chatGptWakeSound = chatGptWakeSound
                                 settings.wakeWordSensitivity = wakeWordSensitivity
                                 settings.wakewordConnectionType = wakewordConnectionType
                                 settings.speechSilenceTimeout = speechSilenceTimeout.toLong()
@@ -1511,6 +1515,15 @@ fun SettingsScreen(
                             onWakeWordChange = { hermesWakeWord = it.lowercase() },
                             wakeSound = hermesWakeSound,
                             onWakeSoundChange = { hermesWakeSound = it },
+                            soundOptions = wakeSoundOptions
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        WakeWordTargetSettingsCard(
+                            title = stringResource(R.string.wake_word_chatgpt_live),
+                            wakeWord = chatGptWakeWord,
+                            onWakeWordChange = { chatGptWakeWord = it.lowercase() },
+                            wakeSound = chatGptWakeSound,
+                            onWakeSoundChange = { chatGptWakeSound = it },
                             soundOptions = wakeSoundOptions
                         )
 

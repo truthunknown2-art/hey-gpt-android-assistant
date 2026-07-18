@@ -199,6 +199,18 @@ class NodeRuntime(context: Context) {
     json = json,
   )
 
+  private val phoneHandler = PhoneHandler(
+    context = appContext,
+    json = json,
+    invokeErrorFromThrowable = { invokeErrorFromThrowable(it) },
+  )
+
+  private val mediaHandler = MediaHandler(
+    context = appContext,
+    json = json,
+    invokeErrorFromThrowable = { invokeErrorFromThrowable(it) },
+  )
+
   private val connectionManager: ConnectionManager = ConnectionManager(
     prefs = prefs,
     appContext = appContext,
@@ -232,10 +244,22 @@ class NodeRuntime(context: Context) {
     appUpdateHandler = appUpdateHandler,
     deviceHandler = deviceHandler,
     mobileBridgeHandler = mobileBridgeHandler,
+    phoneHandler = phoneHandler,
+    mediaHandler = mediaHandler,
     isForeground = { _isForeground.value },
     cameraEnabled = { cameraEnabled.value },
     locationEnabled = { locationMode.value != LocationMode.Off },
   )
+
+  /**
+   * Runs a declared Android node command through the same dispatcher used by
+   * authenticated Gateway invocations. This is the phone-local fast path used
+   * by deterministic wake commands when the Mini PC is unavailable.
+   */
+  suspend fun invokeLocalDeviceCommand(
+    command: String,
+    paramsJson: String? = null,
+  ): GatewaySession.InvokeResult = invokeDispatcher.handleInvoke(command, paramsJson)
 
   private lateinit var gatewayEventHandler: GatewayEventHandler
 

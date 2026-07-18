@@ -26,6 +26,8 @@ import com.openclaw.assistant.protocol.OpenClawCalendarCommand
 import com.openclaw.assistant.protocol.OpenClawMotionCommand
 import com.openclaw.assistant.protocol.OpenClawCapability
 import com.openclaw.assistant.protocol.OpenClawBridgeCommand
+import com.openclaw.assistant.protocol.OpenClawPhoneCommand
+import com.openclaw.assistant.protocol.OpenClawMediaCommand
 import com.openclaw.assistant.LocationMode
 import com.openclaw.assistant.VoiceWakeMode
 import android.provider.Settings
@@ -126,7 +128,14 @@ class ConnectionManager(
       }
       if (smsAvailable()) {
         add(OpenClawSmsCommand.Send.rawValue)
+        if (hasPermission(Manifest.permission.READ_SMS)) {
+          add(OpenClawSmsCommand.ReadLatest.rawValue)
+          add(OpenClawSmsCommand.ReadUnread.rawValue)
+        }
       }
+
+      add(OpenClawPhoneCommand.Call.rawValue)
+      add(OpenClawMediaCommand.PlaySearch.rawValue)
 
       // Notifications
       if (isNotificationListenerEnabled()) {
@@ -182,6 +191,8 @@ class ConnectionManager(
       add(OpenClawCapability.Screen.rawValue)
       add(OpenClawCapability.System.rawValue)
       add(OpenClawCapability.Bridge.rawValue)
+      add(OpenClawCapability.Phone.rawValue)
+      add(OpenClawCapability.Media.rawValue)
 
       if (isNotificationListenerEnabled()) {
         add(OpenClawCapability.Notifications.rawValue)

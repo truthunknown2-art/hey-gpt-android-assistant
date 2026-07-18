@@ -176,6 +176,12 @@ private enum class PermissionToggle(
         R.string.permission_send_sms_desc,
         Icons.Default.Sms,
         listOf(Manifest.permission.SEND_SMS, Manifest.permission.READ_SMS)
+    ),
+    Phone(
+        R.string.permission_phone_calls,
+        R.string.permission_phone_calls_desc,
+        Icons.Default.Phone,
+        listOf(Manifest.permission.CALL_PHONE)
     )
 }
 

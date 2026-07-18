@@ -6,6 +6,10 @@
             android:name="com.openclaw.assistant.debug.HermesLiveProbeActivity"
             android:exported="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        <activity
+            android:name="com.openclaw.assistant.debug.ChatGptHandoffProbeActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
         <!--
             Remove FirebaseInitProvider from debug builds so that Firebase is not

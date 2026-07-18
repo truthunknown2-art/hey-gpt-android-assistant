@@ -19,6 +19,8 @@ import com.openclaw.assistant.protocol.OpenClawAppCommand
 import com.openclaw.assistant.protocol.OpenClawClipboardCommand
 import com.openclaw.assistant.protocol.OpenClawBridgeCommand
 import com.openclaw.assistant.protocol.OpenClawVoiceWakeCommand
+import com.openclaw.assistant.protocol.OpenClawPhoneCommand
+import com.openclaw.assistant.protocol.OpenClawMediaCommand
 
 class InvokeDispatcher(
   private val canvas: CanvasController,
@@ -41,6 +43,8 @@ class InvokeDispatcher(
   private val appUpdateHandler: AppUpdateHandler,
   private val deviceHandler: DeviceHandler,
   private val mobileBridgeHandler: MobileBridgeHandler,
+  private val phoneHandler: PhoneHandler,
+  private val mediaHandler: MediaHandler,
   private val isForeground: () -> Boolean,
   private val cameraEnabled: () -> Boolean,
   private val locationEnabled: () -> Boolean,
@@ -188,6 +192,10 @@ class InvokeDispatcher(
       OpenClawSmsCommand.Send.rawValue -> smsHandler.handleSmsSend(paramsJson)
       OpenClawSmsCommand.ReadLatest.rawValue -> smsHandler.handleSmsReadLatest()
       OpenClawSmsCommand.ReadUnread.rawValue -> smsHandler.handleSmsReadUnread()
+
+      // Phone and media commands
+      OpenClawPhoneCommand.Call.rawValue -> phoneHandler.handleCall(paramsJson)
+      OpenClawMediaCommand.PlaySearch.rawValue -> mediaHandler.handlePlaySearch(paramsJson)
 
       // Notifications commands
       OpenClawNotificationsCommand.List.rawValue -> notificationsHandler.handleList()

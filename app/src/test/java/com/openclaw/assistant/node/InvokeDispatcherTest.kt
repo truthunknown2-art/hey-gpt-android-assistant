@@ -9,6 +9,8 @@ import com.openclaw.assistant.protocol.OpenClawContactsCommand
 import com.openclaw.assistant.protocol.OpenClawCalendarCommand
 import com.openclaw.assistant.protocol.OpenClawMotionCommand
 import com.openclaw.assistant.protocol.OpenClawBridgeCommand
+import com.openclaw.assistant.protocol.OpenClawPhoneCommand
+import com.openclaw.assistant.protocol.OpenClawMediaCommand
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
@@ -37,6 +39,8 @@ class InvokeDispatcherTest {
   private val appHandler = mockk<AppHandler>()
   private val voiceWakeHandler = mockk<VoiceWakeHandler>()
   private val mobileBridgeHandler = mockk<MobileBridgeHandler>()
+  private val phoneHandler = mockk<PhoneHandler>()
+  private val mediaHandler = mockk<MediaHandler>()
 
   private fun createDispatcher(
     isForeground: Boolean = true,
@@ -63,6 +67,8 @@ class InvokeDispatcherTest {
     appHandler = appHandler,
     voiceWakeHandler = voiceWakeHandler,
     mobileBridgeHandler = mobileBridgeHandler,
+    phoneHandler = phoneHandler,
+    mediaHandler = mediaHandler,
     isForeground = { isForeground },
     cameraEnabled = { cameraEnabled },
     locationEnabled = { locationEnabled }
@@ -189,5 +195,27 @@ class InvokeDispatcherTest {
 
     assertEquals(true, result.ok)
     assertEquals("""{"status":"completed"}""", result.payloadJson)
+  }
+
+  @Test
+  fun `phone call is dispatched to handler`() = runTest {
+    val dispatcher = createDispatcher()
+    val params = """{"number":"+15551234567"}"""
+    every { phoneHandler.handleCall(params) } returns GatewaySession.InvokeResult.ok("{}")
+
+    val result = dispatcher.handleInvoke(OpenClawPhoneCommand.Call.rawValue, params)
+
+    assertEquals(true, result.ok)
+  }
+
+  @Test
+  fun `media search is dispatched to handler`() = runTest {
+    val dispatcher = createDispatcher()
+    val params = """{"query":"Miles Davis"}"""
+    every { mediaHandler.handlePlaySearch(params) } returns GatewaySession.InvokeResult.ok("{}")
+
+    val result = dispatcher.handleInvoke(OpenClawMediaCommand.PlaySearch.rawValue, params)
+
+    assertEquals(true, result.ok)
   }
 }
