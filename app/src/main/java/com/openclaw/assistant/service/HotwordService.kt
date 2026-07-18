@@ -236,6 +236,9 @@ class HotwordService : Service(), VoskRecognitionListener {
 
         settings = SettingsRepository.getInstance(this)
         ttsManager = TTSManager(this)
+        if (!ttsManager.initializeCurrentProvider()) {
+            Log.w(TAG, "Configured TTS provider failed to initialize")
+        }
 
         createNotificationChannel()
         
@@ -1013,15 +1016,25 @@ class HotwordService : Service(), VoskRecognitionListener {
         isListeningForCommand = false
     }
 
-    private suspend fun speakLocalFeedback(text: String): Boolean = try {
-        val spoken = withTimeoutOrNull(localTtsTimeoutMs(text)) {
-            withContext(Dispatchers.Main.immediate) { ttsManager.speak(text) }
-        } ?: false
-        if (!spoken) withContext(Dispatchers.Main.immediate) { ttsManager.stop() }
-        spoken
-    } catch (cancelled: CancellationException) {
-        withContext(NonCancellable + Dispatchers.Main.immediate) { ttsManager.stop() }
-        throw cancelled
+    private suspend fun speakLocalFeedback(text: String): Boolean {
+        return try {
+            val initialized = withContext(Dispatchers.Main.immediate) {
+                ttsManager.initializeCurrentProvider()
+            }
+            if (!initialized) {
+                Log.w(TAG, "Configured TTS provider failed to initialize before speech")
+                false
+            } else {
+                val spoken = withTimeoutOrNull(localTtsTimeoutMs(text)) {
+                    withContext(Dispatchers.Main.immediate) { ttsManager.speak(text) }
+                } ?: false
+                if (!spoken) withContext(Dispatchers.Main.immediate) { ttsManager.stop() }
+                spoken
+            }
+        } catch (cancelled: CancellationException) {
+            withContext(NonCancellable + Dispatchers.Main.immediate) { ttsManager.stop() }
+            throw cancelled
+        }
     }
 
     private fun postLocalCommandNotification(message: String) {

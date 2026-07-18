@@ -13,8 +13,8 @@ Live conversation.
   required.
 - When Android is securely locked, say **“Hey GPT”**, wait for the
   acknowledgement tone, then ask the question. The captured question goes to a
-  persistent, tool-free OpenClaw conversation on the Mini PC and its answer is
-  spoken with Android TTS.
+  persistent, tool-free OpenClaw conversation on the Mini PC. Its answer uses
+  the configured TTS provider, with local Android TTS as the default.
 - Keep **“OpenClaw”** or **“Hey Hermes”** as a separate wake phrase when the
   full agent session and Android actions are wanted instead of ChatGPT Live.
 
@@ -134,8 +134,8 @@ place calls.
   intent, gesture, or accessibility action that overrides that service contract.
 - When Android reports `KeyguardManager.isDeviceLocked == true`, the captured
   question immediately uses the isolated OpenClaw locked-voice agent. The answer
-  is Android TTS, not official ChatGPT Live audio. A distinct second tone marks
-  this locked lane. Repeating **Hey GPT** starts the next turn in the same
+  uses configured TTS, not official ChatGPT Live audio. A distinct second tone
+  marks this locked lane. Repeating **Hey GPT** starts the next turn in the same
   persistent context. Each reply is correlated to the exact `chat.send` turn
   using OpenClaw's stable mirror identity; stale history is never spoken. A
   locked turn is capped at 60 seconds and its exact server run is aborted on
@@ -149,6 +149,9 @@ place calls.
 - Automatic local TTS prefers Google Speech Services when it is installed, then
   ranks installed voices by exact locale, declared quality, and natural network
   voice availability. An explicit TTS engine selected in Settings still wins.
+- Local Android TTS requires no additional account. Cloud TTS providers are
+  explicit opt-ins, require their own API credentials, and send response text to
+  that provider.
 - If the locked OpenClaw connection is unavailable, the app says so immediately
   and posts an **Unlock to continue in ChatGPT Live** notification.
 - Samsung Smart Lock / Extend Unlock can make `isDeviceLocked` false with the
@@ -185,7 +188,8 @@ place calls.
 ```powershell
 $env:JAVA_HOME = 'C:\Program Files\Android\Android Studio\jbr'
 $env:FIREBASE_ENABLED = 'false'
-.\gradlew.bat :app:testStandardDebugUnitTest :app:assembleStandardDebug --no-daemon --max-workers=1
+& 'C:\Program Files\Git\bin\bash.exe' -lc `
+  "./gradlew :app:testStandardDebugUnitTest :app:assembleStandardDebug --no-daemon --max-workers=1"
 ```
 
 The debug-only `ChatGptHandoffProbeActivity` exercises the public Android Assist
