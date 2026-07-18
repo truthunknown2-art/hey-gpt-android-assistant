@@ -125,11 +125,7 @@ class PocketTTSProvider internal constructor(
                         if (receivedBytes > MAX_RESPONSE_BYTES) {
                             throw IOException("Pocket TTS response exceeded the playback limit")
                         }
-                        writeFully(track, buffer, read)
-                        if (!startedLastAttempt) {
-                            startedLastAttempt = true
-                            onPlaybackStarted()
-                        }
+                        writeFully(track, buffer, read, onPlaybackStarted)
                     }
                     if (receivedBytes % PCM_FRAME_BYTES != 0L) {
                         throw IOException("Pocket TTS returned unaligned PCM audio")
@@ -156,12 +152,21 @@ class PocketTTSProvider internal constructor(
         }
     }
 
-    private suspend fun writeFully(track: PcmPlaybackSink, buffer: ByteArray, length: Int) {
+    private suspend fun writeFully(
+        track: PcmPlaybackSink,
+        buffer: ByteArray,
+        length: Int,
+        onPlaybackStarted: () -> Unit,
+    ) {
         var offset = 0
         while (offset < length) {
             currentCoroutineContext().ensureActive()
             val written = track.write(buffer, offset, length - offset)
             if (written <= 0) throw IllegalStateException("AudioTrack write failed: $written")
+            if (!startedLastAttempt) {
+                startedLastAttempt = true
+                onPlaybackStarted()
+            }
             offset += written
         }
     }
