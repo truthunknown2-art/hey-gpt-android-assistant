@@ -1,5 +1,9 @@
 # WakeHermesClaw for Android 🦞
 
+> **This fork adds “Hey GPT” with a two-stage local command path for calls,
+> SMS, and Spotify, then a compliant handoff to the official ChatGPT Live app
+> for conversations.** See [the ChatGPT Live assistant setup guide](docs/chatgpt-live-assistant.md).
+
 > **A native Android voice client for OpenClaw and Hermes Agent.**
 >
 > WakeHermesClaw is the successor to *OpenClaw Assistant*. It keeps every
