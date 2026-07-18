@@ -57,6 +57,7 @@ class HotwordService : Service(), VoskRecognitionListener {
         private const val SAMPLE_RATE = 16000.0f
         private const val LOCAL_COMMAND_TIMEOUT_MS = 4_000
         private const val LOCAL_COMMAND_SILENCE_MS = 1_200L
+        private const val MICROPHONE_RELEASE_TIMEOUT_MS = 3_000L
         const val ACTION_RESUME_HOTWORD = "com.openclaw.assistant.ACTION_RESUME_HOTWORD"
         const val ACTION_PAUSE_HOTWORD = "com.openclaw.assistant.ACTION_PAUSE_HOTWORD"
         
@@ -103,6 +104,7 @@ class HotwordService : Service(), VoskRecognitionListener {
     private var watchdogJob: Job? = null
     private var errorRecoveryJob: Job? = null
     private var retryJob: Job? = null
+    private var chatGptLaunchJob: Job? = null
     private var chatGptGraceJob: Job? = null
     private var chatGptMonitorJob: Job? = null
     private var chatGptIdleJob: Job? = null
@@ -155,7 +157,7 @@ class HotwordService : Service(), VoskRecognitionListener {
 
     private val recordingCallback = object : AudioManager.AudioRecordingCallback() {
         override fun onRecordingConfigChanged(configs: MutableList<android.media.AudioRecordingConfiguration>?) {
-            if (!chatGptHandoffActive) return
+            if (!chatGptHandoffActive || !chatGptHandoffTracker.isArmed) return
             handleExternalRecordingState(!configs.isNullOrEmpty())
         }
     }
@@ -951,6 +953,7 @@ class HotwordService : Service(), VoskRecognitionListener {
         if (chatGptHandoffActive) return
         Log.i(TAG, "Pausing wake word for ChatGPT Live microphone handoff")
         cancelWatchdog()
+        chatGptLaunchJob?.cancel()
         chatGptGraceJob?.cancel()
         chatGptMonitorJob?.cancel()
         chatGptIdleJob?.cancel()
@@ -964,10 +967,29 @@ class HotwordService : Service(), VoskRecognitionListener {
         }
         speechService = null
 
-        // Ask the system-bound VoiceInteractionService to perform the minimal
-        // external-app launch. No OpenClawSession or backend setup is created.
-        scope.launch {
+        // SpeechService shutdown is asynchronous at the audio-server boundary.
+        // Do not arm external-recording observation until our own recorder is
+        // demonstrably gone, or it can be mistaken for ChatGPT.
+        chatGptLaunchJob = scope.launch {
+            val microphoneReleased = withTimeoutOrNull(MICROPHONE_RELEASE_TIMEOUT_MS) {
+                while (hasActiveRecording()) delay(100)
+                true
+            } ?: false
+            if (!chatGptHandoffActive) return@launch
+            if (!microphoneReleased) {
+                Log.w(TAG, "microphone_release_timeout")
+                postLocalCommandNotification("The microphone is busy. Try Hey GPT again in a moment.")
+                finishChatGptHandoff("Microphone did not release")
+                return@launch
+            }
+
             delay(150)
+            if (!chatGptHandoffActive) return@launch
+            chatGptHandoffTracker.arm()
+            Log.i(TAG, "chatgpt_launch_requested")
+
+            // Ask the system-bound VoiceInteractionService to perform the
+            // minimal launch. No OpenClawSession or backend is constructed.
             val intent = Intent(this@HotwordService, OpenClawAssistantService::class.java).apply {
                 action = OpenClawAssistantService.ACTION_HANDOFF_CHATGPT
             }
@@ -975,28 +997,40 @@ class HotwordService : Service(), VoskRecognitionListener {
                 startService(intent)
             } catch (error: Exception) {
                 Log.w(TAG, "VoiceInteractionService handoff unavailable; using direct fallback", error)
-                ChatGptLiveLauncher.launch(this@HotwordService)
+                val result = ChatGptLiveLauncher.launch(this@HotwordService)
+                Log.i(TAG, "chatgpt_launch_result=$result")
             }
-        }
 
-        // If Start with Voice is off, or ChatGPT needs sign-in, no recording will
-        // begin. Avoid leaving the wake listener paused forever in that case.
-        chatGptGraceJob = scope.launch {
-            delay(20_000)
-            if (chatGptHandoffActive && !chatGptHandoffTracker.recordingObserved) {
-                finishChatGptHandoff("ChatGPT did not start recording")
+            // If Start with Voice is off, or ChatGPT needs sign-in, no recording
+            // begins. Avoid leaving the wake listener paused forever.
+            chatGptGraceJob = scope.launch {
+                delay(20_000)
+                if (chatGptHandoffActive && !chatGptHandoffTracker.recordingObserved) {
+                    if (hasActiveRecording()) {
+                        handleExternalRecordingState(true)
+                    } else {
+                        ChatGptLiveLauncher.postFallbackNotification(this@HotwordService)
+                        finishChatGptHandoff("ChatGPT did not start recording")
+                    }
+                }
+            }
+            chatGptMonitorJob = scope.launch {
+                delay(500)
+                while (chatGptHandoffActive && chatGptHandoffTracker.isArmed) {
+                    handleExternalRecordingState(hasActiveRecording())
+                    delay(2_000)
+                }
             }
         }
-        chatGptMonitorJob = scope.launch {
-            delay(1_000)
-            while (chatGptHandoffActive) {
-                val active = getSystemService(AudioManager::class.java)
-                    .activeRecordingConfigurations
-                    .isNotEmpty()
-                handleExternalRecordingState(active)
-                delay(2_000)
-            }
-        }
+    }
+
+    private fun hasActiveRecording(): Boolean = runCatching {
+        getSystemService(AudioManager::class.java)
+            .activeRecordingConfigurations
+            .isNotEmpty()
+    }.getOrElse { error ->
+        Log.w(TAG, "Unable to inspect microphone ownership", error)
+        true // Fail closed: never launch another recorder when ownership is unknown.
     }
 
     private fun handleExternalRecordingState(hasActiveRecording: Boolean) {
@@ -1022,12 +1056,15 @@ class HotwordService : Service(), VoskRecognitionListener {
 
     private fun finishChatGptHandoff(reason: String) {
         Log.i(TAG, "$reason; hotword_resumed")
+        chatGptLaunchJob?.cancel()
+        chatGptLaunchJob = null
         chatGptGraceJob?.cancel()
         chatGptGraceJob = null
         chatGptMonitorJob?.cancel()
         chatGptMonitorJob = null
         chatGptIdleJob?.cancel()
         chatGptIdleJob = null
+        chatGptHandoffTracker.reset()
         chatGptHandoffActive = false
         isSessionActive = false
         isListeningForCommand = false

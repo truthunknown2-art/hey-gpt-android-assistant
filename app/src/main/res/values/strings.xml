@@ -479,6 +479,8 @@
     <string name="chatgpt_handoff_channel">ChatGPT Live handoff</string>
     <string name="chatgpt_unlock_title">Unlock to continue in ChatGPT Live</string>
     <string name="chatgpt_unlock_body">Tap after unlocking if ChatGPT did not appear over the lock screen.</string>
+    <string name="chatgpt_start_title">Start ChatGPT Live</string>
+    <string name="chatgpt_start_body">Tap to retry if ChatGPT did not begin listening.</string>
     <string name="permission_phone_calls">Phone calls</string>
     <string name="permission_phone_calls_desc">Allow hands-free calls. Without this permission, commands open the dialer for confirmation.</string>
     <string name="local_command_channel">Local voice commands</string>

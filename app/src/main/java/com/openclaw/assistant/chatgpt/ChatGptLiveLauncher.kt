@@ -53,17 +53,27 @@ object ChatGptLiveLauncher {
             // universal launcher for third-party ACTION_MAIN activities.
             context.startActivity(launchIntent)
             if (context.getSystemService(KeyguardManager::class.java).isKeyguardLocked) {
-                postLockscreenFallback(context, launchIntent)
+                postFallback(context, launchIntent, locked = true)
             }
             Result.LAUNCHED
         } catch (error: Exception) {
             Log.e(TAG, "Unable to open the official ChatGPT app", error)
-            postLockscreenFallback(context, launchIntent)
+            postFallback(context, launchIntent, locked = true)
             Result.FAILED
         }
     }
 
-    private fun postLockscreenFallback(context: Context, launchIntent: Intent) {
+    /** Posts a user-controlled retry when Android accepted a launch but no recording appeared. */
+    fun postFallbackNotification(context: Context) {
+        val launchIntent = context.packageManager.getLaunchIntentForPackage(CHATGPT_PACKAGE)
+            ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            ?: Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$CHATGPT_PACKAGE"))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val locked = context.getSystemService(KeyguardManager::class.java).isKeyguardLocked
+        postFallback(context, launchIntent, locked)
+    }
+
+    private fun postFallback(context: Context, launchIntent: Intent, locked: Boolean) {
         val notificationManager = context.getSystemService(NotificationManager::class.java)
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             notificationManager.createNotificationChannel(
@@ -83,8 +93,12 @@ object ChatGptLiveLauncher {
         )
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_mic)
-            .setContentTitle(context.getString(R.string.chatgpt_unlock_title))
-            .setContentText(context.getString(R.string.chatgpt_unlock_body))
+            .setContentTitle(context.getString(
+                if (locked) R.string.chatgpt_unlock_title else R.string.chatgpt_start_title
+            ))
+            .setContentText(context.getString(
+                if (locked) R.string.chatgpt_unlock_body else R.string.chatgpt_start_body
+            ))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setContentIntent(pendingIntent)

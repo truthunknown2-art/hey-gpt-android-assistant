@@ -11,12 +11,22 @@ package com.openclaw.assistant.chatgpt
 class ChatGptHandoffTracker {
     var recordingObserved: Boolean = false
         private set
+    var isArmed: Boolean = false
+        private set
 
     fun reset() {
         recordingObserved = false
+        isArmed = false
+    }
+
+    /** Call only after the app-owned recorder has fully released. */
+    fun arm() {
+        recordingObserved = false
+        isArmed = true
     }
 
     fun onRecordingStateChanged(hasActiveRecording: Boolean): Boolean {
+        if (!isArmed) return false
         if (hasActiveRecording) {
             recordingObserved = true
             return false
