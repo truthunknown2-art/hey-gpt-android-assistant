@@ -22,6 +22,8 @@ import com.openclaw.assistant.protocol.OpenClawVoiceWakeCommand
 import com.openclaw.assistant.protocol.OpenClawPhoneCommand
 import com.openclaw.assistant.protocol.OpenClawMediaCommand
 
+enum class InvocationOrigin { GATEWAY, LOCAL_VOICE }
+
 class InvokeDispatcher(
   private val canvas: CanvasController,
   private val cameraHandler: CameraHandler,
@@ -49,7 +51,11 @@ class InvokeDispatcher(
   private val cameraEnabled: () -> Boolean,
   private val locationEnabled: () -> Boolean,
 ) {
-  suspend fun handleInvoke(command: String, paramsJson: String?): GatewaySession.InvokeResult {
+  suspend fun handleInvoke(
+    command: String,
+    paramsJson: String?,
+    origin: InvocationOrigin = InvocationOrigin.GATEWAY,
+  ): GatewaySession.InvokeResult {
     // Check foreground requirement for canvas/camera/screen commands
     if (
       command.startsWith(OpenClawCanvasCommand.NamespacePrefix) ||
@@ -194,7 +200,16 @@ class InvokeDispatcher(
       OpenClawSmsCommand.ReadUnread.rawValue -> smsHandler.handleSmsReadUnread()
 
       // Phone and media commands
-      OpenClawPhoneCommand.Call.rawValue -> phoneHandler.handleCall(paramsJson)
+      OpenClawPhoneCommand.Call.rawValue -> {
+        if (origin != InvocationOrigin.LOCAL_VOICE) {
+          GatewaySession.InvokeResult.error(
+            code = "LOCAL_CONFIRMATION_REQUIRED",
+            message = "Phone calls are restricted to an on-device voice request",
+          )
+        } else {
+          phoneHandler.handleCall(paramsJson)
+        }
+      }
       OpenClawMediaCommand.PlaySearch.rawValue -> mediaHandler.handlePlaySearch(paramsJson)
 
       // Notifications commands

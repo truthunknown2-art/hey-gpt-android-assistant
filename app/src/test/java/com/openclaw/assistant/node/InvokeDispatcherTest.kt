@@ -198,14 +198,30 @@ class InvokeDispatcherTest {
   }
 
   @Test
-  fun `phone call is dispatched to handler`() = runTest {
+  fun `local phone call is dispatched to handler`() = runTest {
     val dispatcher = createDispatcher()
     val params = """{"number":"+15551234567"}"""
     every { phoneHandler.handleCall(params) } returns GatewaySession.InvokeResult.ok("{}")
 
-    val result = dispatcher.handleInvoke(OpenClawPhoneCommand.Call.rawValue, params)
+    val result = dispatcher.handleInvoke(
+      OpenClawPhoneCommand.Call.rawValue,
+      params,
+      InvocationOrigin.LOCAL_VOICE,
+    )
 
     assertEquals(true, result.ok)
+  }
+
+  @Test
+  fun `gateway phone call is rejected before handler`() = runTest {
+    val dispatcher = createDispatcher()
+    val result = dispatcher.handleInvoke(
+      OpenClawPhoneCommand.Call.rawValue,
+      """{"number":"+15551234567"}""",
+    )
+
+    assertEquals(false, result.ok)
+    assertEquals("LOCAL_CONFIRMATION_REQUIRED", result.error?.code)
   }
 
   @Test

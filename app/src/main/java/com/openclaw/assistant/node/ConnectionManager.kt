@@ -26,7 +26,6 @@ import com.openclaw.assistant.protocol.OpenClawCalendarCommand
 import com.openclaw.assistant.protocol.OpenClawMotionCommand
 import com.openclaw.assistant.protocol.OpenClawCapability
 import com.openclaw.assistant.protocol.OpenClawBridgeCommand
-import com.openclaw.assistant.protocol.OpenClawPhoneCommand
 import com.openclaw.assistant.protocol.OpenClawMediaCommand
 import com.openclaw.assistant.LocationMode
 import com.openclaw.assistant.VoiceWakeMode
@@ -134,7 +133,6 @@ class ConnectionManager(
         }
       }
 
-      add(OpenClawPhoneCommand.Call.rawValue)
       add(OpenClawMediaCommand.PlaySearch.rawValue)
 
       // Notifications
@@ -191,7 +189,6 @@ class ConnectionManager(
       add(OpenClawCapability.Screen.rawValue)
       add(OpenClawCapability.System.rawValue)
       add(OpenClawCapability.Bridge.rawValue)
-      add(OpenClawCapability.Phone.rawValue)
       add(OpenClawCapability.Media.rawValue)
 
       if (isNotificationListenerEnabled()) {

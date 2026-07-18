@@ -1,15 +1,16 @@
 package com.openclaw.assistant.chatgpt
 
+import android.Manifest
 import android.app.KeyguardManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
-import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import com.openclaw.assistant.R
 
 /**
@@ -53,7 +54,9 @@ object ChatGptLiveLauncher {
             // universal launcher for third-party ACTION_MAIN activities.
             context.startActivity(launchIntent)
             if (context.getSystemService(KeyguardManager::class.java).isKeyguardLocked) {
-                postFallback(context, launchIntent, locked = true)
+                if (!postFallback(context, launchIntent, locked = true)) {
+                    Log.w(TAG, "ChatGPT launched while locked, but notification permission is unavailable")
+                }
             }
             Result.LAUNCHED
         } catch (error: Exception) {
@@ -64,16 +67,24 @@ object ChatGptLiveLauncher {
     }
 
     /** Posts a user-controlled retry when Android accepted a launch but no recording appeared. */
-    fun postFallbackNotification(context: Context) {
+    fun postFallbackNotification(context: Context): Boolean {
         val launchIntent = context.packageManager.getLaunchIntentForPackage(CHATGPT_PACKAGE)
             ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             ?: Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$CHATGPT_PACKAGE"))
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         val locked = context.getSystemService(KeyguardManager::class.java).isKeyguardLocked
-        postFallback(context, launchIntent, locked)
+        return postFallback(context, launchIntent, locked)
     }
 
-    private fun postFallback(context: Context, launchIntent: Intent, locked: Boolean) {
+    private fun postFallback(context: Context, launchIntent: Intent, locked: Boolean): Boolean {
+        if (
+            android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.w(TAG, "Cannot post ChatGPT fallback: notification permission is not granted")
+            return false
+        }
         val notificationManager = context.getSystemService(NotificationManager::class.java)
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             notificationManager.createNotificationChannel(
@@ -105,8 +116,13 @@ object ChatGptLiveLauncher {
             .setAutoCancel(true)
             .build()
 
-        runCatching { notificationManager.notify(LOCKSCREEN_NOTIFICATION_ID, notification) }
-            .onFailure { Log.w(TAG, "Unable to post ChatGPT lock-screen fallback", it) }
+        return runCatching {
+            notificationManager.notify(LOCKSCREEN_NOTIFICATION_ID, notification)
+            true
+        }.getOrElse {
+            Log.w(TAG, "Unable to post ChatGPT lock-screen fallback", it)
+            false
+        }
     }
 
     private fun openStore(context: Context): Result {
@@ -118,7 +134,7 @@ object ChatGptLiveLauncher {
         return try {
             context.startActivity(marketIntent)
             Result.STORE_OPENED
-        } catch (_: ActivityNotFoundException) {
+        } catch (_: Exception) {
             try {
                 context.startActivity(
                     Intent(Intent.ACTION_VIEW, Uri.parse(PLAY_STORE_WEB_URL))

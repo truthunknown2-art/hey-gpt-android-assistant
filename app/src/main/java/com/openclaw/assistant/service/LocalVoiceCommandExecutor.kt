@@ -23,7 +23,10 @@ internal class LocalVoiceCommandExecutor(
     private val json = Json { ignoreUnknownKeys = true }
 
     sealed interface Result {
-        data class Completed(val spokenFeedback: String? = null) : Result
+        data class Completed(
+            val spokenFeedback: String? = null,
+            val waitForMicIdle: Boolean = false,
+        ) : Result
         data class Failed(val message: String) : Result
     }
 
@@ -43,7 +46,7 @@ internal class LocalVoiceCommandExecutor(
         val params = buildJsonObject { put("number", JsonPrimitive(number)) }.toString()
         val result = runtime.invokeLocalDeviceCommand(OpenClawPhoneCommand.Call.rawValue, params)
         return if (result.ok) {
-            Result.Completed()
+            Result.Completed(waitForMicIdle = true)
         } else {
             Result.Failed(result.error?.message ?: "The phone call could not be started.")
         }

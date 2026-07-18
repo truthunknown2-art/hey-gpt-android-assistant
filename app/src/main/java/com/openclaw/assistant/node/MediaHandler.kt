@@ -26,16 +26,28 @@ class MediaHandler(
       val requestedPackage = root["packageName"]?.jsonPrimitive?.content?.trim()
         ?.takeIf { it.isNotEmpty() }
         ?: SPOTIFY_PACKAGE
+      if (requestedPackage != SPOTIFY_PACKAGE) {
+        return GatewaySession.InvokeResult.error(
+          "UNSUPPORTED_MEDIA_APP",
+          "Only Spotify playback is supported",
+        )
+      }
       val packageAvailable = context.packageManager.getLaunchIntentForPackage(requestedPackage) != null
+      if (!packageAvailable) {
+        return GatewaySession.InvokeResult.error(
+          "SPOTIFY_NOT_INSTALLED",
+          "Spotify is not installed",
+        )
+      }
       val intent = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).apply {
         putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")
         putExtra(SearchManager.QUERY, query)
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        if (packageAvailable) setPackage(requestedPackage)
+        setPackage(requestedPackage)
       }
       context.startActivity(intent)
       GatewaySession.InvokeResult.ok(
-        """{"success":true,"query":${query.toJsonString()},"packageName":${if (packageAvailable) requestedPackage.toJsonString() else "null"}}"""
+        """{"success":true,"query":${query.toJsonString()},"packageName":${requestedPackage.toJsonString()}}"""
       )
     } catch (error: Throwable) {
       val (code, message) = invokeErrorFromThrowable(error)

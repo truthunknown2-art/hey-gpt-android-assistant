@@ -259,7 +259,11 @@ class NodeRuntime(context: Context) {
   suspend fun invokeLocalDeviceCommand(
     command: String,
     paramsJson: String? = null,
-  ): GatewaySession.InvokeResult = invokeDispatcher.handleInvoke(command, paramsJson)
+  ): GatewaySession.InvokeResult = invokeDispatcher.handleInvoke(
+    command,
+    paramsJson,
+    InvocationOrigin.LOCAL_VOICE,
+  )
 
   private lateinit var gatewayEventHandler: GatewayEventHandler
 

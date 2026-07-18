@@ -49,4 +49,27 @@ class ChatGptHandoffTrackerTest {
         assertFalse(tracker.onRecordingStateChanged(hasActiveRecording = true))
         assertTrue(tracker.recordingObserved)
     }
+
+    @Test
+    fun `baseline recorder is not mistaken for ChatGPT`() {
+        val tracker = ChatGptHandoffTracker()
+        tracker.arm(baselineSessions = setOf(41))
+
+        assertFalse(tracker.onRecordingSessionsChanged(setOf(41)))
+        assertFalse(tracker.recordingObserved)
+        assertFalse(tracker.onRecordingSessionsChanged(setOf(41, 52)))
+        assertTrue(tracker.recordingObserved)
+        assertFalse(tracker.onRecordingSessionsChanged(setOf(41, 52)))
+        assertTrue(tracker.onRecordingSessionsChanged(setOf(41)))
+    }
+
+    @Test
+    fun `session id reused after baseline ends is treated as new`() {
+        val tracker = ChatGptHandoffTracker()
+        tracker.arm(baselineSessions = setOf(41))
+
+        assertFalse(tracker.onRecordingSessionsChanged(emptySet()))
+        assertFalse(tracker.onRecordingSessionsChanged(setOf(41)))
+        assertTrue(tracker.recordingObserved)
+    }
 }

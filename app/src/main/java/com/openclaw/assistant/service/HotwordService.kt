@@ -58,6 +58,9 @@ class HotwordService : Service(), VoskRecognitionListener {
         private const val LOCAL_COMMAND_TIMEOUT_MS = 4_000
         private const val LOCAL_COMMAND_SILENCE_MS = 1_200L
         private const val MICROPHONE_RELEASE_TIMEOUT_MS = 3_000L
+        private const val CALL_AUDIO_START_TIMEOUT_MS = 30_000L
+        private const val CALL_AUDIO_END_TIMEOUT_MS = 2 * 60 * 60 * 1000L
+        private const val AUDIO_IDLE_DEBOUNCE_MS = 3_500L
         const val ACTION_RESUME_HOTWORD = "com.openclaw.assistant.ACTION_RESUME_HOTWORD"
         const val ACTION_PAUSE_HOTWORD = "com.openclaw.assistant.ACTION_PAUSE_HOTWORD"
         
@@ -109,6 +112,7 @@ class HotwordService : Service(), VoskRecognitionListener {
     private var chatGptMonitorJob: Job? = null
     private var chatGptIdleJob: Job? = null
     private var localCommandCaptureJob: Job? = null
+    private var postActionMicJob: Job? = null
     private var chatGptHandoffActive = false
     private val chatGptHandoffTracker = ChatGptHandoffTracker()
     private val SESSION_TIMEOUT_MS = 5 * 60 * 1000L // 5 minutes
@@ -158,7 +162,8 @@ class HotwordService : Service(), VoskRecognitionListener {
     private val recordingCallback = object : AudioManager.AudioRecordingCallback() {
         override fun onRecordingConfigChanged(configs: MutableList<android.media.AudioRecordingConfiguration>?) {
             if (!chatGptHandoffActive || !chatGptHandoffTracker.isArmed) return
-            handleExternalRecordingState(!configs.isNullOrEmpty())
+            configs ?: return
+            handleExternalRecordingState(configs.map { it.clientAudioSessionId }.toSet())
         }
     }
 
@@ -282,6 +287,7 @@ class HotwordService : Service(), VoskRecognitionListener {
         scope.cancel()
         speechService?.shutdown()
         localCommandCaptureJob?.cancel()
+        postActionMicJob?.cancel()
         runCatching {
             getSystemService(AudioManager::class.java).unregisterAudioRecordingCallback(recordingCallback)
         }
@@ -865,7 +871,11 @@ class HotwordService : Service(), VoskRecognitionListener {
         when (result) {
             is LocalVoiceCommandExecutor.Result.Completed -> {
                 result.spokenFeedback?.let { speakLocalFeedback(it) }
-                finishLocalCommand("local command completed")
+                if (result.waitForMicIdle) {
+                    beginPostActionMicWait("local call completed")
+                } else {
+                    finishLocalCommand("local command completed")
+                }
             }
             is LocalVoiceCommandExecutor.Result.Failed -> {
                 postLocalCommandNotification(result.message)
@@ -877,10 +887,50 @@ class HotwordService : Service(), VoskRecognitionListener {
 
     private fun finishLocalCommand(reason: String) {
         Log.i(TAG, "$reason; hotword_resumed")
+        postActionMicJob = null
         cancelWatchdog()
         isSessionActive = false
         isListeningForCommand = false
         resumeHotwordDetection()
+    }
+
+    /**
+     * ACTION_CALL returns as soon as the dialer accepts the intent, before the
+     * telephony stack necessarily owns the microphone. Keep Vosk stopped until
+     * call audio becomes active and later settles, or until the safety timeout.
+     */
+    private fun beginPostActionMicWait(reason: String) {
+        cancelWatchdog()
+        postActionMicJob?.cancel()
+        postActionMicJob = scope.launch {
+            val audioManager = getSystemService(AudioManager::class.java)
+            val callAudioStarted = withTimeoutOrNull(CALL_AUDIO_START_TIMEOUT_MS) {
+                while (!isCallAudioBusy(audioManager)) delay(250)
+                true
+            } ?: false
+
+            if (callAudioStarted) {
+                Log.i(TAG, "call_audio_started; wake word remains paused")
+                val endedNormally = withTimeoutOrNull(CALL_AUDIO_END_TIMEOUT_MS) {
+                    while (isCallAudioBusy(audioManager)) delay(1_000)
+                    true
+                } ?: false
+                if (!endedNormally) Log.w(TAG, "call_audio_end_timeout")
+            } else {
+                Log.i(TAG, "call_audio_not_observed; resuming after grace period")
+            }
+
+            delay(AUDIO_IDLE_DEBOUNCE_MS)
+            if (isSessionActive && !chatGptHandoffActive) {
+                finishLocalCommand("$reason; microphone idle")
+            }
+        }
+    }
+
+    private fun isCallAudioBusy(audioManager: AudioManager): Boolean {
+        val callMode = audioManager.mode == AudioManager.MODE_IN_CALL ||
+            audioManager.mode == AudioManager.MODE_IN_COMMUNICATION
+        return callMode || hasActiveRecording()
     }
 
     private suspend fun speakLocalFeedback(text: String): Boolean = withContext(Dispatchers.Main) {
@@ -971,12 +1021,16 @@ class HotwordService : Service(), VoskRecognitionListener {
         // Do not arm external-recording observation until our own recorder is
         // demonstrably gone, or it can be mistaken for ChatGPT.
         chatGptLaunchJob = scope.launch {
-            val microphoneReleased = withTimeoutOrNull(MICROPHONE_RELEASE_TIMEOUT_MS) {
-                while (hasActiveRecording()) delay(100)
-                true
-            } ?: false
+            val baselineSessions = withTimeoutOrNull(MICROPHONE_RELEASE_TIMEOUT_MS) {
+                var sessions = snapshotRecordingSessions()
+                while (sessions == null || sessions.isNotEmpty()) {
+                    delay(100)
+                    sessions = snapshotRecordingSessions()
+                }
+                sessions
+            }
             if (!chatGptHandoffActive) return@launch
-            if (!microphoneReleased) {
+            if (baselineSessions == null) {
                 Log.w(TAG, "microphone_release_timeout")
                 postLocalCommandNotification("The microphone is busy. Try Hey GPT again in a moment.")
                 finishChatGptHandoff("Microphone did not release")
@@ -985,7 +1039,7 @@ class HotwordService : Service(), VoskRecognitionListener {
 
             delay(150)
             if (!chatGptHandoffActive) return@launch
-            chatGptHandoffTracker.arm()
+            chatGptHandoffTracker.arm(baselineSessions)
             Log.i(TAG, "chatgpt_launch_requested")
 
             // Ask the system-bound VoiceInteractionService to perform the
@@ -1006,9 +1060,8 @@ class HotwordService : Service(), VoskRecognitionListener {
             chatGptGraceJob = scope.launch {
                 delay(20_000)
                 if (chatGptHandoffActive && !chatGptHandoffTracker.recordingObserved) {
-                    if (hasActiveRecording()) {
-                        handleExternalRecordingState(true)
-                    } else {
+                    snapshotRecordingSessions()?.let(::handleExternalRecordingState)
+                    if (!chatGptHandoffTracker.recordingObserved) {
                         ChatGptLiveLauncher.postFallbackNotification(this@HotwordService)
                         finishChatGptHandoff("ChatGPT did not start recording")
                     }
@@ -1017,36 +1070,41 @@ class HotwordService : Service(), VoskRecognitionListener {
             chatGptMonitorJob = scope.launch {
                 delay(500)
                 while (chatGptHandoffActive && chatGptHandoffTracker.isArmed) {
-                    handleExternalRecordingState(hasActiveRecording())
+                    snapshotRecordingSessions()?.let(::handleExternalRecordingState)
                     delay(2_000)
                 }
             }
         }
     }
 
-    private fun hasActiveRecording(): Boolean = runCatching {
+    private fun snapshotRecordingSessions(): Set<Int>? = runCatching {
         getSystemService(AudioManager::class.java)
             .activeRecordingConfigurations
-            .isNotEmpty()
+            .map { it.clientAudioSessionId }
+            .toSet()
     }.getOrElse { error ->
         Log.w(TAG, "Unable to inspect microphone ownership", error)
-        true // Fail closed: never launch another recorder when ownership is unknown.
+        null
     }
 
-    private fun handleExternalRecordingState(hasActiveRecording: Boolean) {
+    private fun hasActiveRecording(): Boolean =
+        snapshotRecordingSessions()?.isNotEmpty() ?: true
+
+    private fun handleExternalRecordingState(recordingSessions: Set<Int>) {
         val recordingWasObserved = chatGptHandoffTracker.recordingObserved
-        val shouldResume = chatGptHandoffTracker.onRecordingStateChanged(hasActiveRecording)
-        if (hasActiveRecording) {
+        val hasExternalRecording = chatGptHandoffTracker.hasExternalRecording(recordingSessions)
+        val shouldResume = chatGptHandoffTracker.onRecordingStateChanged(hasExternalRecording)
+        if (hasExternalRecording) {
             if (!recordingWasObserved) Log.i(TAG, "external_recording_started")
             chatGptIdleJob?.cancel()
             chatGptIdleJob = null
         } else if (shouldResume && chatGptIdleJob?.isActive != true) {
             Log.i(TAG, "external_recording_stopped")
             chatGptIdleJob = scope.launch {
-                delay(3_500)
-                val stillIdle = getSystemService(AudioManager::class.java)
-                    .activeRecordingConfigurations
-                    .isEmpty()
+                delay(AUDIO_IDLE_DEBOUNCE_MS)
+                val currentSessions = snapshotRecordingSessions()
+                val stillIdle = currentSessions != null &&
+                    !chatGptHandoffTracker.hasExternalRecording(currentSessions)
                 if (chatGptHandoffActive && stillIdle) {
                     finishChatGptHandoff("External microphone recording ended")
                 }
