@@ -476,8 +476,11 @@
     <string name="custom_wake_word">Custom Wake Word</string>
     <string name="custom_wake_word_hint">e.g., hey buddy</string>
     <string name="custom_wake_word_help">Enter 2-3 English words, lowercase</string>
-    <string name="wake_word_dual_desc">Each wake phrase routes to OpenClaw, Hermes Agent, or the Hey GPT path. After Hey GPT, say a phone, text, or Spotify command; silence or any other request opens the official ChatGPT Live app. Enable Start with Voice and Background Conversations in ChatGPT Voice settings.</string>
-    <string name="wake_word_chatgpt_live">ChatGPT Live (subscription)</string>
+    <string name="wake_word_dual_desc">Each wake phrase has its own route. Hey GPT opens a continuous OpenClaw conversation with memory and connected tools. OpenClaw and Hermes retain their configured session behavior.</string>
+    <string name="wake_word_chatgpt_live">Hey GPT - OpenClaw voice</string>
+    <string name="open_official_chatgpt_live">Open official ChatGPT Live</string>
+    <string name="open_official_chatgpt_live_desc">Separate consumer conversation. It does not share OpenClaw memory or tools.</string>
+    <string name="chatgpt_live_launch_failed">Could not open official ChatGPT Live.</string>
     <string name="chatgpt_handoff_channel">ChatGPT Live handoff</string>
     <string name="chatgpt_unlock_title">Unlock to continue in ChatGPT Live</string>
     <string name="chatgpt_unlock_body">Tap after unlocking if ChatGPT did not appear over the lock screen.</string>

@@ -25,8 +25,7 @@ class BootReceiver : BroadcastReceiver() {
             
             val settings = SettingsRepository.getInstance(context)
             
-            // ChatGPT Live handoff is a valid wake target even when no OpenClaw
-            // gateway or HTTP backend is configured/reachable.
+            // Start the listener so the configured Gateway can reconnect in the background.
             if (settings.hotwordEnabled && settings.hasUsableWakeTarget()) {
                 if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
                     == PackageManager.PERMISSION_GRANTED) {

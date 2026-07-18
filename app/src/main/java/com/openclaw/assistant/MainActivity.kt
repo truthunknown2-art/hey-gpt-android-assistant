@@ -347,8 +347,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     fun toggleHotwordService(enabled: Boolean) {
         if (enabled) {
-            // OpenClaw/Hermes sessions need a backend, but the ChatGPT target
-            // and deterministic local commands are deliberately phone-local.
+            // Every wake target now requires a configured assistant backend.
             val runtime = (applicationContext as OpenClawApplication).nodeRuntime
             val isConnectionConfigured = if (settings.connectionType == SettingsRepository.CONNECTION_TYPE_GATEWAY) {
                 runtime.manualHost.value.isNotBlank()
@@ -358,10 +357,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             // Also allow when any backend is configured (Hermes API server, etc.)
             val backendManager = com.openclaw.assistant.backend.BackendManager.getInstance(this)
             val hasConfiguredBackend = backendManager.chatTargets().isNotEmpty()
-            val hasChatGptTarget = settings.getWakeWordTargets().any {
-                it.target == SettingsRepository.VOICE_TARGET_CHATGPT
-            }
-            if (!isConnectionConfigured && !hasConfiguredBackend && !hasChatGptTarget) {
+            if (!isConnectionConfigured && !hasConfiguredBackend) {
                 Toast.makeText(this, getString(R.string.wakeword_requires_connection_error), Toast.LENGTH_LONG).show()
                 return
             }

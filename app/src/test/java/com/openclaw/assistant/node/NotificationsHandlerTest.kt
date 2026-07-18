@@ -7,6 +7,8 @@ import com.openclaw.assistant.gateway.GatewaySession
 import io.mockk.every
 import io.mockk.mockk
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import android.service.notification.StatusBarNotification
@@ -58,5 +60,61 @@ class NotificationsHandlerTest {
         assertEquals(true, result.ok)
         val json = result.payloadJson ?: ""
         assertEquals(true, json.contains("test_key"))
+    }
+
+    @Test
+    fun `Messenger list filters on device and exposes no action identifiers`() = runBlocking {
+        Settings.Secure.putString(
+            context.contentResolver,
+            "enabled_notification_listeners",
+            context.packageName,
+        )
+
+        val messenger = notification(
+            packageName = NotificationsHandler.MESSENGER_PACKAGE,
+            key = "private_messenger_key",
+            title = "Alex",
+            text = "Are you free later?",
+            postTime = 12345L,
+        )
+        val unrelated = notification(
+            packageName = "com.example.mail",
+            key = "private_mail_key",
+            title = "Mail sender",
+            text = "Secret mail",
+            postTime = 67890L,
+        )
+        every { notificationManager.getActiveNotifications() } returns listOf(messenger, unrelated)
+
+        val result = handler.handleMessengerList()
+        val payload = result.payloadJson.orEmpty()
+
+        assertTrue(result.ok)
+        assertTrue(payload.contains("Alex"))
+        assertTrue(payload.contains("Are you free later?"))
+        assertTrue(payload.contains("12345"))
+        assertFalse(payload.contains("Secret mail"))
+        assertFalse(payload.contains("private_messenger_key"))
+        assertFalse(payload.contains("packageName"))
+        assertFalse(payload.contains("action"))
+    }
+
+    private fun notification(
+        packageName: String,
+        key: String,
+        title: String,
+        text: String,
+        postTime: Long,
+    ): StatusBarNotification {
+        val sbn = mockk<StatusBarNotification>()
+        val notification = Notification.Builder(context, "test-channel")
+            .setContentTitle(title)
+            .setContentText(text)
+            .build()
+        every { sbn.key } returns key
+        every { sbn.packageName } returns packageName
+        every { sbn.postTime } returns postTime
+        every { sbn.notification } returns notification
+        return sbn
     }
 }

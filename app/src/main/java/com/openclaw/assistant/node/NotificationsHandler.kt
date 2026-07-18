@@ -28,13 +28,7 @@ class NotificationsHandler(
     }
 
     suspend fun handleList(): GatewaySession.InvokeResult {
-        if (!isServiceEnabled()) {
-            permissionRequester?.requestNotificationAccess()
-            return GatewaySession.InvokeResult.error(
-                code = "NOTIFICATIONS_PERMISSION_REQUIRED",
-                message = "NOTIFICATIONS_PERMISSION_REQUIRED: enable notification access in Settings > Notification Access, then try again"
-            )
-        }
+        notificationPermissionError()?.let { return it }
 
         val notifications = notificationManager.getActiveNotifications()
         val payload = buildJsonObject {
@@ -51,6 +45,55 @@ class NotificationsHandler(
             })
         }
         return GatewaySession.InvokeResult.ok(payload.toString())
+    }
+
+    /** Returns a privacy-minimized Messenger-only view for ambient voice. */
+    suspend fun handleMessengerList(): GatewaySession.InvokeResult {
+        notificationPermissionError()?.let { return it }
+
+        val payload = buildJsonObject {
+            put("notifications", buildJsonArray {
+                notificationManager.getActiveNotifications()
+                    .asSequence()
+                    .filter { it.packageName == MESSENGER_PACKAGE }
+                    .take(MAX_VOICE_NOTIFICATIONS)
+                    .forEach { sbn ->
+                        add(buildJsonObject {
+                            put(
+                                "sender",
+                                JsonPrimitive(
+                                    sbn.notification.extras
+                                        .getCharSequence("android.title")
+                                        ?.toString()
+                                        .orEmpty()
+                                        .take(MAX_NOTIFICATION_TEXT_CHARS),
+                                ),
+                            )
+                            put(
+                                "textPreview",
+                                JsonPrimitive(
+                                    sbn.notification.extras
+                                        .getCharSequence("android.text")
+                                        ?.toString()
+                                        .orEmpty()
+                                        .take(MAX_NOTIFICATION_TEXT_CHARS),
+                                ),
+                            )
+                            put("timestamp", JsonPrimitive(sbn.postTime))
+                        })
+                    }
+            })
+        }
+        return GatewaySession.InvokeResult.ok(payload.toString())
+    }
+
+    private suspend fun notificationPermissionError(): GatewaySession.InvokeResult? {
+        if (isServiceEnabled()) return null
+        permissionRequester?.requestNotificationAccess()
+        return GatewaySession.InvokeResult.error(
+            code = "NOTIFICATIONS_PERMISSION_REQUIRED",
+            message = "NOTIFICATIONS_PERMISSION_REQUIRED: enable notification access in Settings > Notification Access, then try again",
+        )
     }
 
     suspend fun handleActions(paramsJson: String?): GatewaySession.InvokeResult {
@@ -113,5 +156,11 @@ class NotificationsHandler(
             "reply" -> GatewaySession.InvokeResult.error("NOT_IMPLEMENTED", "Reply action not yet implemented")
             else -> GatewaySession.InvokeResult.error("INVALID_REQUEST", "Unsupported action: $action")
         }
+    }
+
+    companion object {
+        const val MESSENGER_PACKAGE = "com.facebook.orca"
+        private const val MAX_VOICE_NOTIFICATIONS = 20
+        private const val MAX_NOTIFICATION_TEXT_CHARS = 500
     }
 }

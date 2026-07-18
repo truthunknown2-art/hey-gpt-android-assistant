@@ -5,9 +5,9 @@ import org.junit.Test
 
 class VoiceConversationRouteTest {
     @Test
-    fun `unlocked devices always use official ChatGPT Live`() {
+    fun `unlocked devices use the main OpenClaw voice lane`() {
         assertEquals(
-            VoiceConversationRoute.CHATGPT_LIVE,
+            VoiceConversationRoute.MAIN_OPENCLAW,
             chooseVoiceConversationRoute(false, hasTranscript = true, openClawReady = true),
         )
     }
@@ -30,15 +30,5 @@ class VoiceConversationRouteTest {
             VoiceConversationRoute.UNLOCK_REQUIRED,
             chooseVoiceConversationRoute(true, hasTranscript = false, openClawReady = true),
         )
-    }
-
-    @Test
-    fun `unlocked Hey GPT wake launches Live without a second capture`() {
-        assertEquals(true, shouldLaunchChatGptImmediately(isDeviceLocked = false))
-    }
-
-    @Test
-    fun `securely locked Hey GPT wake captures an OpenClaw question`() {
-        assertEquals(false, shouldLaunchChatGptImmediately(isDeviceLocked = true))
     }
 }

@@ -117,6 +117,18 @@ class InvokeDispatcherTest {
   }
 
   @Test
+  fun `Messenger notifications use the filtered read-only handler`() = runTest {
+    val dispatcher = createDispatcher()
+    coEvery { notificationsHandler.handleMessengerList() } returns
+      GatewaySession.InvokeResult.ok("""{"notifications":[]}""")
+
+    val result = dispatcher.handleInvoke(OpenClawNotificationsCommand.ListMessenger.rawValue, null)
+
+    assertEquals(true, result.ok)
+    assertEquals("""{"notifications":[]}""", result.payloadJson)
+  }
+
+  @Test
   fun `system notify is dispatched to handler`() = runTest {
     val dispatcher = createDispatcher()
     val params = """{"message":"test"}"""

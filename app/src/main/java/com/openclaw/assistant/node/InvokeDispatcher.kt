@@ -214,6 +214,7 @@ class InvokeDispatcher(
 
       // Notifications commands
       OpenClawNotificationsCommand.List.rawValue -> notificationsHandler.handleList()
+      OpenClawNotificationsCommand.ListMessenger.rawValue -> notificationsHandler.handleMessengerList()
       OpenClawNotificationsCommand.Actions.rawValue -> notificationsHandler.handleActions(paramsJson)
 
       // System command

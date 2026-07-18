@@ -1,0 +1,36 @@
+{
+  "id": "voice-assistant-tools",
+  "name": "Voice Assistant Tools",
+  "description": "Narrow Android tools for the ambient voice agent.",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "required": [
+      "nodeId"
+    ],
+    "properties": {
+      "nodeId": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
+      }
+    },
+    "additionalProperties": false
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "android_media_play",
+      "messenger_notifications_read"
+    ]
+  },
+  "toolMetadata": {
+    "android_media_play": {
+      "optional": true
+    },
+    "messenger_notifications_read": {
+      "optional": true
+    }
+  }
+}

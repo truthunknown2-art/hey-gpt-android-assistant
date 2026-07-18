@@ -2,10 +2,11 @@ package com.openclaw.assistant.chatgpt
 
 /**
  * Chooses the conversational voice path without weakening the device lock.
- * Device actions use the separate OpenClaw/Hermes assistant route.
+ * The unlocked path uses the tool-capable voice-main agent; a secure lock can only
+ * use the isolated locked agent after a transcript has been captured.
  */
 internal enum class VoiceConversationRoute {
-    CHATGPT_LIVE,
+    MAIN_OPENCLAW,
     LOCKED_OPENCLAW,
     UNLOCK_REQUIRED,
 }
@@ -15,13 +16,7 @@ internal fun chooseVoiceConversationRoute(
     hasTranscript: Boolean,
     openClawReady: Boolean,
 ): VoiceConversationRoute = when {
-    !isDeviceLocked -> VoiceConversationRoute.CHATGPT_LIVE
+    !isDeviceLocked -> VoiceConversationRoute.MAIN_OPENCLAW
     hasTranscript && openClawReady -> VoiceConversationRoute.LOCKED_OPENCLAW
     else -> VoiceConversationRoute.UNLOCK_REQUIRED
 }
-
-/**
- * An unlocked Hey GPT wake is already an explicit request for official Live.
- * Securely locked devices still need a captured question for the OpenClaw lane.
- */
-internal fun shouldLaunchChatGptImmediately(isDeviceLocked: Boolean): Boolean = !isDeviceLocked

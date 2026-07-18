@@ -9,15 +9,23 @@ $ErrorActionPreference = "Stop"
 
 function Invoke-OpenClaw {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
-    $output = & wsl.exe -d $Distro -- openclaw @Arguments
+
+    $quotedArguments = @($Arguments | ForEach-Object {
+        "'" + $_.Replace("'", "'\''") + "'"
+    })
+    $command = "openclaw " + ($quotedArguments -join " ")
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($command))
+    $runner = "printf '%s' '$encoded' | base64 -d | bash"
+    $output = & wsl.exe -d $Distro -- bash -lc $runner
     if ($LASTEXITCODE -ne 0) {
         throw "OpenClaw command failed: openclaw $($Arguments -join ' ')"
     }
     return $output
 }
 
-$agents = (Invoke-OpenClaw agents list --json) | ConvertFrom-Json
-if (-not ($agents | Where-Object id -eq $AgentId)) {
+$parsedAgents = ((Invoke-OpenClaw agents list --json) -join "`n") | ConvertFrom-Json
+$agents = @($parsedAgents | ForEach-Object { $_ })
+if (@($agents | ForEach-Object { [string]$_.id }) -notcontains $AgentId) {
     Invoke-OpenClaw agents add $AgentId `
         --workspace "/home/openclaw/.openclaw/workspace-$AgentId" `
         --model $Model `
@@ -25,8 +33,15 @@ if (-not ($agents | Where-Object id -eq $AgentId)) {
         --json | Out-Null
 }
 
-$configuredAgents = (Invoke-OpenClaw config get agents.list) | ConvertFrom-Json
-$agentIndex = [Array]::IndexOf([string[]]$configuredAgents.id, $AgentId)
+$parsedConfiguredAgents = ((Invoke-OpenClaw config get agents.list) -join "`n") | ConvertFrom-Json
+$configuredAgents = @($parsedConfiguredAgents | ForEach-Object { $_ })
+$agentIndex = -1
+for ($index = 0; $index -lt $configuredAgents.Count; $index++) {
+    if ([string]$configuredAgents[$index].id -eq $AgentId) {
+        $agentIndex = $index
+        break
+    }
+}
 if ($agentIndex -lt 0) {
     throw "Agent '$AgentId' was created but is missing from agents.list."
 }
@@ -43,7 +58,8 @@ Invoke-OpenClaw config set "agents.list[$agentIndex].skills" '[]' --strict-json 
 Invoke-OpenClaw config validate | Out-Null
 Invoke-OpenClaw gateway restart | Out-Null
 
-$verifiedAgents = (Invoke-OpenClaw config get agents.list) | ConvertFrom-Json
+$parsedVerifiedAgents = ((Invoke-OpenClaw config get agents.list) -join "`n") | ConvertFrom-Json
+$verifiedAgents = @($parsedVerifiedAgents | ForEach-Object { $_ })
 $verifiedAgent = $verifiedAgents | Where-Object id -eq $AgentId
 if ($null -eq $verifiedAgent -or $verifiedAgent.model -ne $Model) {
     throw "Locked voice agent model verification failed. Expected '$Model'."
@@ -52,9 +68,9 @@ if ($null -eq $verifiedAgent -or $verifiedAgent.model -ne $Model) {
 # Validate the effective prompt after restart, not only the stored policy. This
 # consumes one short subscription-backed agent turn and must report zero tools.
 $policyCheckKey = "agent:${AgentId}:policy-check-$([guid]::NewGuid().ToString('N'))"
-$smoke = (Invoke-OpenClaw agent --agent $AgentId `
+$smoke = ((Invoke-OpenClaw agent --agent $AgentId `
     --session-key $policyCheckKey --timeout 60 `
-    --message "Reply with exactly: locked voice policy ready" --json) | ConvertFrom-Json
+    --message "Reply with exactly: locked voice policy ready" --json) -join "`n") | ConvertFrom-Json
 $effectiveModel = "$($smoke.result.meta.agentMeta.provider)/$($smoke.result.meta.agentMeta.model)"
 $effectiveTools = @($smoke.result.meta.systemPromptReport.tools.entries)
 if ($effectiveModel -ne $Model) {

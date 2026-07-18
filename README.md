@@ -1,9 +1,9 @@
 # WakeHermesClaw for Android 🦞
 
-> **This fork adds “Hey GPT” with an immediate, compliant handoff to the
-> official ChatGPT Live app when Android is unlocked or trusted-unlocked. A
-> securely locked phone uses a persistent, tool-free OpenClaw voice lane
-> instead of weakening the keyguard.** See [the ChatGPT Live assistant setup
+> **This fork adds “Hey GPT” as a persistent OpenClaw-owned voice conversation
+> with memory and approved phone tools. A securely locked phone uses a separate,
+> persistent, tool-free OpenClaw lane instead of weakening the keyguard. Official
+> consumer ChatGPT Live remains an explicit secondary action.** See [the voice setup
 > guide](docs/chatgpt-live-assistant.md).
 
 > **A native Android voice client for OpenClaw and Hermes Agent.**

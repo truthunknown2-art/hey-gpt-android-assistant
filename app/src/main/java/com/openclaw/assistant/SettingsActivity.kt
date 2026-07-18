@@ -50,6 +50,7 @@ import com.openclaw.assistant.backend.BackendType
 import com.openclaw.assistant.data.SettingsRepository
 import com.openclaw.assistant.service.NodeForegroundService
 import com.openclaw.assistant.service.HotwordService
+import com.openclaw.assistant.service.OpenClawAssistantService
 import com.openclaw.assistant.ui.components.CollapsibleSection
 import com.openclaw.assistant.ui.components.CredentialHintCard
 import com.openclaw.assistant.ui.components.ConnectionState
@@ -1525,6 +1526,33 @@ fun SettingsScreen(
                             wakeSound = chatGptWakeSound,
                             onWakeSoundChange = { chatGptWakeSound = it },
                             soundOptions = wakeSoundOptions
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        OutlinedButton(
+                            onClick = {
+                                runCatching {
+                                    context.startService(
+                                        Intent(context, OpenClawAssistantService::class.java).apply {
+                                            action = OpenClawAssistantService.ACTION_HANDOFF_CHATGPT
+                                        },
+                                    )
+                                }.onFailure { error ->
+                                    Log.w("SettingsActivity", "Unable to open official ChatGPT Live", error)
+                                    Toast.makeText(
+                                        context,
+                                        context.getString(R.string.chatgpt_live_launch_failed),
+                                        Toast.LENGTH_LONG,
+                                    ).show()
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(stringResource(R.string.open_official_chatgpt_live))
+                        }
+                        Text(
+                            text = stringResource(R.string.open_official_chatgpt_live_desc),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray,
                         )
 
                         HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), thickness = 0.5.dp)

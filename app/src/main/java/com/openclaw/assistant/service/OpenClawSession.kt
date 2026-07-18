@@ -1,8 +1,13 @@
 package com.openclaw.assistant.service
 
+import android.app.KeyguardManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.service.voice.VoiceInteractionSession
 import android.speech.SpeechRecognizer
@@ -44,6 +49,7 @@ import com.openclaw.assistant.R
 import com.openclaw.assistant.OpenClawApplication
 import com.openclaw.assistant.backend.VoiceBackendSelector
 import com.openclaw.assistant.data.SettingsRepository
+import com.openclaw.assistant.gateway.GatewayVoiceTurnController
 import com.openclaw.assistant.api.OpenClawClient
 import com.openclaw.assistant.speech.SpeechRecognizerManager
 import com.openclaw.assistant.speech.TTSManager
@@ -77,6 +83,8 @@ class OpenClawSession(
         private const val TAG = "OpenClawSession"
         private const val INITIAL_FILLER_DELAY_MS = 750L
         private const val INTERRUPT_LISTEN_DELAY_MS = 350L
+        private const val SECURE_LOCK_SETTLE_MS = 500L
+        private const val SECURE_LOCK_MONITOR_MS = 250L
     }
 
     private val settings = SettingsRepository.getInstance(context)
@@ -93,6 +101,26 @@ class OpenClawSession(
     private var initialFillerPhraseJob: Job? = null
     private var auxiliarySpeechJob: Job? = null
     @Volatile private var ignoreNextTtsStop = false
+    private val keyguardManager = context.getSystemService(KeyguardManager::class.java)
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val endedForSecureLock = AtomicBoolean(false)
+    private val gatewayVoiceTurns by lazy {
+        val runtime = (context.applicationContext as OpenClawApplication).nodeRuntime
+        GatewayVoiceTurnController(runtime::requestGateway)
+    }
+    private var activeGatewaySessionKey: String? = null
+    private val secureLockCheck = Runnable {
+        if (requiresUnlockedSession() && keyguardManager.isDeviceLocked) {
+            endMainVoiceForSecureLock("screen_off")
+        }
+    }
+    private val screenStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != Intent.ACTION_SCREEN_OFF || !requiresUnlockedSession()) return
+            mainHandler.removeCallbacks(secureLockCheck)
+            mainHandler.postDelayed(secureLockCheck, SECURE_LOCK_SETTLE_MS)
+        }
+    }
     private val interruptReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != "com.openclaw.assistant.ACTION_INTERRUPT_TTS") return
@@ -123,6 +151,65 @@ class OpenClawSession(
 
     private fun isOpenClawVoiceTarget(): Boolean {
         return effectiveVoiceTarget() == SettingsRepository.VOICE_TARGET_OPENCLAW
+    }
+
+    private fun isHeyGptMainProfile(): Boolean =
+        sessionArgs?.getString(OpenClawAssistantService.EXTRA_VOICE_PROFILE) ==
+            OpenClawAssistantService.VOICE_PROFILE_HEY_GPT_MAIN
+
+    private fun forcedSessionKey(): String? =
+        sessionArgs?.getString(OpenClawAssistantService.EXTRA_SESSION_KEY)
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+
+    private fun continuousModeForSession(): Boolean =
+        VoiceSessionPolicy.continuousMode(
+            forceContinuous =
+                sessionArgs?.getBoolean(OpenClawAssistantService.EXTRA_FORCE_CONTINUOUS, false) == true,
+            configuredContinuous = settings.continuousMode,
+        )
+
+    private fun requiresUnlockedSession(): Boolean =
+        sessionArgs?.getBoolean(OpenClawAssistantService.EXTRA_REQUIRE_UNLOCKED, false) == true
+
+    private fun ensureSessionUnlocked(reason: String): Boolean {
+        if (!requiresUnlockedSession() || !keyguardManager.isDeviceLocked) return true
+        endMainVoiceForSecureLock(reason)
+        return false
+    }
+
+    private fun startSecureLockMonitor() {
+        if (!requiresUnlockedSession()) return
+        scope.launch {
+            while (isActive && !endedForSecureLock.get()) {
+                delay(SECURE_LOCK_MONITOR_MS)
+                if (keyguardManager.isDeviceLocked) {
+                    endMainVoiceForSecureLock("monitor")
+                    break
+                }
+            }
+        }
+    }
+
+    private fun endMainVoiceForSecureLock(reason: String) {
+        if (!requiresUnlockedSession() || !endedForSecureLock.compareAndSet(false, true)) return
+        Log.w(TAG, "Ending tool-capable voice session after secure lock: $reason")
+        mainHandler.removeCallbacks(secureLockCheck)
+        listeningJob?.cancel()
+        speakingJob?.cancel()
+        scope.coroutineContext.cancelChildren()
+        cancelInitialFillerPhrase()
+        cancelWaitPhraseTimer()
+        stopThinkingSound()
+        stopAuxiliarySpeech()
+        runCatching { speechManager.destroy() }
+        runCatching { ttsManager.stopAll() }
+        abandonAudioFocus()
+        currentState.value = AssistantState.IDLE
+        SessionForegroundService.stop(context)
+        releaseWakeLock()
+        sendResumeBroadcast()
+        finish()
     }
 
     // WakeLock to keep CPU alive during voice conversation when screen is off
@@ -160,6 +247,12 @@ class OpenClawSession(
             interruptReceiver,
             android.content.IntentFilter("com.openclaw.assistant.ACTION_INTERRUPT_TTS"),
             androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+        androidx.core.content.ContextCompat.registerReceiver(
+            context,
+            screenStateReceiver,
+            IntentFilter(Intent.ACTION_SCREEN_OFF),
+            androidx.core.content.ContextCompat.RECEIVER_EXPORTED,
         )
     }
 
@@ -227,6 +320,9 @@ class OpenClawSession(
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
         sessionArgs = args
+        endedForSecureLock.set(false)
+        activeGatewaySessionKey = null
+        mainHandler.removeCallbacks(secureLockCheck)
 
         // Recreate scope if it was cancelled by a previous onHide()
         if (!scope.isActive) {
@@ -243,6 +339,8 @@ class OpenClawSession(
         }
         speechManager = SpeechRecognizerManager(context)
 
+        if (!ensureSessionUnlocked("on_show")) return
+
         lifecycleRegistry.handleLifecycleEvent(androidx.lifecycle.Lifecycle.Event.ON_START)
         lifecycleRegistry.handleLifecycleEvent(androidx.lifecycle.Lifecycle.Event.ON_RESUME)
 
@@ -258,13 +356,24 @@ class OpenClawSession(
         if (isOpenClawVoiceTarget()) {
             // Gateway mode: manage session on the gateway side, not in local DB
             val nodeRuntime = (context.applicationContext as OpenClawApplication).nodeRuntime
-            if (!settings.resumeLatestSession) {
+            val forcedSessionKey = forcedSessionKey()
+            val newSessionKey = java.util.UUID.randomUUID().toString()
+            val selectedSessionKey = VoiceSessionPolicy.selectGatewaySessionKey(
+                forcedSessionKey = forcedSessionKey,
+                resumeLatestSession = settings.resumeLatestSession,
+                currentSessionKey = nodeRuntime.chatSessionKey.value,
+                newSessionKey = newSessionKey,
+            )
+            activeGatewaySessionKey = selectedSessionKey
+            if (forcedSessionKey != null) {
+                // Voice turns address this session explicitly. Do not move the
+                // app's normal chat UI into the ambient voice conversation.
+            } else if (!settings.resumeLatestSession) {
                 // Start a fresh gateway session with a human-readable label
-                val newKey = java.util.UUID.randomUUID().toString()
                 val timeStr = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
                 val label = String.format(context.getString(R.string.default_session_title_format), timeStr)
-                nodeRuntime.switchChatSession(newKey)
-                scope.launch { nodeRuntime.patchChatSession(newKey, label) }
+                nodeRuntime.switchChatSession(selectedSessionKey)
+                scope.launch { nodeRuntime.patchChatSession(selectedSessionKey, label) }
             }
             // resumeLatestSession ON → keep the current active gateway session as-is
         } else {
@@ -309,6 +418,8 @@ class OpenClawSession(
             }
         }
 
+        startSecureLockMonitor()
+
         // Start speech recognition
         startListening()
     }
@@ -343,6 +454,7 @@ class OpenClawSession(
     }
 
     private fun cleanupSession() {
+        mainHandler.removeCallbacks(secureLockCheck)
         lifecycleRegistry.handleLifecycleEvent(androidx.lifecycle.Lifecycle.Event.ON_PAUSE)
         lifecycleRegistry.handleLifecycleEvent(androidx.lifecycle.Lifecycle.Event.ON_STOP)
 
@@ -376,6 +488,11 @@ class OpenClawSession(
             context.unregisterReceiver(interruptReceiver)
         } catch (_: Exception) {
         }
+        try {
+            context.unregisterReceiver(screenStateReceiver)
+        } catch (_: Exception) {
+        }
+        mainHandler.removeCallbacks(secureLockCheck)
 
         SessionForegroundService.stop(context)
         ttsManager.shutdown()
@@ -405,6 +522,7 @@ class OpenClawSession(
 
     private fun startListening(initialDelayMs: Long = 50L) {
         Log.d(TAG, "startListening() called, currentState=${currentState.value}, listeningJob=${listeningJob}, speakingJob=${speakingJob}")
+        if (!ensureSessionUnlocked("before_listening")) return
         listeningJob?.cancel()
         acquireWakeLock()
         sendPauseBroadcast()
@@ -476,6 +594,10 @@ class OpenClawSession(
                             }
                             is SpeechResult.Result -> {
                                 Log.d(TAG, "SpeechResult.Result received: text='${result.text}'")
+                                if (!ensureSessionUnlocked("recognition_result")) {
+                                    hasActuallySpoken = true
+                                    return@collectLatest
+                                }
                                 hasActuallySpoken = true
                                 userQuery.value = result.text
                                 sendToOpenClaw(result.text)
@@ -485,7 +607,7 @@ class OpenClawSession(
                                 val isTimeout = result.code == SpeechRecognizer.ERROR_SPEECH_TIMEOUT ||
                                               result.code == SpeechRecognizer.ERROR_NO_MATCH
 
-                                if (isTimeout && settings.continuousMode && elapsed < 10000) {
+                                if (isTimeout && continuousModeForSession() && elapsed < 10000) {
                                     Log.d(TAG, "Speech timeout within 10s window ($elapsed ms), retrying...")
                                 } else if (
                                     result.code == SpeechRecognizer.ERROR_RECOGNIZER_BUSY ||
@@ -557,6 +679,7 @@ class OpenClawSession(
 
     private fun sendToOpenClaw(message: String) {
         Log.d(TAG, "sendToOpenClaw() called, transitioning to THINKING")
+        if (!ensureSessionUnlocked("before_processing")) return
         currentState.value = AssistantState.THINKING
         playTone(android.media.ToneGenerator.TONE_PROP_ACK, 150)
         startThinkingSound()
@@ -568,6 +691,21 @@ class OpenClawSession(
         }
 
         scope.launch {
+            if (VoiceDispatchPolicy.selectPath(isHeyGptMainProfile()) ==
+                VoiceDispatchPath.DEDICATED_GATEWAY
+            ) {
+                if (!isOpenClawVoiceTarget()) {
+                    cancelInitialFillerPhrase()
+                    cancelWaitPhraseTimer()
+                    stopThinkingSound()
+                    currentState.value = AssistantState.ERROR
+                    errorMessage.value = context.getString(R.string.error_gateway_not_connected)
+                    return@launch
+                }
+                sendViaGateway(message)
+                return@launch
+            }
+
             val agentId = settings.defaultAgentId.takeIf { it.isNotBlank() && it != "main" }
             val voiceBackendId = resolveVoiceSessionBackendId()
             if (!isOpenClawVoiceTarget() && voiceBackendId == null) {
@@ -759,26 +897,39 @@ class OpenClawSession(
         }
 
         try {
-            val assistantCountBefore = nodeRuntime.chatMessages.value.count { it.role == "assistant" }
-
             startWaitPhraseTimer() // 待ちフレーズのタイマー開始
-
-            nodeRuntime.sendChat(
-                message = message,
-                thinking = "low",
-                attachments = emptyList(),
-                modelName = resolveOpenClawGatewayModel(),
-            )
-
-            // Wait for a new complete assistant response (timeout 60s).
-            // chatMessages only adds a message when the full response is committed,
-            // so watching it avoids both the pendingRunCount==0 early-fire issue
-            // and streaming partial-text races.
-            val responseText = withTimeoutOrNull(60_000L) {
-                nodeRuntime.chatMessages
-                    .first { messages -> messages.count { it.role == "assistant" } > assistantCountBefore }
-                    .lastOrNull { it.role == "assistant" }
-                    ?.content?.firstOrNull { it.type == "text" }?.text
+            val responseText = if (isHeyGptMainProfile()) {
+                val sessionKey = activeGatewaySessionKey
+                    ?: forcedSessionKey()
+                    ?: error("Hey GPT main session key is unavailable")
+                gatewayVoiceTurns.ask(
+                    sessionKey = sessionKey,
+                    agentId = VoiceSessionKeys.VOICE_MAIN_AGENT_ID,
+                    message = message,
+                    beforeSend = {
+                        if (!ensureSessionUnlocked("before_chat_send")) {
+                            throw CancellationException("Device became securely locked")
+                        }
+                    },
+                )
+            } else {
+                val gatewayModel = resolveOpenClawGatewayModel()
+                val assistantCountBefore =
+                    nodeRuntime.chatMessages.value.count { it.role == "assistant" }
+                nodeRuntime.sendChat(
+                    message = message,
+                    thinking = "low",
+                    attachments = emptyList(),
+                    modelName = gatewayModel,
+                )
+                withTimeoutOrNull(60_000L) {
+                    nodeRuntime.chatMessages
+                        .first { messages ->
+                            messages.count { it.role == "assistant" } > assistantCountBefore
+                        }
+                        .lastOrNull { it.role == "assistant" }
+                        ?.content?.firstOrNull { it.type == "text" }?.text
+                }
             }
 
             cancelWaitPhraseTimer()
@@ -792,6 +943,8 @@ class OpenClawSession(
                 currentState.value = AssistantState.ERROR
                 errorMessage.value = context.getString(R.string.error_no_response)
             }
+        } catch (error: CancellationException) {
+            throw error
         } catch (e: Exception) {
             Log.e(TAG, "Gateway error", e)
             cancelInitialFillerPhrase()
@@ -879,6 +1032,7 @@ class OpenClawSession(
         cancelInitialFillerPhrase()
         cancelWaitPhraseTimer()
         stopAuxiliarySpeech()
+        if (!ensureSessionUnlocked("before_response")) return
 
         // Save AI response to local DB only for HTTP mode
         if (!isOpenClawVoiceTarget()) {
@@ -890,7 +1044,7 @@ class OpenClawSession(
         if (settings.ttsEnabled) {
             // Thinking sound continues until actual audio playback starts
             speakResponse(responseText)
-        } else if (settings.continuousMode) {
+        } else if (continuousModeForSession()) {
             stopThinkingSound()
             delay(500)
             startListening()
@@ -937,6 +1091,7 @@ class OpenClawSession(
                 val chunks = TTSUtils.splitTextForTTS(cleanText, maxLen)
                 var success = chunks.isNotEmpty()
                 for (chunk in chunks) {
+                    if (!ensureSessionUnlocked("before_speech_chunk")) return@launch
                     var chunkSuccess = false
                     ttsManager.speakWithProgress(chunk).collect { state ->
                         when (state) {
@@ -980,7 +1135,7 @@ class OpenClawSession(
 
                 // 読み上げ終了時にBarge-inのために再開していたHotwordServiceを再度一時停止させる
                 // (この後すぐにlisteningに入る場合はそちらでpauseされるが念のため)
-                if (settings.ttsBargeInEnabled && !settings.continuousMode) {
+                if (settings.ttsBargeInEnabled && !continuousModeForSession()) {
                     sendPauseBroadcast()
                 }
 
@@ -990,7 +1145,7 @@ class OpenClawSession(
 
                 if (success) {
                     // After speech completion, if continuous conversation mode is enabled, start listening again
-                    if (settings.continuousMode) {
+                    if (continuousModeForSession()) {
                         Log.d(TAG, "TTS complete, continuous mode ON. Starting 2nd rally startListening() in 500ms")
                         delay(500)
                         startListening()

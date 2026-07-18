@@ -27,7 +27,7 @@ class WakeWordTargetMatcherTest {
     }
 
     @Test
-    fun `plain live phrase routes to ChatGPT`() {
+    fun `plain Hey GPT phrase selects the persistent voice profile`() {
         val live = target("hey g p t", SettingsRepository.VOICE_TARGET_CHATGPT)
         val command = target("hey g p t command", SettingsRepository.VOICE_TARGET_OPENCLAW)
 

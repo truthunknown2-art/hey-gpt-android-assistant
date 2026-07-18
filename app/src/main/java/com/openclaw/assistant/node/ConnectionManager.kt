@@ -43,6 +43,19 @@ class ConnectionManager(
   private val deviceId: () -> String?,
 ) {
   companion object {
+    internal fun assistantToolsDisplayName(configuredName: String?, deviceId: String?): String {
+      val base = configuredName
+        ?.trim()
+        ?.takeIf(String::isNotEmpty)
+        ?: deviceId?.trim()?.take(12)?.takeIf(String::isNotEmpty)
+        ?: "Android"
+      return if (base.endsWith("Assistant Tools", ignoreCase = true)) {
+        base
+      } else {
+        "$base Assistant Tools"
+      }
+    }
+
     internal fun resolveTlsParamsForEndpoint(
       endpoint: GatewayEndpoint,
       storedFingerprint: String?,
@@ -138,6 +151,7 @@ class ConnectionManager(
       // Notifications
       if (isNotificationListenerEnabled()) {
         add(OpenClawNotificationsCommand.List.rawValue)
+        add(OpenClawNotificationsCommand.ListMessenger.rawValue)
         add(OpenClawNotificationsCommand.Actions.rawValue)
       }
 
@@ -252,7 +266,7 @@ class ConnectionManager(
   fun buildClientInfo(clientId: String, clientMode: String): GatewayClientInfo {
     return GatewayClientInfo(
       id = clientId,
-      displayName = deviceId() ?: prefs.displayName.value,
+      displayName = assistantToolsDisplayName(prefs.displayName.value, deviceId()),
       version = resolvedVersionName(),
       platform = "android",
       mode = clientMode,

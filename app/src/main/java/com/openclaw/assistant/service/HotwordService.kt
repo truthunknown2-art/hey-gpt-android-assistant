@@ -36,7 +36,6 @@ import com.openclaw.assistant.chatgpt.VoiceConversationRoute
 import com.openclaw.assistant.chatgpt.chooseVoiceConversationRoute
 import com.openclaw.assistant.chatgpt.limitLockedVoiceReply
 import com.openclaw.assistant.chatgpt.localTtsTimeoutMs
-import com.openclaw.assistant.chatgpt.shouldLaunchChatGptImmediately
 import com.openclaw.assistant.speech.TTSManager
 import com.openclaw.assistant.speech.TTSUtils
 import kotlinx.coroutines.*
@@ -733,7 +732,7 @@ class HotwordService : Service(), VoskRecognitionListener {
                 pendingInterruptLaunch = false
                 isSessionActive = true
                 val isDeviceLocked = getSystemService(KeyguardManager::class.java).isDeviceLocked
-                if (shouldLaunchChatGptImmediately(isDeviceLocked)) {
+                if (!isDeviceLocked) {
                     delay(CHATGPT_WAKE_TONE_SETTLE_MS)
                     val lockedAfterTone =
                         getSystemService(KeyguardManager::class.java).isDeviceLocked
@@ -742,8 +741,8 @@ class HotwordService : Service(), VoskRecognitionListener {
                         captureLockedConversation()
                         return@launch
                     }
-                    Log.i(TAG, "chatgpt_hotword_direct_handoff")
-                    beginChatGptHandoff()
+                    Log.i(TAG, "hey_gpt_main_openclaw_session")
+                    launchHeyGptMainSession()
                 } else {
                     captureLockedConversation()
                 }
@@ -758,35 +757,49 @@ class HotwordService : Service(), VoskRecognitionListener {
                 pendingInterruptLaunch = false
                 isSessionActive = true
             }
-            val intent = Intent(this@HotwordService, OpenClawAssistantService::class.java).apply {
+            launchAssistantSession(
+                Intent(this@HotwordService, OpenClawAssistantService::class.java).apply {
+                    action = OpenClawAssistantService.ACTION_SHOW_ASSISTANT
+                    putExtra(OpenClawAssistantService.EXTRA_VOICE_TARGET, target.target)
+                },
+            )
+        }
+    }
+
+    private fun launchHeyGptMainSession() {
+        val runtime = (application as OpenClawApplication).ensureRuntime()
+        launchAssistantSession(
+            Intent(this, OpenClawAssistantService::class.java).apply {
                 action = OpenClawAssistantService.ACTION_SHOW_ASSISTANT
-                putExtra(OpenClawAssistantService.EXTRA_VOICE_TARGET, target.target)
+                putExtra(
+                    OpenClawAssistantService.EXTRA_VOICE_TARGET,
+                    SettingsRepository.VOICE_TARGET_OPENCLAW,
+                )
+                putExtra(
+                    OpenClawAssistantService.EXTRA_VOICE_PROFILE,
+                    OpenClawAssistantService.VOICE_PROFILE_HEY_GPT_MAIN,
+                )
+                putExtra(
+                    OpenClawAssistantService.EXTRA_SESSION_KEY,
+                    VoiceSessionKeys.mainVoice(runtime.deviceId),
+                )
+                putExtra(OpenClawAssistantService.EXTRA_FORCE_CONTINUOUS, true)
+                putExtra(OpenClawAssistantService.EXTRA_REQUIRE_UNLOCKED, true)
+            },
+        )
+    }
+
+    private fun launchAssistantSession(intent: Intent) {
+        try {
+            startService(intent)
+            Log.e(TAG, "startService ACTION_SHOW_ASSISTANT called")
+        } catch (error: Exception) {
+            Log.w(TAG, "Background start failed, falling back to broadcast", error)
+            val broadcastIntent = Intent(OpenClawAssistantService.ACTION_SHOW_ASSISTANT).apply {
+                setPackage(packageName)
+                intent.extras?.let(::putExtras)
             }
-            try {
-                startService(intent)
-                Log.e(TAG, "startService ACTION_SHOW_ASSISTANT called")
-            } catch (e: IllegalStateException) {
-                Log.w(TAG, "Background start failed, falling back to broadcast", e)
-                val broadcastIntent = Intent(OpenClawAssistantService.ACTION_SHOW_ASSISTANT).apply {
-                    setPackage(packageName)
-                    putExtra(OpenClawAssistantService.EXTRA_VOICE_TARGET, target.target)
-                }
-                sendBroadcast(broadcastIntent)
-            } catch (e: SecurityException) {
-                Log.w(TAG, "Background start failed, falling back to broadcast", e)
-                val broadcastIntent = Intent(OpenClawAssistantService.ACTION_SHOW_ASSISTANT).apply {
-                    setPackage(packageName)
-                    putExtra(OpenClawAssistantService.EXTRA_VOICE_TARGET, target.target)
-                }
-                sendBroadcast(broadcastIntent)
-            } catch (e: Exception) {
-                Log.w(TAG, "Background start failed, falling back to broadcast", e)
-                val broadcastIntent = Intent(OpenClawAssistantService.ACTION_SHOW_ASSISTANT).apply {
-                    setPackage(packageName)
-                    putExtra(OpenClawAssistantService.EXTRA_VOICE_TARGET, target.target)
-                }
-                sendBroadcast(broadcastIntent)
-            }
+            sendBroadcast(broadcastIntent)
         }
     }
 
@@ -927,7 +940,7 @@ class HotwordService : Service(), VoskRecognitionListener {
                 openClawReady = openClawReady,
             )
         ) {
-            VoiceConversationRoute.CHATGPT_LIVE -> beginChatGptHandoff()
+            VoiceConversationRoute.MAIN_OPENCLAW -> launchHeyGptMainSession()
             VoiceConversationRoute.LOCKED_OPENCLAW -> runLockedOpenClawConversation(runtime, transcript)
             VoiceConversationRoute.UNLOCK_REQUIRED -> {
                 Log.i(TAG, "secure_lock_fallback_unavailable")

@@ -1,187 +1,185 @@
-# Hey GPT: ChatGPT Live + secure-lock conversation
+# Hey GPT: persistent OpenClaw voice
 
-This fork adds a compliant handoff from the offline Android wake-word listener
-to the **official ChatGPT Android app**. It does not automate ChatGPT's private
-APIs, extract session credentials, or use OpenAI Platform API credits for the
-Live conversation.
+This fork makes **Hey GPT** an OpenClaw-owned voice conversation. The phone
+handles wake detection, speech recognition, and speech playback; the paired
+OpenClaw Gateway supplies the GPT agent, persistent history, read-only web tools,
+and two narrowly scoped Android tools. This path uses the Gateway's existing
+OpenAI OAuth configuration and does not enable the paid OpenAI Realtime API.
+
+The official consumer ChatGPT Live app remains available through an explicit
+button in Wake Word settings. It is a separate conversation and does not share
+OpenClaw history or node tools.
 
 ## What to say
 
-- When Android is unlocked or trusted-unlocked, say **“Hey GPT”** once. The app
-  releases the wake-word microphone and immediately opens official ChatGPT Live;
-  speak normally when Live begins listening. No throwaway second phrase is
-  required.
-- When Android is securely locked, say **“Hey GPT”**, wait for the
-  acknowledgement tone, then ask the question. The captured question goes to a
-  persistent, tool-free OpenClaw conversation on the Mini PC. Its answer uses
-  the configured TTS provider, with local Android TTS as the default.
-- Keep **“OpenClaw”** or **“Hey Hermes”** as a separate wake phrase when the
-  full agent session and Android actions are wanted instead of ChatGPT Live.
+- Unlocked or trusted-unlocked: say **Hey GPT**, then speak normally. The app
+  enters a continuous `voice-main` session. After each spoken answer it listens
+  for the next turn without another wake phrase.
+- Securely locked: say **Hey GPT**, wait for the acknowledgement tone, then ask
+  one question. The question uses a persistent, tool-free `locked-voice` agent.
+  Repeat **Hey GPT** for another locked turn.
+- **Hey Claw** and **Hey Hermes** retain their configured random/resume and
+  continuous-mode settings.
 
-The secure-lock lane is intentionally two-stage: the wake phrase and question
-must be separate utterances. One-breath commands require a shared audio ring
-buffer and are reserved for a later release. ChatGPT's consumer Live mode does
-not expose connected-app or node-tool hooks to this Android app, so the direct
-unlocked handoff does not attempt phone actions before opening Live.
+The spelling `g p t` in settings is intentional for the bundled English Vosk
+model; say it naturally as "GPT."
+
+## Why this is not consumer ChatGPT Live
+
+Android does not provide a supported way for one ordinary app to proxy another
+app's microphone and voice output as a reliable full-duplex conversation. The
+consumer ChatGPT app also does not expose its Live session, memory, or connected
+OpenClaw node tools to this app. Exact OpenAI Live audio requires the OpenAI
+Realtime Platform API and Platform billing; a ChatGPT subscription is not a
+free Realtime audio transport.
+
+The no-Realtime architecture is therefore:
+
+```text
+Vosk wake word
+  -> Android SpeechRecognizer
+  -> correlated OpenClaw Gateway chat turn
+  -> isolated voice-main agent with four approved tools
+  -> Android TTS
+  -> continuous listening
+```
+
+Local or Gateway-hosted TTS such as Kokoro/Pocket-TTS can replace Android TTS
+later without changing the agent/session architecture.
 
 ## One-time phone setup
 
-1. Install the official ChatGPT app (`com.openai.chatgpt`) from Google Play and
-   sign in to the ChatGPT account that has Live access.
-2. In ChatGPT, open **Settings -> Voice**, choose **Live**, and enable
-   **Background Conversations**. Give ChatGPT microphone and notification
-   permission. If your app version exposes **Start with Voice**, enable it as a
-   fallback.
-3. Install this fork's APK and complete its setup guide. Grant microphone and
-   notification permission. Grant device-action permissions only if they are
-   wanted on the separate OpenClaw/Hermes assistant route.
-4. In this app's wake-word settings, set ChatGPT Live to `hey g p t`. Keep a
-   separate phrase such as `hey claw` only if the full OpenClaw voice session is
-   also wanted.
-5. In Samsung **Settings -> Apps -> Choose default apps -> Digital assistant
-   app**, choose **ChatGPT**. Then enable **Hey GPT assistant trigger** under
-   **Settings -> Accessibility -> Installed apps**. This trigger is deliberately
-   least-privilege: it cannot read screen content and exposes only the standard
-   Android Home/corner assistant gesture, not general app-control commands.
-6. Enable wake-word detection in this app, allow background activity, set
-   battery use to Unrestricted, and exclude it from Sleeping apps.
-7. Gateway pairing is optional for unlocked ChatGPT Live, but
-   required for conversational answers while the phone remains securely locked.
-   Pair the app to OpenClaw using the setup code in the Mini PC section below.
+1. Install the APK and complete Gateway pairing.
+2. Grant microphone and notification permission.
+3. Enable notification-listener access if notification reading is wanted.
+4. Contacts, SMS, location, calendar, camera, and accessibility are not required
+   by the `voice-main` tool policy.
+5. Set the Hey GPT wake phrase to `hey g p t` and enable wake-word detection.
+6. On Samsung, allow background activity, set battery use to Unrestricted, and
+   exclude the app from Sleeping apps.
 
-The spelling `g p t` is intentional for the bundled English Vosk model; say it
-naturally as “GPT.”
+The official ChatGPT app and its assistant/accessibility trigger are optional.
+Use **Open official ChatGPT Live** in Wake Word settings when a separate
+consumer Live conversation is specifically wanted.
 
-## Mini PC gateway setup
+## Gateway setup
 
-The phone and Mini PC must be on the same private LAN for the configuration
-below. OpenClaw can also use a secure `wss://` endpoint through Tailscale Serve
-for remote use.
+The phone and Gateway must share a private network path, normally LAN or
+Tailscale. Generate and scan a mobile setup code:
 
-1. Allow only the non-transactional Android commands wanted from the Gateway.
-   Phone calls intentionally remain local-only and must not appear in this list:
+```powershell
+wsl.exe -d OpenClawGateway -- openclaw qr --public-url ws://WINDOWS_LAN_IP:18789
+```
 
-   ```json5
-   {
-     gateway: {
-       nodes: {
-         allowCommands: [
-           "media.play_search",
-           "sms.read_latest",
-           "sms.read_unread"
-         ]
-       }
-     }
-   }
-   ```
+Treat the setup code like a password. For a WSL LAN deployment, refresh the
+Windows-to-WSL forwarding rule after a networking reset:
 
-2. Make the WSL gateway listen beyond loopback and restart it:
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\configure-openclaw-wsl-port.ps1
+```
 
-   ```powershell
-   wsl.exe -d OpenClawGateway -- openclaw config set gateway.bind lan
-   wsl.exe -d OpenClawGateway -- openclaw gateway restart
-   ```
+For a non-loopback Gateway, set `gateway.controlUi.allowedOrigins` to the exact
+LAN and tailnet URLs used to open the dashboard, and configure
+`gateway.auth.rateLimit`. Do not enable Host-header origin fallback. Confirm the
+result with `openclaw security audit --deep`.
 
-3. From an elevated PowerShell window, create the private-LAN Windows-to-WSL
-   forwarding rule:
+Build and install this fork before configuring the voice agents. The custom
+Android node must be connected and advertise both `media.play_search` and
+`notifications.list_package`; the configuration script fails closed otherwise.
 
-   ```powershell
-   powershell.exe -ExecutionPolicy Bypass -File .\scripts\configure-openclaw-wsl-port.ps1
-   ```
+Create the curated unlocked voice agent and the secure-lock agent once:
 
-   WSL's private address can change after a networking reset. Rerun the script
-   if the phone stops reaching the Gateway after a reboot.
+```powershell
+.\scripts\configure-voice-main-agent.ps1
+.\scripts\configure-locked-voice-agent.ps1
+```
 
-4. Generate a mobile setup code using the Windows LAN address, then scan or
-   paste it in the app:
+The `voice-main` agent has exactly four tools: `web_search`, `web_fetch`,
+`android_media_play`, and `messenger_notifications_read`. The Android wrappers
+are bound to one configured node ID and own the command and package selection;
+the model cannot choose an arbitrary node command, notification action, or app.
+The agent cannot access generic browser, node, memory, shell/runtime, filesystem,
+messaging, Gateway administration, scheduling, or cross-session tools.
 
-   ```powershell
-   wsl.exe -d OpenClawGateway -- openclaw qr --public-url ws://WINDOWS_LAN_IP:18789
-   ```
+The locked agent must retain an empty effective tool list. It cannot browse,
+execute shell commands, read private stores, send messages, or invoke Android
+actions.
 
-   Treat the setup code like a password; do not post it in issues or logs.
+## Sessions and turn correlation
 
-5. Create the isolated locked-voice agent. It uses the Mini PC's existing OpenAI
-   OAuth/subscription authentication, a stable per-device conversation, and an
-   empty effective tool list:
+Unlocked Hey GPT derives a stable key from the app's durable device identity:
 
-   ```powershell
-   .\scripts\configure-locked-voice-agent.ps1
-   ```
+```text
+agent:voice-main:voice-android-<sanitized-device-id>
+```
 
-   The locked lane therefore cannot execute shell commands, browse, change
-   files, send messages, or remotely invoke Android actions.
+The key overrides `resumeLatestSession` only for this voice profile and does not
+switch the app's normal chat session. The route is always continuous; other wake
+targets retain their configured behavior.
 
-## Separate device-action route
+Each turn performs a baseline `chat.history`, sends a unique idempotency key,
+records the server `runId`, and accepts only the assistant mirror correlated to
+that exact prompt. Timeout or cancellation aborts that exact run. This prevents
+old history, bounded history, another client, or a delayed run from being spoken
+as the current answer.
 
-`Hey GPT` never executes device actions. Use the separate OpenClaw/Hermes wake
-route for approved agent tools and Android actions. The Android node declares
-these additions after the matching permission is available:
+## Android tools
 
-- `media.play_search` with `{ "query": "song or artist", "packageName":
-  "com.spotify.music" }`. The package is optional and defaults to Spotify.
-- `sms.read_latest` and `sms.read_unread`, using the existing SMS handler and
-  Android `READ_SMS` permission.
+The unlocked `voice-main` agent does not receive OpenClaw's generic `nodes` tool.
+It receives two optional plugin tools that fail closed against one configured,
+connected Android node:
 
-`phone.call` remains unavailable to remote agent sessions. A future on-device
-confirmation flow is required before a separate assistant route can safely
-place calls.
+- `android_media_play` invokes only `media.play_search` with Spotify fixed as
+  the package. The model supplies only a song, artist, album, or playlist query.
+- `messenger_notifications_read` invokes only `notifications.list_package`.
+  Android filters to `com.facebook.orca` before returning sender, a bounded text
+  preview, and timestamp. Notification keys, package names, and actions never
+  reach the model.
 
-## Lock-screen behavior and limits
+Read-only web requests use `web_search` and `web_fetch`. Hosted search is
+pinned to OpenClaw's managed `codex` provider and its bounded hosted-search
+worker, using the existing OpenAI/Codex authentication; there is no generic
+browser control in the unlocked voice policy.
 
-- On the tested current ChatGPT Android build, its voice-interaction service
-  reports `supportsLaunchFromKeyguard=false`. There is no standards-compliant
-  intent, gesture, or accessibility action that overrides that service contract.
-- When Android reports `KeyguardManager.isDeviceLocked == true`, the captured
-  question immediately uses the isolated OpenClaw locked-voice agent. The answer
-  uses configured TTS, not official ChatGPT Live audio. A distinct second tone
-  marks this locked lane. Repeating **Hey GPT** starts the next turn in the same
-  persistent context. Each reply is correlated to the exact `chat.send` turn
-  using OpenClaw's stable mirror identity; stale history is never spoken. A
-  locked turn is capped at 60 seconds and its exact server run is aborted on
-  timeout or cancellation. A three-minute maximum partial wake lock covers the
-  secure-lock route and TTS so the CPU cannot suspend mid-answer; it is released
-  in every exit path.
-- When the device is unlocked or trusted-unlocked, the wake listener uses Android's public
-  global Assist action to invoke ChatGPT as the selected digital assistant. It
-  does not wait for a second captured utterance, name private ChatGPT activities,
-  or inspect/automate ChatGPT's UI.
-- Automatic local TTS prefers Google Speech Services when it is installed, then
-  ranks installed voices by exact locale, declared quality, and natural network
-  voice availability. An explicit TTS engine selected in Settings still wins.
-- Local Android TTS requires no additional account. Cloud TTS providers are
-  explicit opt-ins, require their own API credentials, and send response text to
-  that provider.
-- If the locked OpenClaw connection is unavailable, the app says so immediately
-  and posts an **Unlock to continue in ChatGPT Live** notification.
-- Samsung Smart Lock / Extend Unlock can make `isDeviceLocked` false with the
-  screen off. In that state the app wakes the display, asks Android to dismiss
-  the already-trusted keyguard, and invokes official ChatGPT Live. Treat this as
-  an optional convenience/security tradeoff and prefer a trusted watch or
-  headset over a place or on-body rule. It never bypasses PIN or biometric auth.
-- ChatGPT's Background Conversations setting can keep a full-app voice session
-  alive while locked, but it does not grant secure-keyguard launch permission.
-- The wake listener releases Vosk before opening ChatGPT. It watches Android
-  recording session IDs and resumes after the new external recording has been
-  quiet for 3.5 seconds. A 20-second startup grace prevents a failed sign-in,
-  missing assistant selection, or disabled trigger from leaving wake detection
-  paused forever.
-- A cold-boot “Hey GPT” depends on Samsung allowing the foreground wake service
-  to restart. Battery optimization and Sleeping apps settings therefore matter.
+Notification access is not a Messenger inbox API. It can answer questions such
+as "What is the latest active Messenger notification from Sam?" only while that
+notification is still available. A durable message history would require a
+separate approved integration.
+
+Windows Phone Link does not automatically become an OpenClaw tool. It can remain
+a manual convenience; automating it would require a separately connected
+Windows node or a narrowly scoped desktop capability.
+
+`phone.call` remains unavailable to remote agent sessions until an explicit
+on-device confirmation flow exists.
+
+## Lock transition policy
+
+The unlocked `voice-main` agent has tools, so its session is valid only while
+`KeyguardManager.isDeviceLocked == false`. The app checks before listening,
+after final recognition, immediately before `chat.send`, before each TTS chunk,
+after screen-off settling, and with an active-session monitor.
+
+If a secure lock appears, the app discards captured speech, cancels listening
+and TTS, aborts an in-flight correlated Gateway run, stops the foreground voice
+session, releases its wake lock, and resumes hotword detection. It never forwards
+that speech into the locked agent because doing so would change both context and
+authorization policy.
+
+Trusted-unlocked screen-off remains valid while Android reports the device as
+not securely locked. A later transition to secure lock terminates the main lane.
 
 ## Acceptance checklist
 
-- Unlocked: “Hey GPT” opens ChatGPT directly into Live voice.
-- Securely locked, Gateway online: “Hey GPT” → question receives a spoken
-  OpenClaw answer, and another “Hey GPT” continues the same context.
-- Securely locked, Gateway offline: the phone immediately asks for unlock and
-  shows the ChatGPT notification; there is no 20-second dead wait.
-- End the Live session: offline wake-word listening returns within a few seconds.
-- “Hey GPT” never calls, texts, or runs Android commands. Use the separate
-  OpenClaw/Hermes voice session for agent tools and device actions.
-- Reboot the phone: the wake service remains enabled and survives Samsung power management.
-- Stop Wi-Fi: the unlocked Live route still opens ChatGPT; the securely locked
-  OpenClaw conversation correctly reports that its Gateway is unavailable.
+- Unlocked Hey GPT opens the OpenClaw overlay, not the ChatGPT app.
+- A second turn without another wake phrase retains the first turn's context.
+- A later Hey GPT wake on the same installation reuses the same main voice key.
+- "Play a Spotify song" reaches the node advertising `media.play_search`.
+- An active Messenger notification can be read when notification access is on.
+- Securely locked Hey GPT uses only `agent:locked-voice:*` and cannot call tools.
+- Locking during listening, request processing, or TTS ends the main session.
+- The explicit Live button opens the official ChatGPT app exactly once.
+- Closing a session releases the mic and resumes wake-word detection.
 
 ## Build and smoke test
 
@@ -191,7 +189,3 @@ $env:FIREBASE_ENABLED = 'false'
 & 'C:\Program Files\Git\bin\bash.exe' -lc `
   "./gradlew :app:testStandardDebugUnitTest :app:assembleStandardDebug --no-daemon --max-workers=1"
 ```
-
-The debug-only `ChatGptHandoffProbeActivity` exercises the public Android Assist
-handoff and Play Store/launcher fallbacks without relying on a private ChatGPT
-activity name.
