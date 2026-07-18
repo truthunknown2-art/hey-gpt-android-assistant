@@ -34,6 +34,8 @@ import com.openclaw.assistant.chatgpt.ChatGptLiveLauncher
 import com.openclaw.assistant.chatgpt.LockedConversationController
 import com.openclaw.assistant.chatgpt.VoiceConversationRoute
 import com.openclaw.assistant.chatgpt.chooseVoiceConversationRoute
+import com.openclaw.assistant.chatgpt.limitLockedVoiceReply
+import com.openclaw.assistant.chatgpt.localTtsTimeoutMs
 import com.openclaw.assistant.speech.TTSUtils
 import kotlinx.coroutines.*
 import org.vosk.Model
@@ -784,8 +786,8 @@ class HotwordService : Service(), VoskRecognitionListener {
             delay(220) // Keep the acknowledgement tone out of command audio.
             val currentModel = model
             if (currentModel == null) {
-                Log.w(TAG, "Local command model unavailable; continuing to ChatGPT")
-                beginChatGptHandoff()
+                Log.w(TAG, "Local command model unavailable; using lock-aware fallback")
+                handleCapturedLocalCommand("")
                 return@launch
             }
 
@@ -845,7 +847,7 @@ class HotwordService : Service(), VoskRecognitionListener {
                 }
             } catch (error: Exception) {
                 Log.w(TAG, "Unable to start offline local-command capture", error)
-                beginChatGptHandoff()
+                handleCapturedLocalCommand("")
             }
         }
     }
@@ -862,7 +864,7 @@ class HotwordService : Service(), VoskRecognitionListener {
     }
 
     private suspend fun handleCapturedLocalCommand(transcript: String) {
-        Log.i(TAG, "local_command_transcript=${transcript.take(80)}")
+        Log.i(TAG, "local_command_captured length=${transcript.length}")
         val command = LocalVoiceCommandParser.parse(transcript)
         if (command == null) {
             routeConversation(transcript)
@@ -904,6 +906,14 @@ class HotwordService : Service(), VoskRecognitionListener {
             return
         }
 
+        if (transcript.isBlank()) {
+            Log.i(TAG, "secure_lock_blank_capture")
+            ChatGptLiveLauncher.postFallbackNotification(this)
+            speakLocalFeedback(getString(R.string.locked_conversation_unlock_required))
+            finishLocalCommand("Secure-lock capture unavailable")
+            return
+        }
+
         val runtime = (application as OpenClawApplication).ensureRuntime()
         val openClawReady =
             (runtime.isConnected.value && !runtime.isOperatorOffline.value) ||
@@ -936,10 +946,11 @@ class HotwordService : Service(), VoskRecognitionListener {
     ) {
         Log.i(TAG, "secure_lock_openclaw_started")
         playLockedConversationSound()
-        val response = runCatching {
-            LockedConversationController(runtime::requestGateway)
-                .ask(runtime.deviceId, transcript)
-        }.getOrElse { error ->
+        val response = try {
+            LockedConversationController(runtime::requestGateway).ask(runtime.deviceId, transcript)
+        } catch (error: kotlinx.coroutines.CancellationException) {
+            throw error
+        } catch (error: Exception) {
             Log.w(TAG, "secure_lock_openclaw_request_failed", error)
             null
         }
@@ -955,7 +966,7 @@ class HotwordService : Service(), VoskRecognitionListener {
             return
         }
 
-        val speechText = TTSUtils.stripMarkdownForSpeech(response)
+        val speechText = limitLockedVoiceReply(TTSUtils.stripMarkdownForSpeech(response))
             .take(TextToSpeech.getMaxSpeechInputLength() - 100)
         Log.i(TAG, "secure_lock_openclaw_response_received")
         speakLocalFeedback(speechText)
@@ -1050,7 +1061,7 @@ class HotwordService : Service(), VoskRecognitionListener {
             }
         }
         try {
-            withTimeoutOrNull(15_000) { done.await() } ?: false
+            withTimeoutOrNull(localTtsTimeoutMs(text)) { done.await() } ?: false
         } finally {
             runCatching { engine?.stop() }
             runCatching { engine?.shutdown() }

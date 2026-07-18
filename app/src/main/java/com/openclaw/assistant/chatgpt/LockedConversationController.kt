@@ -1,7 +1,11 @@
 package com.openclaw.assistant.chatgpt
 
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -23,41 +27,79 @@ internal class LockedConversationController(
             put("sessionKey", JsonPrimitive(sessionKey))
             put("agentId", JsonPrimitive(AGENT_ID))
         }.toString()
-        val repliesBefore = runCatching {
-            parseAssistantReplies(requestGateway("chat.history", historyParams, REQUEST_TIMEOUT_MS))
-        }.getOrDefault(emptyList())
 
-        val voicePrompt = buildString {
-            append("[Locked voice mode: answer in plain conversational text, without markdown, ")
-            append("in at most 80 words. Do not use tools or expose sensitive stored information.]\n")
-            append(message.trim())
-        }
-        val sendParams = buildJsonObject {
-            put("sessionKey", JsonPrimitive(sessionKey))
-            put("agentId", JsonPrimitive(AGENT_ID))
-            put("message", JsonPrimitive(voicePrompt))
-            put("thinking", JsonPrimitive("low"))
-            put("timeoutMs", JsonPrimitive(REQUEST_TIMEOUT_MS))
-            put("idempotencyKey", JsonPrimitive(UUID.randomUUID().toString()))
-        }.toString()
-        requestGateway("chat.send", sendParams, SEND_TIMEOUT_MS)
+        var serverRunId: String? = null
+        return try {
+            val result: String? = withTimeoutOrNull(LOCKED_TURN_TIMEOUT_MS) {
+                // If the baseline cannot be read, fail closed: accepting the
+                // first later assistant message could speak a stale answer.
+                parseConversationMessages(
+                    requestGateway("chat.history", historyParams, REQUEST_TIMEOUT_MS),
+                )
 
-        repeat(MAX_POLLS) {
-            pollDelay(POLL_INTERVAL_MS)
-            val replies = runCatching {
-                parseAssistantReplies(requestGateway("chat.history", historyParams, REQUEST_TIMEOUT_MS))
-            }.getOrDefault(emptyList())
-            if (replies.size > repliesBefore.size) return replies.last()
+                val requestId = UUID.randomUUID().toString()
+                val voicePrompt = buildString {
+                    append("[Locked voice mode: answer in plain conversational text, without markdown, ")
+                    append("in at most 80 words. Do not use tools or expose sensitive stored information.]\n")
+                    append(message.trim())
+                }
+                val sendParams = buildJsonObject {
+                    put("sessionKey", JsonPrimitive(sessionKey))
+                    put("agentId", JsonPrimitive(AGENT_ID))
+                    put("message", JsonPrimitive(voicePrompt))
+                    put("thinking", JsonPrimitive("low"))
+                    put("timeoutMs", JsonPrimitive(REQUEST_TIMEOUT_MS))
+                    put("idempotencyKey", JsonPrimitive(requestId))
+                }.toString()
+                val sendResult = requestGateway("chat.send", sendParams, SEND_TIMEOUT_MS)
+                serverRunId = parseRunId(sendResult)
+                    ?: error("chat.send did not return a runId")
+
+                var correlatedReply: String? = null
+                do {
+                    pollDelay(POLL_INTERVAL_MS)
+                    val historyJson = try {
+                        requestGateway("chat.history", historyParams, REQUEST_TIMEOUT_MS)
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (_: Exception) {
+                        continue
+                    }
+                    correlatedReply = findReplyForRequest(historyJson, requestId)
+                } while (correlatedReply == null)
+                correlatedReply
+            }
+            if (result == null) abortRun(sessionKey, serverRunId)
+            result
+        } catch (error: CancellationException) {
+            abortRun(sessionKey, serverRunId)
+            throw error
         }
-        return null
+    }
+
+    private suspend fun abortRun(sessionKey: String, runId: String?) {
+        if (runId.isNullOrBlank()) return
+        withContext(NonCancellable) {
+            runCatching {
+                requestGateway(
+                    "chat.abort",
+                    buildJsonObject {
+                        put("sessionKey", JsonPrimitive(sessionKey))
+                        put("runId", JsonPrimitive(runId))
+                    }.toString(),
+                    ABORT_TIMEOUT_MS,
+                )
+            }
+        }
     }
 
     companion object {
         internal const val AGENT_ID = "locked-voice"
         private const val REQUEST_TIMEOUT_MS = 15_000L
         private const val SEND_TIMEOUT_MS = 35_000L
+        private const val ABORT_TIMEOUT_MS = 5_000L
+        internal const val LOCKED_TURN_TIMEOUT_MS = 60_000L
         private const val POLL_INTERVAL_MS = 750L
-        private const val MAX_POLLS = 120
 
         internal fun lockedVoiceSessionKey(deviceId: String?): String {
             val safeDeviceId = deviceId
@@ -69,23 +111,68 @@ internal class LockedConversationController(
             return "agent:$AGENT_ID:voice-locked-$safeDeviceId"
         }
 
-        internal fun parseAssistantReplies(historyJson: String): List<String> = runCatching {
-            val root = Json.parseToJsonElement(historyJson) as? JsonObject ?: return@runCatching emptyList()
-            val messages = root["messages"] as? JsonArray ?: return@runCatching emptyList()
-            messages.mapNotNull { item ->
+        internal data class ConversationMessage(
+            val role: String,
+            val text: String?,
+            val mirrorIdentity: String?,
+            val idempotencyKey: String?,
+        )
+
+        internal fun parseAssistantReplies(historyJson: String): List<String> =
+            parseConversationMessages(historyJson)
+                .filter { it.role == "assistant" }
+                .mapNotNull(ConversationMessage::text)
+
+        internal fun findReplyForRequest(historyJson: String, requestId: String): String? {
+            val messages = parseConversationMessages(historyJson)
+            val prompt = messages.lastOrNull { message ->
+                message.role == "user" && message.idempotencyKey == "$requestId:user"
+            } ?: return null
+            val turnIdentity = prompt.mirrorIdentity
+                ?.takeIf { it.endsWith(":prompt") }
+                ?.removeSuffix(":prompt")
+                ?: return null
+            return messages.firstOrNull { message ->
+                message.role == "assistant" &&
+                    message.mirrorIdentity == "$turnIdentity:assistant" &&
+                    !message.text.isNullOrBlank()
+            }?.text
+        }
+
+        internal fun parseConversationMessages(historyJson: String): List<ConversationMessage> {
+            val root = Json.parseToJsonElement(historyJson) as? JsonObject
+                ?: error("chat.history did not return an object")
+            val messages = root["messages"] as? JsonArray
+                ?: error("chat.history did not return messages")
+            return messages.mapNotNull { item ->
                 val message = item as? JsonObject ?: return@mapNotNull null
-                if ((message["role"] as? JsonPrimitive)?.content != "assistant") return@mapNotNull null
-                when (val content = message["content"]) {
+                val role = (message["role"] as? JsonPrimitive)?.content ?: return@mapNotNull null
+                val text = when (val content = message["content"]) {
                     is JsonPrimitive -> content.content.trim().ifBlank { null }
                     is JsonArray -> content.asSequence()
                         .mapNotNull { it as? JsonObject }
-                        .firstNotNullOfOrNull { part ->
-                            if ((part["type"] as? JsonPrimitive)?.content != "text") return@firstNotNullOfOrNull null
-                            (part["text"] as? JsonPrimitive)?.content?.trim()?.ifBlank { null }
-                        }
+                        .filter { (it["type"] as? JsonPrimitive)?.content == "text" }
+                        .mapNotNull { (it["text"] as? JsonPrimitive)?.content?.trim()?.ifBlank { null } }
+                        .joinToString(" ")
+                        .trim()
+                        .ifBlank { null }
                     else -> null
                 }
+                val metadata = message["__openclaw"] as? JsonObject
+                ConversationMessage(
+                    role = role,
+                    text = text,
+                    mirrorIdentity = (metadata?.get("mirrorIdentity") as? JsonPrimitive)?.content,
+                    idempotencyKey =
+                        (message["idempotencyKey"] as? JsonPrimitive)?.content
+                            ?: (metadata?.get("idempotencyKey") as? JsonPrimitive)?.content,
+                )
             }
-        }.getOrDefault(emptyList())
+        }
+
+        internal fun parseRunId(sendResultJson: String): String? = runCatching {
+            val root = Json.parseToJsonElement(sendResultJson) as? JsonObject
+            (root?.get("runId") as? JsonPrimitive)?.content?.trim()?.ifBlank { null }
+        }.getOrNull()
     }
 }

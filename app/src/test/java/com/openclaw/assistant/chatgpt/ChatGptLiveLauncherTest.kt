@@ -23,4 +23,36 @@ class ChatGptLiveLauncherTest {
         )
         assertFalse(ChatGptLiveLauncher.isChatGptAssistantComponent(null))
     }
+
+    @Test
+    fun `trusted keyguard or sleeping display uses wake handoff`() {
+        assertTrue(
+            ChatGptLiveLauncher.needsTrustedKeyguardHandoff(
+                isDeviceLocked = false,
+                isKeyguardLocked = true,
+                isInteractive = false,
+            ),
+        )
+        assertTrue(
+            ChatGptLiveLauncher.needsTrustedKeyguardHandoff(
+                isDeviceLocked = false,
+                isKeyguardLocked = false,
+                isInteractive = false,
+            ),
+        )
+        assertFalse(
+            ChatGptLiveLauncher.needsTrustedKeyguardHandoff(
+                isDeviceLocked = true,
+                isKeyguardLocked = true,
+                isInteractive = false,
+            ),
+        )
+        assertFalse(
+            ChatGptLiveLauncher.needsTrustedKeyguardHandoff(
+                isDeviceLocked = false,
+                isKeyguardLocked = false,
+                isInteractive = true,
+            ),
+        )
+    }
 }

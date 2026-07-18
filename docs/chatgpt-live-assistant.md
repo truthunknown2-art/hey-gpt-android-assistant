@@ -138,15 +138,20 @@ proceeds only when it resolves to one distinct number, then invokes
   question immediately uses the isolated OpenClaw locked-voice agent. The answer
   is Android TTS, not official ChatGPT Live audio. A distinct second tone marks
   this locked lane. Repeating **Hey GPT** starts the next turn in the same
-  persistent context.
+  persistent context. Each reply is correlated to the exact `chat.send` turn
+  using OpenClaw's stable mirror identity; stale history is never spoken. A
+  locked turn is capped at 60 seconds and its exact server run is aborted on
+  timeout or cancellation.
 - When the device is unlocked or trusted-unlocked, the wake listener uses Android's public
   global Assist action to invoke ChatGPT as the selected digital assistant. It
   does not name private ChatGPT activities or inspect/automate ChatGPT's UI.
 - If the locked OpenClaw connection is unavailable, the app says so immediately
   and posts an **Unlock to continue in ChatGPT Live** notification.
 - Samsung Smart Lock / Extend Unlock can make `isDeviceLocked` false with the
-  screen off. Treat this as an optional convenience/security tradeoff and prefer
-  a trusted watch or headset over a place or on-body rule.
+  screen off. In that state the app wakes the display, asks Android to dismiss
+  the already-trusted keyguard, and invokes official ChatGPT Live. Treat this as
+  an optional convenience/security tradeoff and prefer a trusted watch or
+  headset over a place or on-body rule. It never bypasses PIN or biometric auth.
 - ChatGPT's Background Conversations setting can keep a full-app voice session
   alive while locked, but it does not grant secure-keyguard launch permission.
 - The wake listener releases Vosk before opening ChatGPT. It watches Android

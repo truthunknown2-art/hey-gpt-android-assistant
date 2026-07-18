@@ -8,6 +8,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -59,6 +60,30 @@ object ChatGptLiveLauncher {
         // global action through our least-privilege accessibility service. This
         // starts Voice without naming or automating a private ChatGPT activity.
         if (isChatGptDefaultAssistant(context)) {
+            val isInteractive = context.getSystemService(PowerManager::class.java).isInteractive
+            if (
+                needsTrustedKeyguardHandoff(
+                    isDeviceLocked = keyguardManager.isDeviceLocked,
+                    isKeyguardLocked = keyguardManager.isKeyguardLocked,
+                    isInteractive = isInteractive,
+                )
+            ) {
+                return runCatching {
+                    context.startActivity(
+                        Intent(context, TrustedKeyguardHandoffActivity::class.java).addFlags(
+                            Intent.FLAG_ACTIVITY_NEW_TASK or
+                                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                                Intent.FLAG_ACTIVITY_SINGLE_TOP,
+                        ),
+                    )
+                    Log.i(TAG, "Waking trusted keyguard before ChatGPT assistant handoff")
+                    Result.LAUNCHED
+                }.getOrElse { error ->
+                    Log.e(TAG, "Unable to start trusted-keyguard handoff", error)
+                    postFallback(context, launchIntent, locked = false)
+                    Result.FAILED
+                }
+            }
             if (AssistTriggerAccessibilityService.triggerSystemAssistant()) {
                 Log.i(TAG, "ChatGPT invoked through Android's assistant role")
                 return Result.LAUNCHED
@@ -109,6 +134,12 @@ object ChatGptLiveLauncher {
 
     internal fun isChatGptAssistantComponent(component: String?): Boolean =
         component?.startsWith("$CHATGPT_PACKAGE/") == true
+
+    internal fun needsTrustedKeyguardHandoff(
+        isDeviceLocked: Boolean,
+        isKeyguardLocked: Boolean,
+        isInteractive: Boolean,
+    ): Boolean = !isDeviceLocked && (isKeyguardLocked || !isInteractive)
 
     /** Posts a user-controlled retry when Android accepted a launch but no recording appeared. */
     fun postFallbackNotification(context: Context): Boolean {

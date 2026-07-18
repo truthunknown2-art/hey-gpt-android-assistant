@@ -117,6 +117,19 @@
             </intent-filter>
         </activity>
 
+        <!-- Wakes and dismisses only an already-trusted/non-secure keyguard
+             before invoking the user's selected Android assistant. It cannot
+             dismiss a PIN/biometric-secured keyguard. -->
+        <activity
+            android:name="com.openclaw.assistant.chatgpt.TrustedKeyguardHandoffActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:finishOnTaskLaunch="true"
+            android:noHistory="true"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:theme="@style/Theme.OpenClawAssistant.Transparent" />
+
         <!-- Settings Activity -->
         <activity
             android:name="com.openclaw.assistant.SettingsActivity"
