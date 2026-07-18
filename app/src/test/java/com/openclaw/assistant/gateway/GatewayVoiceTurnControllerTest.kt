@@ -99,6 +99,43 @@ class GatewayVoiceTurnControllerTest {
         val abort = calls.single { it.first == "chat.abort" }.second
         assertTrue(abort.contains("server-run-cancel"))
         assertTrue(abort.contains("agent:voice-main:voice-android-device"))
+        assertTrue(abort.contains("\"agentId\":\"voice-main\""))
+    }
+
+    @Test
+    fun `cancellation before send acknowledgement aborts the dedicated session`() = runTest {
+        val sendAttempted = CompletableDeferred<Unit>()
+        val calls = mutableListOf<Pair<String, String>>()
+        val controller = GatewayVoiceTurnController(
+            requestGateway = { method, params, _ ->
+                calls += method to params
+                when (method) {
+                    "chat.history" -> """{"messages":[]}"""
+                    "chat.send" -> {
+                        sendAttempted.complete(Unit)
+                        awaitCancellation()
+                    }
+                    "chat.abort" -> """{"ok":true}"""
+                    else -> error("Unexpected method $method")
+                }
+            },
+            pollDelay = {},
+        )
+
+        val job = launch {
+            controller.ask(
+                sessionKey = "agent:voice-main:voice-android-device",
+                agentId = "voice-main",
+                message = "Question",
+            )
+        }
+        sendAttempted.await()
+        job.cancelAndJoin()
+
+        val abort = calls.single { it.first == "chat.abort" }.second
+        assertTrue(abort.contains("\"sessionKey\":\"agent:voice-main:voice-android-device\""))
+        assertTrue(abort.contains("\"agentId\":\"voice-main\""))
+        assertFalse(abort.contains("\"runId\""))
     }
 
     @Test

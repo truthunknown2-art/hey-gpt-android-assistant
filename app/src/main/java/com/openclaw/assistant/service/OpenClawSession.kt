@@ -507,9 +507,13 @@ class OpenClawSession(
         context.sendBroadcast(intent)
     }
     
-    private fun sendResumeBroadcast() {
+    private fun sendResumeBroadcast(existingSessionCanClaimInterrupt: Boolean = false) {
         val intent = Intent("com.openclaw.assistant.ACTION_RESUME_HOTWORD")
         intent.setPackage(context.packageName)
+        intent.putExtra(
+            HotwordService.EXTRA_EXISTING_SESSION_CAN_CLAIM_INTERRUPT,
+            existingSessionCanClaimInterrupt,
+        )
         context.sendBroadcast(intent)
     }
 
@@ -1105,7 +1109,7 @@ class OpenClawSession(
                                 currentState.value = AssistantState.SPEAKING
                                 // Barge-inが有効な場合、読み上げ開始時にHotwordServiceを再開する
                                 if (settings.ttsBargeInEnabled) {
-                                    sendResumeBroadcast()
+                                    sendResumeBroadcast(existingSessionCanClaimInterrupt = true)
                                 }
                             }
                             is TTSState.Done -> {

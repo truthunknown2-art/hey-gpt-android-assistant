@@ -69,8 +69,13 @@ class HotwordService : Service(), VoskRecognitionListener {
         private const val LOCKED_TURN_WAKE_LOCK_TIMEOUT_MS = 3 * 60 * 1000L
         private const val HOTWORD_RESUME_SETTLE_MS = 500L
         private const val AUDIO_IDLE_DEBOUNCE_MS = 3_500L
+        private const val INTERRUPT_CLAIM_WAIT_MS = 350L
         const val ACTION_RESUME_HOTWORD = "com.openclaw.assistant.ACTION_RESUME_HOTWORD"
         const val ACTION_PAUSE_HOTWORD = "com.openclaw.assistant.ACTION_PAUSE_HOTWORD"
+        const val EXTRA_EXISTING_SESSION_CAN_CLAIM_INTERRUPT =
+            "com.openclaw.assistant.EXTRA_EXISTING_SESSION_CAN_CLAIM_INTERRUPT"
+        const val ACTION_REQUEST_CHATGPT_HANDOFF =
+            "com.openclaw.assistant.ACTION_REQUEST_CHATGPT_HANDOFF"
         
         fun start(context: Context) {
             val intent = Intent(context, HotwordService::class.java)
@@ -113,6 +118,26 @@ class HotwordService : Service(), VoskRecognitionListener {
             if (settleDelayMs > 0) delay(settleDelayMs)
             if (shouldRestart()) restart()
         }
+
+        internal suspend fun waitForExistingSessionClaim(
+            isBargeInCandidate: Boolean,
+            waitForClaim: suspend () -> Unit,
+            isLaunchPending: () -> Boolean,
+        ): Boolean {
+            if (!isBargeInCandidate) return true
+            waitForClaim()
+            return isLaunchPending()
+        }
+
+        internal fun shouldInitializeVosk(startAction: String?): Boolean =
+            startAction != ACTION_REQUEST_CHATGPT_HANDOFF
+
+        internal fun isBargeInCandidate(
+            isSessionActive: Boolean,
+            existingSessionCanClaimInterrupt: Boolean,
+            ttsBargeInEnabled: Boolean,
+        ): Boolean =
+            ttsBargeInEnabled && (isSessionActive || existingSessionCanClaimInterrupt)
     }
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -126,6 +151,7 @@ class HotwordService : Service(), VoskRecognitionListener {
     @Volatile private var isListeningForCommand = false
     @Volatile private var isSessionActive = false
     @Volatile private var pendingInterruptLaunch = false
+    @Volatile private var existingSessionCanClaimInterrupt = false
     private var audioRetryCount = 0
     private val MAX_AUDIO_RETRIES = 5
     private var watchdogJob: Job? = null
@@ -151,6 +177,7 @@ class HotwordService : Service(), VoskRecognitionListener {
                     Log.d(TAG, "Pause signal received")
                     debugLog("Session started — hotword paused")
                     pendingInterruptLaunch = false
+                    existingSessionCanClaimInterrupt = false
                     isSessionActive = true
                     speechService?.stop()
                     speechService?.shutdown()
@@ -163,6 +190,10 @@ class HotwordService : Service(), VoskRecognitionListener {
                     debugLog("Session ended — resuming hotword")
                     cancelWatchdog()
                     pendingInterruptLaunch = false
+                    existingSessionCanClaimInterrupt = intent.getBooleanExtra(
+                        EXTRA_EXISTING_SESSION_CAN_CLAIM_INTERRUPT,
+                        false,
+                    )
                     // Reset both flags to ensure clean state
                     isSessionActive = false
                     isListeningForCommand = false
@@ -279,6 +310,11 @@ class HotwordService : Service(), VoskRecognitionListener {
             Log.e(TAG, "Failed to start foreground service", e)
             stopSelf()
             return START_NOT_STICKY
+        }
+
+        if (!shouldInitializeVosk(intent?.action)) {
+            beginChatGptHandoff()
+            return if (settings.hotwordEnabled) START_STICKY else START_NOT_STICKY
         }
 
         initVosk()
@@ -702,6 +738,12 @@ class HotwordService : Service(), VoskRecognitionListener {
 
     private fun onHotwordDetected(target: SettingsRepository.WakeWordTarget) {
         if (isListeningForCommand || (isSessionActive && !settings.ttsBargeInEnabled)) return
+        val bargeInCandidate = isBargeInCandidate(
+            isSessionActive = isSessionActive,
+            existingSessionCanClaimInterrupt = existingSessionCanClaimInterrupt,
+            ttsBargeInEnabled = settings.ttsBargeInEnabled,
+        )
+        existingSessionCanClaimInterrupt = false
         isListeningForCommand = true
         startWatchdog()
 
@@ -709,10 +751,10 @@ class HotwordService : Service(), VoskRecognitionListener {
         playWakeSound(target.wakeSound)
 
         // Broadcast to interrupt ongoing TTS (Barge-in)
+        pendingInterruptLaunch = true
         val interruptIntent = Intent("com.openclaw.assistant.ACTION_INTERRUPT_TTS")
         interruptIntent.setPackage(packageName)
         sendBroadcast(interruptIntent)
-        pendingInterruptLaunch = true
 
         // Stop service on Main thread to avoid race conditions
         scope.launch {
@@ -727,10 +769,20 @@ class HotwordService : Service(), VoskRecognitionListener {
             }
             speechService = null
 
+            if (!waitForExistingSessionClaim(
+                    isBargeInCandidate = bargeInCandidate,
+                    waitForClaim = { delay(INTERRUPT_CLAIM_WAIT_MS) },
+                    isLaunchPending = { pendingInterruptLaunch },
+                )
+            ) {
+                Log.d(TAG, "Barge-in handled by existing session")
+                return@launch
+            }
+            pendingInterruptLaunch = false
+            isSessionActive = true
+
             val isChatGptHandoff = target.target == SettingsRepository.VOICE_TARGET_CHATGPT
             if (isChatGptHandoff) {
-                pendingInterruptLaunch = false
-                isSessionActive = true
                 val isDeviceLocked = getSystemService(KeyguardManager::class.java).isDeviceLocked
                 if (!isDeviceLocked) {
                     delay(CHATGPT_WAKE_TONE_SETTLE_MS)
@@ -747,15 +799,6 @@ class HotwordService : Service(), VoskRecognitionListener {
                     captureLockedConversation()
                 }
                 return@launch
-            } else {
-                delay(350) // Give an existing session a moment to claim the interrupt
-
-                if (!pendingInterruptLaunch) {
-                    Log.d(TAG, "Barge-in handled by existing session")
-                    return@launch
-                }
-                pendingInterruptLaunch = false
-                isSessionActive = true
             }
             launchAssistantSession(
                 Intent(this@HotwordService, OpenClawAssistantService::class.java).apply {
@@ -1210,7 +1253,17 @@ class HotwordService : Service(), VoskRecognitionListener {
         chatGptHandoffActive = false
         isSessionActive = false
         isListeningForCommand = false
-        resumeHotwordDetection()
+        if (settings.hotwordEnabled) {
+            resumeHotwordDetection()
+        } else {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+            stopSelf()
+        }
     }
 
     private fun startWatchdog() {

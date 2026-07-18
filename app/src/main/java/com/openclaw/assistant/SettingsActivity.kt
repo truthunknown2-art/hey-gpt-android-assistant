@@ -50,7 +50,6 @@ import com.openclaw.assistant.backend.BackendType
 import com.openclaw.assistant.data.SettingsRepository
 import com.openclaw.assistant.service.NodeForegroundService
 import com.openclaw.assistant.service.HotwordService
-import com.openclaw.assistant.service.OpenClawAssistantService
 import com.openclaw.assistant.ui.components.CollapsibleSection
 import com.openclaw.assistant.ui.components.CredentialHintCard
 import com.openclaw.assistant.ui.components.ConnectionState
@@ -1531,9 +1530,10 @@ fun SettingsScreen(
                         OutlinedButton(
                             onClick = {
                                 runCatching {
-                                    context.startService(
-                                        Intent(context, OpenClawAssistantService::class.java).apply {
-                                            action = OpenClawAssistantService.ACTION_HANDOFF_CHATGPT
+                                    androidx.core.content.ContextCompat.startForegroundService(
+                                        context,
+                                        Intent(context, HotwordService::class.java).apply {
+                                            action = HotwordService.ACTION_REQUEST_CHATGPT_HANDOFF
                                         },
                                     )
                                 }.onFailure { error ->

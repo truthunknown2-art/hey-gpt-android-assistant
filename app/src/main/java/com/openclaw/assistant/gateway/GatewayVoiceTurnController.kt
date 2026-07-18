@@ -40,6 +40,7 @@ internal class GatewayVoiceTurnController(
         }.toString()
 
         var serverRunId: String? = null
+        var sendAttempted = false
         try {
             val result = withTimeoutOrNull(timeoutMs) {
                 // Fail closed if a baseline cannot be read. Otherwise a stale
@@ -64,6 +65,7 @@ internal class GatewayVoiceTurnController(
                 }.toString()
 
                 beforeSend()
+                sendAttempted = true
                 val sendResult = requestGateway("chat.send", sendParams, SEND_TIMEOUT_MS)
                 serverRunId = parseRunId(sendResult)
                     ?: error("chat.send did not return a runId")
@@ -82,23 +84,28 @@ internal class GatewayVoiceTurnController(
                 } while (correlatedReply == null)
                 correlatedReply
             }
-            if (result == null) abortRun(sessionKey, serverRunId)
+            if (result == null && sendAttempted) abortRun(sessionKey, agentId, serverRunId)
             result
         } catch (error: CancellationException) {
-            abortRun(sessionKey, serverRunId)
+            if (sendAttempted) abortRun(sessionKey, agentId, serverRunId)
+            throw error
+        } catch (error: Exception) {
+            if (sendAttempted) abortRun(sessionKey, agentId, serverRunId)
             throw error
         }
     }
 
-    private suspend fun abortRun(sessionKey: String, runId: String?) {
-        if (runId.isNullOrBlank()) return
+    private suspend fun abortRun(sessionKey: String, agentId: String, runId: String?) {
         withContext(NonCancellable) {
             runCatching {
                 requestGateway(
                     "chat.abort",
                     buildJsonObject {
                         put("sessionKey", JsonPrimitive(sessionKey))
-                        put("runId", JsonPrimitive(runId))
+                        put("agentId", JsonPrimitive(agentId))
+                        runId?.takeIf(String::isNotBlank)?.let {
+                            put("runId", JsonPrimitive(it))
+                        }
                     }.toString(),
                     ABORT_TIMEOUT_MS,
                 )

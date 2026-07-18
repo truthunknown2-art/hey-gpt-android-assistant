@@ -241,7 +241,6 @@ fun SetupGuideScreen(
     val configuredBackends by backendRepository.backends.collectAsState()
 
     var currentStep by rememberSaveable { mutableStateOf(SetupStep.Welcome) }
-    var chatGptOnlySetup by rememberSaveable { mutableStateOf(false) }
 
     // UI State for Connection step
     var connectionMode by rememberSaveable { mutableStateOf(ConnectionMode.Hermes) }
@@ -334,12 +333,7 @@ fun SetupGuideScreen(
                     onAuthTokenChange = { authToken = it },
                     onManualPasswordChange = { manualPassword = it },
                     configuredBackendCount = configuredBackends.size,
-                    onSkipForChatGpt = {
-                        chatGptOnlySetup = true
-                        currentStep = SetupStep.Permissions
-                    },
                     onNext = {
-                        chatGptOnlySetup = false
                         if (connectionMode == ConnectionMode.Hermes) {
                             currentStep = SetupStep.Permissions
                             return@ConnectionStep
@@ -436,15 +430,11 @@ fun SetupGuideScreen(
                         settings.hasCompletedSetup = true
                         onComplete()
                     }
-                    if (chatGptOnlySetup) {
-                        ChatGptOnlyFinalStep(onFinish = finishSetup)
-                    } else {
-                        FinalCheckStep(
-                            settings = settings,
-                            isHermesSetup = connectionMode == ConnectionMode.Hermes,
-                            onFinish = finishSetup
-                        )
-                    }
+                    FinalCheckStep(
+                        settings = settings,
+                        isHermesSetup = connectionMode == ConnectionMode.Hermes,
+                        onFinish = finishSetup
+                    )
                 }
             }
         }
@@ -529,7 +519,6 @@ private fun ConnectionStep(
     onAuthTokenChange: (String) -> Unit,
     onManualPasswordChange: (String) -> Unit,
     configuredBackendCount: Int,
-    onSkipForChatGpt: () -> Unit,
     onNext: () -> Unit
 ) {
     val context = LocalContext.current
@@ -749,15 +738,6 @@ private fun ConnectionStep(
                 color = if (configuredBackendCount > 0 || pairingStatus != null) MaterialTheme.colorScheme.primary else OnboardingTextSecondary,
                 modifier = Modifier.padding(top = 8.dp, bottom = 8.dp)
             )
-            OutlinedButton(
-                onClick = onSkipForChatGpt,
-                modifier = Modifier.fillMaxWidth().height(52.dp),
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = OnboardingGradientMid),
-                border = androidx.compose.foundation.BorderStroke(1.dp, OnboardingGradientMid),
-            ) {
-                Text(stringResource(R.string.setup_guide_chatgpt_only))
-            }
         } else {
             Spacer(modifier = Modifier.height(16.dp))
         }
@@ -789,49 +769,6 @@ private fun ConnectionStep(
             )
         }
     } // end of Column(fillMaxSize)
-}
-
-@Composable
-private fun ChatGptOnlyFinalStep(onFinish: () -> Unit) {
-    Column(
-        modifier = Modifier.fillMaxSize(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Column(
-            modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Icon(
-                imageVector = Icons.Default.CheckCircle,
-                contentDescription = null,
-                modifier = Modifier.size(72.dp),
-                tint = OnboardingGradientMid,
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-            Text(
-                text = stringResource(R.string.setup_guide_chatgpt_ready_title),
-                style = MaterialTheme.typography.headlineSmall,
-                color = OnboardingTextPrimary,
-                fontWeight = FontWeight.Bold,
-                textAlign = TextAlign.Center,
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-            Text(
-                text = stringResource(R.string.setup_guide_chatgpt_ready_desc),
-                style = MaterialTheme.typography.bodyMedium,
-                color = OnboardingTextSecondary,
-                textAlign = TextAlign.Center,
-            )
-        }
-        Button(
-            onClick = onFinish,
-            modifier = Modifier.fillMaxWidth().height(56.dp),
-            shape = RoundedCornerShape(16.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = OnboardingGradientMid),
-        ) {
-            Text(stringResource(R.string.setup_guide_finish), fontSize = 18.sp)
-        }
-    }
 }
 
 @Composable

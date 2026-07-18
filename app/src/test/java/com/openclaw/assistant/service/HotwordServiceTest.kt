@@ -36,6 +36,65 @@ class HotwordServiceTest {
     }
 
     @Test
+    fun heyGptBargeIn_claimedByExistingSession_doesNotLaunchSecondSession() = runTest {
+        val events = mutableListOf<String>()
+        var launchPending = true
+
+        val shouldLaunch = HotwordService.waitForExistingSessionClaim(
+            isBargeInCandidate = true,
+            waitForClaim = {
+                events += "existing_session_interrupted"
+                launchPending = false
+            },
+            isLaunchPending = { launchPending },
+        )
+        if (shouldLaunch) events += "show_second_session"
+
+        assertFalse(shouldLaunch)
+        assertEquals(listOf("existing_session_interrupted"), events)
+    }
+
+    @Test
+    fun ordinaryWake_withoutActiveSession_launchesImmediately() = runTest {
+        var waited = false
+
+        val shouldLaunch = HotwordService.waitForExistingSessionClaim(
+            isBargeInCandidate = false,
+            waitForClaim = { waited = true },
+            isLaunchPending = { false },
+        )
+
+        assertTrue(shouldLaunch)
+        assertFalse(waited)
+    }
+
+    @Test
+    fun chatGptHandoffStartAction_doesNotInitializeVoskRecorder() {
+        assertFalse(
+            HotwordService.shouldInitializeVosk(HotwordService.ACTION_REQUEST_CHATGPT_HANDOFF),
+        )
+        assertTrue(HotwordService.shouldInitializeVosk(startAction = null))
+    }
+
+    @Test
+    fun ttsResumeMarker_isRecognizedAsBargeInCandidate() {
+        assertTrue(
+            HotwordService.isBargeInCandidate(
+                isSessionActive = false,
+                existingSessionCanClaimInterrupt = true,
+                ttsBargeInEnabled = true,
+            ),
+        )
+        assertFalse(
+            HotwordService.isBargeInCandidate(
+                isSessionActive = false,
+                existingSessionCanClaimInterrupt = true,
+                ttsBargeInEnabled = false,
+            ),
+        )
+    }
+
+    @Test
     fun shouldCopyModel_returnsFalse_whenVersionsMatchAndDirValid() {
         val currentVersion = 10
         val savedVersion = 10

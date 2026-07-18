@@ -1,5 +1,12 @@
 package com.openclaw.assistant.gateway
 
+import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -16,7 +23,48 @@ import org.junit.Test
  *  - [GatewaySession.resolveInvokeResultAckTimeoutMs]
  *  - [GatewaySession.normalizeCanvasHostUrl]
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 class GatewaySessionUrlTest {
+    @Test
+    fun `pending RPC entry is removed when caller is cancelled`() = runTest {
+        val deferred = CompletableDeferred<String>()
+        val pending = ConcurrentHashMap<String, CompletableDeferred<String>>()
+        pending["request-id"] = deferred
+
+        val job = launch {
+            GatewaySession.sendAndAwaitPendingRpc(
+                id = "request-id",
+                deferred = deferred,
+                pendingRequests = pending,
+                timeoutMs = 60_000L,
+                sendRequest = {},
+            )
+        }
+        runCurrent()
+        job.cancelAndJoin()
+
+        assertTrue(pending.isEmpty())
+    }
+
+    @Test
+    fun `pending RPC entry is removed when frame transmission fails`() = runTest {
+        val deferred = CompletableDeferred<String>()
+        val pending = ConcurrentHashMap<String, CompletableDeferred<String>>()
+        pending["request-id"] = deferred
+
+        runCatching {
+            GatewaySession.sendAndAwaitPendingRpc(
+                id = "request-id",
+                deferred = deferred,
+                pendingRequests = pending,
+                timeoutMs = 60_000L,
+                sendRequest = { error("send failed") },
+            )
+        }
+
+        assertTrue(pending.isEmpty())
+    }
+
 
     // ---------------------------------------------------------------------------
     // Helpers
