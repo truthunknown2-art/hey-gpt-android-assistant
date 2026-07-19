@@ -1,8 +1,10 @@
 import path from "node:path";
 import { BrokerLedger } from "./ledger.js";
 import { ExplicitMemoryStore } from "./memory.js";
+import { BrokerSigningIdentityV1 } from "./signing-identity-v1.js";
 
 let ledger = null;
+let signingIdentity = null;
 const memoryStores = new Map();
 
 const MEMORY_TOOL_NAMES = ["assistant_memory_remember", "assistant_memory_forget"];
@@ -80,12 +82,15 @@ export function registerBroker(api) {
   api.registerService({
     id: "assistant-capability-broker",
     start: async (ctx) => {
-      ledger = new BrokerLedger(path.join(ctx.stateDir, "assistant-capability-broker"));
+      const brokerStateDir = path.join(ctx.stateDir, "assistant-capability-broker");
+      signingIdentity = new BrokerSigningIdentityV1(brokerStateDir);
+      ledger = new BrokerLedger(brokerStateDir);
     },
     stop: async () => {
       closeMemoryStores();
       ledger?.close();
       ledger = null;
+      signingIdentity = null;
     },
   });
   api.registerGatewayMethod(
@@ -96,6 +101,17 @@ export function registerBroker(api) {
         return;
       }
       respond(true, ledger.status(modelToolsRegistered));
+    },
+    { scope: "operator.read" },
+  );
+  api.registerGatewayMethod(
+    "assistant.broker.publicKey",
+    async ({ respond }) => {
+      if (!signingIdentity) {
+        respond(false, { error: "broker_not_running" });
+        return;
+      }
+      respond(true, signingIdentity.publicDescriptor());
     },
     { scope: "operator.read" },
   );

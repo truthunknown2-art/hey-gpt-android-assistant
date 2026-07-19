@@ -1,11 +1,22 @@
 package com.openclaw.assistant.broker
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PresenceLeaseManagerTest {
+    @Test
+    fun `current returns only the single live lease`() {
+        val fixture = Fixture()
+        val lease = fixture.manager.issue("session-a", "device-a")
+
+        assertEquals(lease, fixture.manager.current())
+        fixture.manager.revoke(lease.leaseId)
+        assertNull(fixture.manager.current())
+    }
+
     @Test
     fun `lease is bound to the exact session and device`() {
         val fixture = Fixture()

@@ -61,13 +61,23 @@ internal class AssistantCapabilityExecutorV1(
     private val nowEpochMs: () -> Long = System::currentTimeMillis,
     private val newReceiptId: () -> String = { UUID.randomUUID().toString() },
 ) {
+    fun validate(
+        signed: SignedAssistantProposalV1,
+        expectedDeviceId: String,
+        expectedVoiceSessionKey: String,
+    ): ProposalValidationV1 = validator.validate(
+        signed = signed,
+        expectedDeviceId = expectedDeviceId,
+        expectedVoiceSessionKey = expectedVoiceSessionKey,
+    )
+
     fun execute(
         signed: SignedAssistantProposalV1,
         expectedDeviceId: String,
         expectedVoiceSessionKey: String,
     ): AssistantExecutionOutcomeV1 {
         val startedAtMs = safeNow()
-        return when (val validation = validator.validate(
+        return when (val validation = validate(
             signed = signed,
             expectedDeviceId = expectedDeviceId,
             expectedVoiceSessionKey = expectedVoiceSessionKey,

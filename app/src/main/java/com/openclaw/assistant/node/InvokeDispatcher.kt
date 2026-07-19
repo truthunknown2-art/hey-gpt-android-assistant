@@ -24,7 +24,7 @@ import com.openclaw.assistant.protocol.OpenClawMediaCommand
 
 enum class InvocationOrigin { GATEWAY, LOCAL_VOICE }
 
-class InvokeDispatcher(
+internal class InvokeDispatcher(
   private val canvas: CanvasController,
   private val cameraHandler: CameraHandler,
   private val locationHandler: LocationHandler,
@@ -50,6 +50,7 @@ class InvokeDispatcher(
   private val isForeground: () -> Boolean,
   private val cameraEnabled: () -> Boolean,
   private val locationEnabled: () -> Boolean,
+  private val assistantHandler: () -> AssistantNodeCommandHandlerV1? = { null },
 ) {
   suspend fun handleInvoke(
     command: String,
@@ -272,6 +273,11 @@ class InvokeDispatcher(
       OpenClawBridgeCommand.Grants.rawValue -> mobileBridgeHandler.handleGrants()
       OpenClawBridgeCommand.Revoke.rawValue -> mobileBridgeHandler.handleRevoke(paramsJson)
 
+      AssistantNodeCommandHandlerV1.PRESENCE_COMMAND -> assistantHandler()?.handlePresence()
+        ?: assistantExecutorDisabled()
+      AssistantNodeCommandHandlerV1.EXECUTE_COMMAND -> assistantHandler()?.handleExecute(paramsJson)
+        ?: assistantExecutorDisabled()
+
       // Debug commands
       "debug.ed25519" -> debugHandler.handleEd25519()
       "debug.logs" -> debugHandler.handleLogs()
@@ -286,4 +292,9 @@ class InvokeDispatcher(
         )
     }
   }
+
+  private fun assistantExecutorDisabled(): GatewaySession.InvokeResult = GatewaySession.InvokeResult.error(
+    code = "ASSISTANT_EXECUTOR_DISABLED",
+    message = "The signed assistant executor is not provisioned",
+  )
 }

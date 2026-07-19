@@ -246,4 +246,14 @@ class InvokeDispatcherTest {
 
     assertEquals(true, result.ok)
   }
+
+  @Test
+  fun `signed assistant commands fail closed while executor is unprovisioned`() = runTest {
+    val dispatcher = createDispatcher()
+
+    val result = dispatcher.handleInvoke(AssistantNodeCommandHandlerV1.EXECUTE_COMMAND, "{}")
+
+    assertEquals(false, result.ok)
+    assertEquals("ASSISTANT_EXECUTOR_DISABLED", result.error?.code)
+  }
 }

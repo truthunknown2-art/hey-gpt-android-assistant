@@ -8,6 +8,8 @@ import android.os.PowerManager
 import android.util.Log
 import com.openclaw.assistant.OpenClawApplication
 import com.openclaw.assistant.R
+import com.openclaw.assistant.broker.AssistantPrivateReadGrants
+import com.openclaw.assistant.broker.AssistantPrivateReadApprovals
 import com.openclaw.assistant.broker.AssistantPresenceLeases
 import com.openclaw.assistant.broker.PresenceLease
 import com.openclaw.assistant.broker.PresenceLeaseValidation
@@ -102,6 +104,8 @@ internal class AmbientVoiceSession(
             finish(if (keyguardManager.isDeviceLocked) "secure_lock" else "gateway_unavailable")
             return false
         }
+        AssistantPrivateReadApprovals.registry.revokeSession(sessionKey, targetDeviceId)
+        AssistantPrivateReadGrants.manager.revokeSession(sessionKey, targetDeviceId)
         presenceLease = AssistantPresenceLeases.manager.issue(sessionKey, targetDeviceId)
 
         acquireWakeLock()
@@ -304,6 +308,8 @@ internal class AmbientVoiceSession(
 
     private fun finish(reason: String) {
         if (!active.get() || !finishing.compareAndSet(false, true)) return
+        AssistantPrivateReadApprovals.registry.revokeSession(sessionKey, targetDeviceId)
+        AssistantPrivateReadGrants.manager.revokeSession(sessionKey, targetDeviceId)
         presenceLease?.let { AssistantPresenceLeases.manager.revoke(it.leaseId) }
         presenceLease = null
         val capturedSessionJob = sessionJob

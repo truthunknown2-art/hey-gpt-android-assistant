@@ -234,6 +234,9 @@ raw filesystem tool. Memory rules:
 - sensitive memory writes require an exact on-device confirmation;
 - raw SMS, Messenger, contacts, calendar notes, and PC content are not stored
   automatically;
+- standard OpenClaw tool results are persistent model/log surfaces, so raw
+  private fields remain executor-local and use opaque references or local
+  rendering/speech rather than tool `content` or `details`;
 - credentials, tokens, payment data, and security answers are never stored;
 - forget removes the source entry and index result, then returns a receipt;
 - locked voice cannot search or write main durable memory;
@@ -391,4 +394,3 @@ memory/receipt disaster recovery.
 2. Define contract v1, presence lease, broker ledger, and receipt schema.
 3. Refactor Mobile Bridge behind the shared executor without widening tools.
 4. Implement the read-only meeting-brief slice before adding side effects.
-

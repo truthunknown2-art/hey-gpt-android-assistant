@@ -199,6 +199,14 @@
             android:excludeFromRecents="true"
             android:theme="@style/Theme.OpenClawAssistant" />
         <activity
+            android:name="com.openclaw.assistant.broker.AssistantPrivateReadApprovalActivityV1"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:label="@string/assistant_private_read_title"
+            android:launchMode="singleTask"
+            android:showWhenLocked="false"
+            android:theme="@style/Theme.OpenClawAssistant" />
+        <activity
             android:name="com.openclaw.assistant.bridge.pairing.BridgePairingActivity"
             android:exported="false"
             android:theme="@style/Theme.OpenClawAssistant" />

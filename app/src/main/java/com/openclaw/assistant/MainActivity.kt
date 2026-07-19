@@ -70,6 +70,7 @@ import com.openclaw.assistant.data.SettingsRepository
 import com.openclaw.assistant.service.HotwordService
 import com.openclaw.assistant.service.NodeForegroundService
 import com.openclaw.assistant.service.OpenClawAssistantService
+import com.openclaw.assistant.ui.AssistantBrokerTrustDialog
 import com.openclaw.assistant.ui.GatewayTrustDialog
 import com.openclaw.assistant.speech.TTSUtils
 import com.openclaw.assistant.speech.diagnostics.DiagnosticStatus
@@ -665,6 +666,7 @@ fun MainScreen(
     val deviceId = runtime.deviceId
     val displayName by runtime.displayName.collectAsState()
     val pendingGatewayTrust by runtime.pendingGatewayTrust.collectAsState()
+    val pendingAssistantBrokerTrust by runtime.pendingAssistantBrokerTrust.collectAsState()
 
     val wakeWordDebugEnabled by remember { derivedStateOf { settings.wakeWordDebugEnabled } }
     val hotwordDebugLogs by com.openclaw.assistant.service.HotwordDebugLogger.logs.collectAsState()
@@ -747,6 +749,13 @@ fun MainScreen(
                     prompt = pendingGatewayTrust!!,
                     onAccept = { runtime.acceptGatewayTrustPrompt() },
                     onDecline = { runtime.declineGatewayTrustPrompt() }
+                )
+            }
+            if (pendingAssistantBrokerTrust != null) {
+                AssistantBrokerTrustDialog(
+                    prompt = pendingAssistantBrokerTrust!!,
+                    onAccept = { runtime.acceptAssistantBrokerTrustPrompt() },
+                    onDecline = { runtime.declineAssistantBrokerTrustPrompt() },
                 )
             }
             val displayStatusText = when (nodeStatusText) {

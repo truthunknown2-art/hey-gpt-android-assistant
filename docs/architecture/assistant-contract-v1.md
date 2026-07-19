@@ -56,19 +56,24 @@ read-only foundations:
 - `windows.files.search`
 - `windows.files.read`
 
-Medium-risk capabilities still require the future private-read grant. They are
-defined here for validation but remain unavailable until that gate exists.
+Medium-risk capabilities require a fixed 10-minute private-read grant. The
+grant store is process-local, bound to the exact capability, voice session, and
+device, and revoked whenever the unlocked voice session ends. No grant survives
+process death, secure lock, or a new voice session.
 
 The Android executor currently implements `android.device.status` and an
 internal `android.contacts.search` adapter. Both revalidate the exact device,
 voice session, live unlocked-presence lease, proposal lifetime, argument hash,
 risk, and pinned Ed25519 signature. Contact lookup additionally requires a
 session/device-bound private-read authorization and Android Contacts permission.
-Names and phone numbers are returned only in the ephemeral execution outcome;
-the durable receipt stores only match count and truncation. The status receipt
-contains only battery percentage, charging state, and screen-interactive state.
-No executor command, private-read grant issuer, or model tool is registered
-until the Phase 0 physical and exact-head review gates close.
+Names and phone numbers exist only in the Android-local execution outcome; the
+durable receipt stores only match count and truncation. OpenClaw 2026.7.1 has no
+private tool-result channel: tool `content` is model input and `details` is for
+logs/UI. Therefore private fields must not be returned in either field. The
+status receipt contains only battery percentage, charging state, and
+screen-interactive state. The fixed executor commands exist internally but are
+not advertised, and no private-read grant issuer or model tool is exposed until
+the Phase 0 physical and exact-head review gates close.
 
 The legacy Mobile Bridge now shares the same fail-closed confirmation posture:
 `TRUSTED` cannot bypass high-risk or destructive actions, high-risk approvals
@@ -83,6 +88,18 @@ service. It creates WAL-backed `plans.sqlite` and `receipts.sqlite` ledgers,
 enforces immutable idempotency bindings, and reconciles terminal receipt state
 after restart. It registers only the operator-read `assistant.broker.status`
 Gateway method by default.
+
+The broker also owns a persistent Ed25519 signing identity. Its private key is
+stored with restrictive permissions in plugin state and never returned or
+logged. The authenticated `assistant.broker.publicKey` operator-read method
+returns only the stable key ID, raw public key, and SHA-256 fingerprint for an
+explicit phone-side trust decision. Invalid persisted key state fails closed
+instead of silently rotating the phone's trust root.
+
+The Android trust store validates that descriptor, stores it only in encrypted
+preferences after an explicit trust action, and treats a changed key as a hard
+trust conflict. A changed candidate never overwrites the pinned key. Clearing
+trust is an explicit local operation and is not available to a model tool.
 
 Explicit durable memory is implemented behind `memoryEnabled=false`. When the
 release gates are closed and an operator enables it, the broker registers only

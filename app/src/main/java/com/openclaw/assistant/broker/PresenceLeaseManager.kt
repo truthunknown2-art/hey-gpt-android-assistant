@@ -124,6 +124,11 @@ internal class PresenceLeaseManager(
         synchronized(lock) { leases.clear() }
     }
 
+    fun current(): PresenceLease? = synchronized(lock) {
+        removeExpiredLocked(nowElapsedMs())
+        leases.values.singleOrNull()
+    }
+
     internal fun activeCount(): Int = synchronized(lock) {
         removeExpiredLocked(nowElapsedMs())
         leases.size

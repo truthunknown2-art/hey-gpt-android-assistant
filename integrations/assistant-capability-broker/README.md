@@ -2,7 +2,8 @@
 
 This is the foundation for typed assistant plans, proposals, receipts, and
 explicit local memory. It always registers one operator-read Gateway status
-method. Model tools remain disabled by default.
+status method and one operator-read signing-public-key method. Model tools remain
+disabled by default.
 
 The service stores privacy-minimized operational state under the plugin state
 directory:
@@ -21,6 +22,12 @@ credential, token, and message fields.
 strict argument schemas, canonical JSON, SHA-256 argument hashes, proposal
 lifetimes, and Ed25519 signing helpers. No capability becomes usable until a
 later phase registers its individual typed tool and executor route.
+
+The broker creates one Ed25519 identity in its private state directory and
+reuses it across restarts. `assistant.broker.publicKey` returns only the raw
+public key, stable key ID, and SHA-256 fingerprint to an authenticated
+`operator.read` client. Malformed or mismatched persisted key state fails closed
+rather than silently rotating trust.
 
 When `memoryEnabled` is explicitly set, the plugin registers two optional tools
 only for the configured agent (default `voice-main`):
