@@ -70,7 +70,7 @@ object AmbientVoiceSessionRegistry {
 }
 
 internal object AmbientVoiceRecognitionPolicy {
-    const val RETRY_WINDOW_MS = 10_000L
+    const val RETRY_WINDOW_MS = 20_000L
 
     fun shouldRetry(errorCode: Int?, elapsedMs: Long): Boolean {
         val softError = errorCode == SpeechRecognizer.ERROR_NO_MATCH ||
