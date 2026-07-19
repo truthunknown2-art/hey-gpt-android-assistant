@@ -31,26 +31,26 @@ function ConvertTo-PowerShellSingleQuotedLiteral {
 function New-AgenticWindowsNodeVbsContent {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory = $true)][string]$PowerShellPath,
-        [Parameter(Mandatory = $true)][string]$SupervisorPath,
-        [Parameter(Mandatory = $true)][string]$StateDir
+        [Parameter(Mandatory = $true)][string]$TaskPath,
+        [Parameter(Mandatory = $true)][string]$TaskName
     )
 
-    $command = '"' + $PowerShellPath + '" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
-        $SupervisorPath + '" -StateDir "' + $StateDir + '"'
-    $escapedCommand = $command.Replace('"', '""')
-    return "' Managed by hey-gpt-android-assistant`r`n" +
-        'CreateObject("WScript.Shell").Run "' + $escapedCommand + '", 0, False' + "`r`n"
+    $folder = $TaskPath.TrimEnd('\').Replace('"', '""')
+    $name = $TaskName.Replace('"', '""')
+    return @"
+' Managed by hey-gpt-android-assistant
+Set scheduler = CreateObject("Schedule.Service")
+scheduler.Connect
+Set task = scheduler.GetFolder("$folder").GetTask("$name")
+If task.State <> 4 Then
+    task.Run Empty
+End If
+"@.TrimStart() + "`r`n"
 }
 
-function New-OpenClawGatewayBootstrapContent {
+function Remove-AgenticWindowsNodeGatewayBootstrapHook {
     [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)][string]$CurrentContent,
-        [Parameter(Mandatory = $true)][string]$PowerShellPath,
-        [Parameter(Mandatory = $true)][string]$SupervisorPath,
-        [Parameter(Mandatory = $true)][string]$StateDir
-    )
+    param([Parameter(Mandatory = $true)][string]$CurrentContent)
 
     $startMarker = "# hey-gpt-agentic-windows-node:start"
     $endMarker = "# hey-gpt-agentic-windows-node:end"
@@ -59,45 +59,35 @@ function New-OpenClawGatewayBootstrapContent {
     if (($startIndex -ge 0) -ne ($endIndex -ge 0) -or ($startIndex -ge 0 -and $endIndex -lt $startIndex)) {
         throw "The existing agentic Windows node bootstrap markers are malformed."
     }
+    if ($startIndex -lt 0) { return $CurrentContent }
 
-    $baseContent = $CurrentContent
-    if ($startIndex -ge 0) {
-        $afterIndex = $endIndex + $endMarker.Length
-        while ($afterIndex -lt $baseContent.Length -and $baseContent[$afterIndex] -in @("`r", "`n")) {
-            $afterIndex++
-        }
-        $baseContent = $baseContent.Substring(0, $startIndex).TrimEnd() + "`r`n`r`n" +
-            $baseContent.Substring($afterIndex).TrimStart()
+    $afterIndex = $endIndex + $endMarker.Length
+    while ($afterIndex -lt $CurrentContent.Length -and $CurrentContent[$afterIndex] -in @("`r", "`n")) {
+        $afterIndex++
     }
+    $before = $CurrentContent.Substring(0, $startIndex).TrimEnd()
+    $after = $CurrentContent.Substring($afterIndex).TrimStart()
+    if (-not $before) { return $after }
+    if (-not $after) { return $before + "`r`n" }
+    return $before + "`r`n`r`n" + $after
+}
 
-    $loopMarker = "while (`$true) {"
-    $loopIndex = $baseContent.LastIndexOf($loopMarker, [StringComparison]::Ordinal)
-    if ($loopIndex -lt 0) {
-        throw "The OpenClaw Gateway supervisor loop marker is missing."
+function Test-AgenticWindowsNodeSupervisorLockHeld {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$LockPath)
+
+    try {
+        $stream = [IO.File]::Open(
+            $LockPath,
+            [IO.FileMode]::OpenOrCreate,
+            [IO.FileAccess]::ReadWrite,
+            [IO.FileShare]::None
+        )
+        $stream.Dispose()
+        return $false
+    } catch [IO.IOException] {
+        return $true
     }
-
-    $quotedPowerShell = ConvertTo-PowerShellSingleQuotedLiteral $PowerShellPath
-    $quotedSupervisor = ConvertTo-PowerShellSingleQuotedLiteral $SupervisorPath
-    $quotedStateDir = ConvertTo-PowerShellSingleQuotedLiteral $StateDir
-    $block = @"
-$startMarker
-`$agenticNodePowerShell = $quotedPowerShell
-`$agenticNodeSupervisor = $quotedSupervisor
-`$agenticNodeStateDir = $quotedStateDir
-`$agenticNodeArguments = @(
-    "-NoLogo",
-    "-NoProfile",
-    "-NonInteractive",
-    "-ExecutionPolicy", "Bypass",
-    "-File", ('"' + `$agenticNodeSupervisor + '"'),
-    "-StateDir", ('"' + `$agenticNodeStateDir + '"')
-) -join " "
-Start-Process -FilePath `$agenticNodePowerShell -ArgumentList `$agenticNodeArguments -WindowStyle Hidden
-$endMarker
-"@
-
-    return $baseContent.Substring(0, $loopIndex).TrimEnd() + "`r`n`r`n" +
-        $block.Trim() + "`r`n`r`n" + $baseContent.Substring($loopIndex).TrimStart()
 }
 
 function Get-OwnedWindowsNodeRootProcessIds {

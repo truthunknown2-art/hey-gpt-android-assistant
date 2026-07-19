@@ -26,6 +26,48 @@ $RestrictedNodeCommands = @(
 
 . (Join-Path $PSScriptRoot "lib\windows-files-provisioning-transaction.ps1")
 
+function Register-AgenticWindowsNodeSupervisorTask {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$UserId,
+        [Parameter(Mandatory = $true)][string]$PowerShellPath,
+        [Parameter(Mandatory = $true)][string]$SupervisorPath,
+        [Parameter(Mandatory = $true)][string]$DedicatedStateDir
+    )
+
+    $arguments = @(
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy", "Bypass",
+        "-File", ('"' + $SupervisorPath + '"'),
+        "-StateDir", ('"' + $DedicatedStateDir + '"')
+    ) -join " "
+    $action = New-ScheduledTaskAction -Execute $PowerShellPath -Argument $arguments
+    $bootTrigger = New-ScheduledTaskTrigger -AtStartup
+    $bootTrigger.Delay = "PT45S"
+    $principal = New-ScheduledTaskPrincipal -UserId $UserId -LogonType S4U -RunLevel Limited
+    $settings = New-ScheduledTaskSettingsSet `
+        -MultipleInstances IgnoreNew `
+        -RestartCount 999 `
+        -RestartInterval (New-TimeSpan -Minutes 1) `
+        -ExecutionTimeLimit ([TimeSpan]::Zero) `
+        -StartWhenAvailable `
+        -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries
+
+    Register-ScheduledTask `
+        -TaskPath $Path `
+        -TaskName $Name `
+        -Action $action `
+        -Trigger $bootTrigger `
+        -Principal $principal `
+        -Settings $settings `
+        -Description "Runs the signed, least-privilege Windows file node before interactive logon." `
+        -Force | Out-Null
+}
+
 function Invoke-LocalOpenClaw {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
 
@@ -115,6 +157,28 @@ $powerShellPath = @(
 if (-not $powerShellPath) {
     throw "PowerShell is required for the Windows node supervisor."
 }
+$agenticTaskPath = "\OpenClaw\"
+$agenticTaskName = "Agentic Windows Node Supervisor"
+$agenticTask = Get-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName -ErrorAction SilentlyContinue
+if ($agenticTask) {
+    $agenticTaskActions = @($agenticTask.Actions)
+    $agenticTaskUser = [string]$agenticTask.Principal.UserId
+    $agenticBootTriggers = @($agenticTask.Triggers | Where-Object { $_.CimClass.CimClassName -eq "MSFT_TaskBootTrigger" })
+    $agenticLogonTriggers = @($agenticTask.Triggers | Where-Object { $_.CimClass.CimClassName -eq "MSFT_TaskLogonTrigger" })
+    $agenticTaskNeedsUpdate = $agenticLogonTriggers.Count -ne 0 -or
+        [string]$agenticTask.Principal.RunLevel -ne "Limited"
+    if ($agenticTaskActions.Count -ne 1 -or
+        [IO.Path]::GetFullPath([string]$agenticTaskActions[0].Execute) -ine [IO.Path]::GetFullPath($powerShellPath) -or
+        ([string]$agenticTaskActions[0].Arguments).IndexOf($supervisorPath, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
+        ([string]$agenticTaskActions[0].Arguments).IndexOf($resolvedStateDir, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
+        $agenticTaskUser -notin @($currentWindowsUser, $currentShortUser) -or
+        [string]$agenticTask.Principal.LogonType -ne "S4U" -or
+        $agenticBootTriggers.Count -ne 1 -or $agenticLogonTriggers.Count -gt 1) {
+        throw "Scheduled task '$agenticTaskPath$agenticTaskName' is not the expected owned task."
+    }
+} else {
+    $agenticTaskNeedsUpdate = $false
+}
 $gatewayBootstrapPath = Join-Path $env:ProgramData "OpenClaw\Start-OpenClawGateway.ps1"
 if (-not (Test-Path -LiteralPath $gatewayBootstrapPath -PathType Leaf)) {
     throw "The owned OpenClaw Gateway boot supervisor is missing."
@@ -139,6 +203,12 @@ $pluginPrevious = Assert-ChildPath -Path "$pluginStage.previous" -Parent $resolv
 $transactionId = [Guid]::NewGuid().ToString("N")
 $nodeVbsBackup = [IO.File]::ReadAllBytes($nodeVbsPath)
 $gatewayBootstrapBackup = [IO.File]::ReadAllBytes($gatewayBootstrapPath)
+$agenticTaskExisted = $null -ne $agenticTask
+$agenticTaskBackup = if ($agenticTaskExisted) {
+    Export-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName
+} else {
+    $null
+}
 $supervisorExisted = Test-Path -LiteralPath $supervisorPath -PathType Leaf
 $supervisorBackup = if ($supervisorExisted) { [IO.File]::ReadAllBytes($supervisorPath) } else { $null }
 $localConfigPath = Assert-ChildPath -Path (Join-Path $resolvedStateDir "openclaw.json") -Parent $resolvedStateDir -Label "Local config"
@@ -159,27 +229,46 @@ $rollbackFailed = $false
 $provisioningSucceeded = $false
 $rollbackSucceeded = $false
 $launchersChanged = $false
+$agenticTaskChanged = $false
+$agenticTaskStopped = $false
 
 try {
     Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($agenticTaskExisted) {
+        Stop-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName -ErrorAction SilentlyContinue
+        $agenticTaskStopped = $true
+    }
     Stop-OwnedWindowsNodeProcesses `
         -NodeCommandPath $nodeCommandPath `
         -SupervisorPath $supervisorPath `
         -StateDir $resolvedStateDir | Out-Null
+    $lockPath = Join-Path $resolvedStateDir "agentic-node-supervisor.lock"
+    for ($attempt = 0; $attempt -lt 20 -and (Test-AgenticWindowsNodeSupervisorLockHeld -LockPath $lockPath); $attempt++) {
+        Start-Sleep -Milliseconds 250
+    }
+    if (Test-AgenticWindowsNodeSupervisorLockHeld -LockPath $lockPath) {
+        throw "A legacy detached Windows node supervisor still owns the state lock. Stop the pre-logon Gateway task or reboot once, then rerun provisioning."
+    }
     $taskStopped = $true
     $launchersChanged = $true
     Copy-Item -LiteralPath $supervisorSource -Destination $supervisorPath -Force
     $vbsContent = New-AgenticWindowsNodeVbsContent `
-        -PowerShellPath $powerShellPath `
-        -SupervisorPath $supervisorPath `
-        -StateDir $resolvedStateDir
+        -TaskPath $agenticTaskPath `
+        -TaskName $agenticTaskName
     [IO.File]::WriteAllText($nodeVbsPath, $vbsContent, [Text.UTF8Encoding]::new($false))
-    $gatewayBootstrapContent = New-OpenClawGatewayBootstrapContent `
-        -CurrentContent ([IO.File]::ReadAllText($gatewayBootstrapPath)) `
-        -PowerShellPath $powerShellPath `
-        -SupervisorPath $supervisorPath `
-        -StateDir $resolvedStateDir
+    $gatewayBootstrapContent = Remove-AgenticWindowsNodeGatewayBootstrapHook `
+        -CurrentContent ([IO.File]::ReadAllText($gatewayBootstrapPath))
     [IO.File]::WriteAllText($gatewayBootstrapPath, $gatewayBootstrapContent, [Text.UTF8Encoding]::new($false))
+    if (-not $agenticTaskExisted -or $agenticTaskNeedsUpdate) {
+        Register-AgenticWindowsNodeSupervisorTask `
+            -Path $agenticTaskPath `
+            -Name $agenticTaskName `
+            -UserId $currentWindowsUser `
+            -PowerShellPath $powerShellPath `
+            -SupervisorPath $supervisorPath `
+            -DedicatedStateDir $resolvedStateDir
+        $agenticTaskChanged = $true
+    }
     if ($localConfigExisted) {
         Copy-Item -LiteralPath $localConfigPath -Destination $localConfigBackup -Force
     }
@@ -281,34 +370,24 @@ fi
     Invoke-GatewayOpenClaw config validate | Out-Null
     Invoke-GatewayOpenClaw gateway restart | Out-Null
 
-    $supervisorArguments = @(
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy", "Bypass",
-        "-File", ('"' + $supervisorPath + '"'),
-        "-StateDir", ('"' + $resolvedStateDir + '"')
-    ) -join " "
-    Start-Process -FilePath $powerShellPath -ArgumentList $supervisorArguments -WindowStyle Hidden | Out-Null
-    Start-Sleep -Seconds 7
-
-    $processes = @(Get-CimInstance Win32_Process)
-    $supervisorIds = @(Get-OwnedWindowsNodeSupervisorProcessIds -Processes $processes -SupervisorPath $supervisorPath -StateDir $resolvedStateDir)
-    $nodeRootIds = @(Get-OwnedWindowsNodeRootProcessIds -Processes $processes -NodeCommandPath $nodeCommandPath)
-    if ($supervisorIds.Count -ne 1 -or $nodeRootIds.Count -ne 1) {
-        throw "Expected one persistent supervisor and one Windows node process; found $($supervisorIds.Count) and $($nodeRootIds.Count)."
+    Start-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName
+    Start-Sleep -Seconds 10
+    $runningAgenticTask = Get-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName
+    if ([string]$runningAgenticTask.State -ne "Running" -or
+        -not (Test-AgenticWindowsNodeSupervisorLockHeld -LockPath $lockPath)) {
+        throw "The owned S4U Windows node supervisor did not remain running or acquire its state lock."
     }
-    $taskStopped = $false
+    $agenticTaskStopped = $false
 
-    # The existing logon task remains a fallback, but its shared lock must not duplicate the boot-owned process.
+    # The existing logon task now asks Task Scheduler to run the same owned S4U task.
     Start-ScheduledTask -TaskName $TaskName
     Start-Sleep -Seconds 2
-    $processes = @(Get-CimInstance Win32_Process)
-    $supervisorIds = @(Get-OwnedWindowsNodeSupervisorProcessIds -Processes $processes -SupervisorPath $supervisorPath -StateDir $resolvedStateDir)
-    $nodeRootIds = @(Get-OwnedWindowsNodeRootProcessIds -Processes $processes -NodeCommandPath $nodeCommandPath)
-    if ($supervisorIds.Count -ne 1 -or $nodeRootIds.Count -ne 1) {
-        throw "The scheduled-task fallback created a duplicate Windows node."
+    $runningAgenticTask = Get-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName
+    if ([string]$runningAgenticTask.State -ne "Running" -or
+        -not (Test-AgenticWindowsNodeSupervisorLockHeld -LockPath $lockPath)) {
+        throw "The logon fallback disrupted the owned S4U Windows node task."
     }
+    $taskStopped = $false
 
     $status = ((Invoke-GatewayOpenClaw nodes status --json) -join "`n") | ConvertFrom-Json
     $node = @($status.nodes | Where-Object nodeId -eq $NodeId)
@@ -330,6 +409,8 @@ fi
     $rollbackError = $null
     try {
         Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        Stop-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName -ErrorAction SilentlyContinue
+        $agenticTaskStopped = $true
         Stop-OwnedWindowsNodeProcesses `
             -NodeCommandPath $nodeCommandPath `
             -SupervisorPath $supervisorPath `
@@ -380,6 +461,17 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
                 Remove-Item -LiteralPath $supervisorPath -Force
             }
         }
+        if ($agenticTaskChanged) {
+            Unregister-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName -Confirm:$false -ErrorAction SilentlyContinue
+            if ($agenticTaskExisted) {
+                Register-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName -Xml $agenticTaskBackup -Force | Out-Null
+                Start-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName
+                $agenticTaskStopped = $false
+            } else {
+                Stop-ScheduledTask -TaskPath "\OpenClaw\" -TaskName "OpenClaw Gateway Supervisor" -ErrorAction SilentlyContinue
+                Start-ScheduledTask -TaskPath "\OpenClaw\" -TaskName "OpenClaw Gateway Supervisor"
+            }
+        }
         $rollbackSucceeded = $true
     } catch {
         $rollbackError = $_
@@ -387,11 +479,11 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
 
     if ($rollbackError) {
         $rollbackFailed = $true
-        Write-Warning "Rollback failed. Scheduled task '$TaskName' will remain stopped."
+        Write-Warning "Rollback failed. Scheduled task '$TaskName' and the owned S4U node task will remain stopped."
         Write-Warning "Preserved local config snapshot: $localConfigBackup"
         Write-Warning "Preserved Gateway config snapshot: ${Distro}:$gatewayConfigBackup"
         Write-Warning "Preserved Gateway plugin snapshot: ${Distro}:$gatewayPluginBackup"
-        Write-Warning "After manual restoration, validate and restart the Gateway, then run task '$TaskName'."
+        Write-Warning "After manual restoration, validate and restart the Gateway, then run '$agenticTaskPath$agenticTaskName'."
         throw "Provisioning failed: $($provisioningError.Exception.Message) Rollback also failed: $($rollbackError.Exception.Message)"
     }
     throw $provisioningError
@@ -415,4 +507,12 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
         -RollbackSucceeded $rollbackSucceeded `
         -StartTask { Start-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue } |
         Out-Null
+    if ($agenticTaskExisted) {
+        Complete-WindowsNodeTaskState `
+            -TaskStopped $agenticTaskStopped `
+            -ProvisioningSucceeded $provisioningSucceeded `
+            -RollbackSucceeded $rollbackSucceeded `
+            -StartTask { Start-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName -ErrorAction SilentlyContinue } |
+            Out-Null
+    }
 }

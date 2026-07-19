@@ -309,14 +309,17 @@ Build versioned contracts, presence leases, broker plan/receipt storage, shared
 Android executor internals, the read-only Windows helper, safe Android reads,
 and explicit local memory tools. Side-effect capabilities remain disabled.
 
-Current implementation status (2026-07-19): exact-head APK `d168059` is
+Current implementation status (2026-07-19): exact-head APK `cebaac4` is
 deployed, physical wake/STT/Luna/Pocket-TTS recovery passes, and the signed
-Windows search/read slice is deployed through a dedicated one-command node.
+Windows search/read slice is deployed through a dedicated one-command node and
+its own boot-triggered S4U supervisor task.
 Expired-presence search fails closed. A physical phone denial returned no
 content, while a fresh approval returned bounded content whose byte count and
 SHA-256 matched the source. A user-spoken Windows read, repeated Wi-Fi and
 mobile-data runs, lock-transition fault injection, meeting-brief fixtures, and
-endurance acceptance remain open; Phase 1 is not complete.
+endurance acceptance remain open. Controlled S4U stop/start and repeat
+non-elevated provisioning pass, but a cold Windows reboot with no login remains
+open; Phase 1 is not complete.
 
 Vertical slice:
 
@@ -399,8 +402,8 @@ memory/receipt disaster recovery.
 
 ## Immediate next work
 
-1. Obtain blocker-only Pro review for `d168059` and finish Phase 0 lock,
-   restart, upgrade, and endurance acceptance.
+1. Obtain blocker-only Pro review for the S4U task migration and finish the
+   `cebaac4` Messenger, lock, restart, upgrade, and endurance acceptance.
 2. Complete the user-spoken read-only meeting-brief slice and repeated
    Wi-Fi/mobile-data runs before adding side effects.
 3. Refactor remaining Mobile Bridge capabilities behind the shared executor

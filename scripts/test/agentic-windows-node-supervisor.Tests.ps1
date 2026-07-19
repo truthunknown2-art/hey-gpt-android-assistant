@@ -34,6 +34,13 @@ exit /b 0
             $second.ExitCode | Should Be 0
             $first.WaitForExit(5000) | Should Be $true
             @(Get-Content -LiteralPath $marker).Count | Should Be 1
+
+            $log = Get-Content -LiteralPath (Join-Path $stateDir "logs\agentic-node-supervisor.log") -Raw
+            $log | Should Match "Supervisor process started"
+            $log | Should Match "Supervisor lock acquired"
+            $log | Should Match "Duplicate supervisor detected; exiting"
+            $log | Should Match "Node process starting"
+            $log | Should Match "Node process exited code=0"
         } finally {
             if (-not $first.HasExited) { $first.Kill() }
         }

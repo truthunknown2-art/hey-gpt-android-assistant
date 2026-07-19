@@ -30,14 +30,16 @@ Describe "Windows file provisioner task recovery" {
 }
 
 Describe "Windows node launcher rendering" {
-    It "quotes PowerShell, supervisor, and state paths as valid VBScript" {
+    It "renders the logon fallback as a request to the owned scheduled task" {
         $content = New-AgenticWindowsNodeVbsContent `
-            -PowerShellPath "C:\Program Files\PowerShell\7\pwsh.exe" `
-            -SupervisorPath "C:\Users\tester\Node State\supervisor.ps1" `
-            -StateDir "C:\Users\tester\Node State"
+            -TaskPath "\OpenClaw\" `
+            -TaskName "Agentic Windows Node Supervisor"
 
-        $content | Should Be ("' Managed by hey-gpt-android-assistant`r`n" +
-            'CreateObject("WScript.Shell").Run """C:\Program Files\PowerShell\7\pwsh.exe"" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""C:\Users\tester\Node State\supervisor.ps1"" -StateDir ""C:\Users\tester\Node State""", 0, False' + "`r`n")
+        $content | Should Match 'CreateObject\("Schedule.Service"\)'
+        $content | Should Match 'GetFolder\("\\OpenClaw"\)'
+        $content | Should Match 'GetTask\("Agentic Windows Node Supervisor"\)'
+        $content | Should Match 'If task.State <> 4 Then'
+        $content | Should Not Match 'schtasks'
     }
 
     It "escapes single quotes in Bash literals" {
@@ -48,22 +50,46 @@ Describe "Windows node launcher rendering" {
         ConvertTo-PowerShellSingleQuotedLiteral "a'b" | Should Be "'a''b'"
     }
 
-    It "adds one idempotent boot hook before the Gateway supervisor loop" {
-        $base = "`$LogPath = 'gateway.log'`r`n`r`nwhile (`$true) {`r`n    Start-Sleep 10`r`n}`r`n"
-        $first = New-OpenClawGatewayBootstrapContent `
-            -CurrentContent $base `
-            -PowerShellPath "C:\Program Files\PowerShell\7\pwsh.exe" `
-            -SupervisorPath "C:\Node State\supervisor.ps1" `
-            -StateDir "C:\Node State"
-        $second = New-OpenClawGatewayBootstrapContent `
-            -CurrentContent $first `
-            -PowerShellPath "C:\Program Files\PowerShell\7\pwsh.exe" `
-            -SupervisorPath "C:\Node State\supervisor.ps1" `
-            -StateDir "C:\Node State"
+    It "removes the legacy detached Gateway hook idempotently" {
+        $base = @"
+`$LogPath = 'gateway.log'
+
+# hey-gpt-agentic-windows-node:start
+Start-Process pwsh.exe
+# hey-gpt-agentic-windows-node:end
+
+while (`$true) {
+    Start-Sleep 10
+}
+"@
+        $first = Remove-AgenticWindowsNodeGatewayBootstrapHook -CurrentContent $base
+        $second = Remove-AgenticWindowsNodeGatewayBootstrapHook -CurrentContent $first
 
         $second | Should Be $first
-        ([regex]::Matches($second, [regex]::Escape("# hey-gpt-agentic-windows-node:start"))).Count | Should Be 1
-        $second.IndexOf("Start-Process", [StringComparison]::Ordinal) | Should BeLessThan $second.IndexOf("while (`$true)", [StringComparison]::Ordinal)
+        $second | Should Not Match "hey-gpt-agentic-windows-node"
+        $second | Should Not Match "Start-Process pwsh.exe"
+        $second | Should Match 'while \(\$true\)'
+    }
+
+    It "rejects malformed legacy Gateway hook markers" {
+        $message = $null
+        try {
+            Remove-AgenticWindowsNodeGatewayBootstrapHook -CurrentContent "# hey-gpt-agentic-windows-node:start"
+        } catch {
+            $message = $_.Exception.Message
+        }
+        $message | Should Be "The existing agentic Windows node bootstrap markers are malformed."
+    }
+
+    It "reports an exclusively held supervisor lock" {
+        $lockPath = Join-Path $TestDrive "node.lock"
+        Test-AgenticWindowsNodeSupervisorLockHeld -LockPath $lockPath | Should Be $false
+        $stream = [IO.File]::Open($lockPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        try {
+            Test-AgenticWindowsNodeSupervisorLockHeld -LockPath $lockPath | Should Be $true
+        } finally {
+            $stream.Dispose()
+        }
     }
 }
 

@@ -246,20 +246,22 @@ pwsh -File .\scripts\enable-assistant-windows-files.ps1 `
   -BrokerPublicKeyBase64Url <BROKER_PUBLIC_KEY>
 ```
 
-The script validates that the scheduled task belongs to the dedicated state
-directory, then adds a narrowly marked launch hook to the existing pre-logon
-OpenClaw Gateway supervisor and rewrites the existing node logon launcher as a
-file-locked fallback. The persistent node supervisor retries after failure,
-while the shared lock makes logon and manual task starts harmless when the
-boot-owned process is already running; Windows autologon is not required.
+The script validates that the existing node launcher belongs to the dedicated
+state directory, removes the legacy detached Gateway launch hook, and creates
+one owned `\OpenClaw\Agentic Windows Node Supervisor` S4U task with a delayed
+boot trigger, restart policy, and no interactive-logon dependency. The existing
+node logon launcher uses Task Scheduler COM only to start that same task when it
+is not already running. The persistent node supervisor retries the node after
+failure and holds an exclusive state lock; Windows autologon is not required.
 Provisioning terminates only process trees
 rooted in that dedicated `node.cmd`, stages and tests the plugin before atomic
 replacement, pins the Windows node to the Android session key's 32-character
 device suffix and the broker public key, preserves only the `documents`
 read-root alias by default, restarts both sides, and fails unless the connected
 node advertises exactly the fixed command. Before mutation it snapshots the
-Windows launchers, supervisor, Windows node config, Gateway config, and broker
-stage. Any later failure restores them before the node is restarted.
+Windows launchers, owned-task XML, supervisor, Windows node config, Gateway
+config, and broker stage. Any later failure restores them before the node is
+restarted.
 If rollback itself fails, every available snapshot is preserved and the Windows
 node remains stopped until manual recovery.
 
@@ -309,6 +311,10 @@ not securely locked. A later transition to secure lock terminates the main lane.
 
 ### Physical evidence (2026-07-19)
 
+- Exact-head full APK `cebaac4` is installed on the S10+. The custom node is
+  connected with no raw notification or Mobile Bridge commands, and Pro returned
+  `READY FOR PHYSICAL MESSENGER ACCEPTANCE`; that positive on-phone approval and
+  offline-spoken Messenger test remains open.
 - Exact-head full APK `d168059` was installed in place on the S10+ without
   losing pairing or settings. Both unit-test variants and the full APK build
   passed before installation.
@@ -331,6 +337,10 @@ not securely locked. A later transition to secure lock terminates the main lane.
   remains an open end-to-end acceptance run.
 - Mobile-data/Tailscale acceptance remains open because the test S10+ reported
   Bell out of service and had no usable cellular underlay during the test.
+- The signed Windows node was migrated from a detached Gateway child to its own
+  boot-triggered S4U task. A controlled stop/start, task lock, privacy-safe
+  lifecycle log, exact node reconnect, and a subsequent non-elevated idempotent
+  provisioning run passed. A cold Windows reboot with no user login remains open.
 
 ## Build and smoke test
 
