@@ -1,34 +1,6 @@
 $helper = Join-Path (Split-Path -Parent $PSScriptRoot) "lib\windows-files-provisioning-transaction.ps1"
 . $helper
 
-Describe "Windows file provisioner task recovery" {
-    It "does not restart the node when provisioning and rollback both fail" {
-        $script:startCalls = 0
-
-        $restarted = Complete-WindowsNodeTaskState `
-            -TaskStopped $true `
-            -ProvisioningSucceeded $false `
-            -RollbackSucceeded $false `
-            -StartTask { $script:startCalls += 1 }
-
-        $restarted | Should Be $false
-        $script:startCalls | Should Be 0
-    }
-
-    It "restarts the node after a successful rollback" {
-        $script:startCalls = 0
-
-        $restarted = Complete-WindowsNodeTaskState `
-            -TaskStopped $true `
-            -ProvisioningSucceeded $false `
-            -RollbackSucceeded $true `
-            -StartTask { $script:startCalls += 1 }
-
-        $restarted | Should Be $true
-        $script:startCalls | Should Be 1
-    }
-}
-
 Describe "Windows provisioner transaction restore" {
     BeforeEach {
         $script:priorTaskXml = '<?xml version="1.0"?><Task><Settings><Enabled>true</Enabled></Settings></Task>'
@@ -116,6 +88,50 @@ Describe "Windows provisioner transaction restore" {
                 -CopyFile { param($Source, $Destination) [IO.File]::WriteAllText($Destination, "corrupt") }
         } | Should Throw
     }
+
+    It "fails rollback when the restored task cannot start" {
+        {
+            Restore-WindowsNodeRuntimePostcondition `
+                -TaskLabel "test task" `
+                -StartTask { throw "injected task-start failure" } `
+                -GetTaskState { "Running" } `
+                -TestLockHeld { $true } `
+                -TestNodeReady { $true } `
+                -Attempts 1 `
+                -Wait {}
+        } | Should Throw
+    }
+
+    It "fails rollback when start returns but runtime postconditions never hold" {
+        $script:startCalls = 0
+
+        {
+            Restore-WindowsNodeRuntimePostcondition `
+                -TaskLabel "test task" `
+                -StartTask { $script:startCalls += 1 } `
+                -GetTaskState { "Ready" } `
+                -TestLockHeld { $false } `
+                -TestNodeReady { $false } `
+                -Attempts 2 `
+                -Wait {}
+        } | Should Throw
+        $script:startCalls | Should Be 1
+    }
+
+    It "accepts rollback only after task, lock, and node postconditions hold" {
+        $script:startCalls = 0
+
+        Restore-WindowsNodeRuntimePostcondition `
+            -TaskLabel "test task" `
+            -StartTask { $script:startCalls += 1 } `
+            -GetTaskState { "Running" } `
+            -TestLockHeld { $true } `
+            -TestNodeReady { $true } `
+            -Attempts 1 `
+            -Wait {}
+
+        $script:startCalls | Should Be 1
+    }
 }
 
 Describe "Windows node launcher rendering" {
@@ -128,6 +144,14 @@ Describe "Windows node launcher rendering" {
                 CimClass = [pscustomobject]@{ CimClassName = "MSFT_TaskBootTrigger" }
                 Delay = "PT45S"
                 Enabled = $true
+                StartBoundary = ""
+                EndBoundary = ""
+                ExecutionTimeLimit = ""
+                Repetition = [pscustomobject]@{
+                    Interval = ""
+                    Duration = ""
+                    StopAtDurationEnd = $false
+                }
             }),
             [string]$MultipleInstances = "IgnoreNew",
             [int]$RestartCount = 999,
@@ -168,6 +192,9 @@ Describe "Windows node launcher rendering" {
                 RunOnlyIfNetworkAvailable = $false
                 WakeToRun = $false
                 UseUnifiedSchedulingEngine = $true
+                Volatile = $false
+                DeleteExpiredTaskAfter = ""
+                MaintenanceSettings = $null
                 IdleSettings = [pscustomobject]@{
                     StopOnIdleEnd = $true
                     RestartOnIdle = $false
@@ -248,11 +275,19 @@ Describe "Windows node launcher rendering" {
             CimClass = [pscustomobject]@{ CimClassName = "MSFT_TaskBootTrigger" }
             Delay = "PT45S"
             Enabled = $false
+            StartBoundary = ""
+            EndBoundary = ""
+            ExecutionTimeLimit = ""
+            Repetition = [pscustomobject]@{ Interval = ""; Duration = ""; StopAtDurationEnd = $false }
         }
         $wrongDelay = [pscustomobject]@{
             CimClass = [pscustomobject]@{ CimClassName = "MSFT_TaskBootTrigger" }
             Delay = "PT5M"
             Enabled = $true
+            StartBoundary = ""
+            EndBoundary = ""
+            ExecutionTimeLimit = ""
+            Repetition = [pscustomobject]@{ Interval = ""; Duration = ""; StopAtDurationEnd = $false }
         }
         $driftedTasks = @(
             (New-TestAgenticTask -Triggers @($disabledBoot)),
@@ -263,6 +298,28 @@ Describe "Windows node launcher rendering" {
         )
 
         foreach ($task in $driftedTasks) {
+            $assessment = Get-AgenticWindowsNodeSupervisorTaskAssessment `
+                -Task $task `
+                -ExpectedUserSid "S-1-5-21-1-2-3-1001" `
+                -PowerShellPath "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" `
+                -SupervisorPath "C:\State\supervisor.ps1" `
+                -StateDir "C:\State"
+            $assessment.IsOwned | Should Be $true
+            $assessment.NeedsUpdate | Should Be $true
+        }
+    }
+
+    It "repairs volatile, bounded, and repeating boot tasks" {
+        $volatile = New-TestAgenticTask
+        $volatile.Settings.Volatile = $true
+        $future = New-TestAgenticTask
+        $future.Triggers[0].StartBoundary = "2099-01-01T00:00:00"
+        $expired = New-TestAgenticTask
+        $expired.Triggers[0].EndBoundary = "2020-01-01T00:00:00"
+        $repeating = New-TestAgenticTask
+        $repeating.Triggers[0].Repetition.Interval = "PT5M"
+
+        foreach ($task in @($volatile, $future, $expired, $repeating)) {
             $assessment = Get-AgenticWindowsNodeSupervisorTaskAssessment `
                 -Task $task `
                 -ExpectedUserSid "S-1-5-21-1-2-3-1001" `

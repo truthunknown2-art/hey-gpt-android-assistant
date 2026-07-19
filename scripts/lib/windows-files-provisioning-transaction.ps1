@@ -1,18 +1,3 @@
-function Complete-WindowsNodeTaskState {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)][bool]$TaskStopped,
-        [Parameter(Mandatory = $true)][bool]$ProvisioningSucceeded,
-        [Parameter(Mandatory = $true)][bool]$RollbackSucceeded,
-        [Parameter(Mandatory = $true)][scriptblock]$StartTask
-    )
-
-    if (-not $TaskStopped) { return $false }
-    if (-not ($ProvisioningSucceeded -or $RollbackSucceeded)) { return $false }
-    & $StartTask
-    return $true
-}
-
 function ConvertTo-BashSingleQuotedLiteral {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string]$Value)
@@ -122,6 +107,12 @@ function Get-AgenticWindowsNodeSupervisorTaskAssessment {
     $needsUpdate = [string]$Task.Principal.RunLevel -ne "Limited" -or
         [string]$bootTriggers[0].Delay -ne "PT45S" -or
         [bool]$bootTriggers[0].Enabled -ne $true -or
+        [string]$bootTriggers[0].StartBoundary -ne "" -or
+        [string]$bootTriggers[0].EndBoundary -ne "" -or
+        [string]$bootTriggers[0].ExecutionTimeLimit -ne "" -or
+        [string]$bootTriggers[0].Repetition.Interval -ne "" -or
+        [string]$bootTriggers[0].Repetition.Duration -ne "" -or
+        [bool]$bootTriggers[0].Repetition.StopAtDurationEnd -ne $false -or
         [string]$settings.MultipleInstances -ne "IgnoreNew" -or
         [int]$settings.RestartCount -ne 999 -or
         [string]$settings.RestartInterval -ne "PT1M" -or
@@ -139,6 +130,9 @@ function Get-AgenticWindowsNodeSupervisorTaskAssessment {
         [bool]$settings.RunOnlyIfNetworkAvailable -ne $false -or
         [bool]$settings.WakeToRun -ne $false -or
         [bool]$settings.UseUnifiedSchedulingEngine -ne $true -or
+        [bool]$settings.Volatile -ne $false -or
+        [string]$settings.DeleteExpiredTaskAfter -ne "" -or
+        $null -ne $settings.MaintenanceSettings -or
         [bool]$settings.IdleSettings.StopOnIdleEnd -ne $true -or
         [bool]$settings.IdleSettings.RestartOnIdle -ne $false -or
         [string]$settings.IdleSettings.IdleDuration -ne "PT10M" -or
@@ -222,6 +216,34 @@ function Restore-AgenticWindowsNodeFileBackup {
     if (Test-Path -LiteralPath $TargetPath) {
         throw "File '$TargetPath' still exists after rollback removal."
     }
+}
+
+function Restore-WindowsNodeRuntimePostcondition {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$TaskLabel,
+        [Parameter(Mandatory = $true)][scriptblock]$StartTask,
+        [Parameter(Mandatory = $true)][scriptblock]$GetTaskState,
+        [Parameter(Mandatory = $true)][scriptblock]$TestLockHeld,
+        [Parameter(Mandatory = $true)][scriptblock]$TestNodeReady,
+        [int]$Attempts = 45,
+        [scriptblock]$Wait = { Start-Sleep -Seconds 1 }
+    )
+
+    & $StartTask
+    for ($attempt = 0; $attempt -lt $Attempts; $attempt++) {
+        $taskState = [string](& $GetTaskState)
+        $lockHeld = [bool](& $TestLockHeld)
+        $nodeReady = [bool](& $TestNodeReady)
+        if ($taskState -eq "Running" -and $lockHeld -and $nodeReady) {
+            return
+        }
+        if ($attempt + 1 -lt $Attempts) {
+            & $Wait
+        }
+    }
+
+    throw "Restored task '$TaskLabel' did not remain running with the supervisor lock and exact connected node."
 }
 
 function New-AgenticWindowsNodeVbsContent {

@@ -255,8 +255,9 @@ is not already running. The persistent node supervisor retries the node after
 failure and holds an exclusive state lock; Windows autologon is not required.
 Provisioning rejects altered task identity, action arguments, and extra
 triggers. It repairs drift in the boot delay, restart policy, execution limit,
-battery policy, enabled state, and other boot-critical settings before
-validating the exclusive lock and connected node command.
+battery policy, enabled/volatile state, activation boundaries, repetition,
+maintenance state, and other boot-critical settings before validating the
+exclusive lock and connected node command.
 Provisioning terminates only process trees
 rooted in that dedicated `node.cmd`, stages and tests the plugin before atomic
 replacement, pins the Windows node to the Android session key's 32-character
@@ -268,6 +269,9 @@ config, and broker stage. Local task and launcher snapshots are persisted in a
 transaction-scoped directory rather than held only in process memory. Any later
 failure restores them before the node is restarted, then verifies restored file
 hashes, scheduled-task XML, and task absence when no prior task existed.
+Rollback is not successful until the restored topology starts with terminating
+error handling, remains `Running`, reacquires the supervisor lock, and reconnects
+the dedicated node with exactly `assistant.windows.execute.v1`.
 If rollback itself fails, every available snapshot is preserved and the Windows
 node remains stopped until manual recovery.
 

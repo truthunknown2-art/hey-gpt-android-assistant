@@ -320,8 +320,10 @@ mobile-data runs, lock-transition fault injection, meeting-brief fixtures, and
 endurance acceptance remain open. Controlled S4U stop/start and repeat
 non-elevated provisioning pass. Canonical task/SID validation, persistent
 transaction backups, and rollback postcondition checks also pass their focused
-failure-injection suite and a live provision transaction. A cold Windows reboot
-with no login and follow-up Pro review remain open; Phase 1 is not complete.
+failure-injection suite and a live provision transaction. Extended boot-trigger
+drift and restored-runtime task/lock/node postconditions are also enforced. A
+cold Windows reboot with no login and follow-up Pro review remain open; Phase 1
+is not complete.
 
 Vertical slice:
 

@@ -220,7 +220,6 @@ $gatewayPluginBackup = "$gatewayPluginStage.rollback.$transactionId"
 $voiceSessionKey = "agent:${AgentId}:voice-android-$($AndroidNodeId.Substring(0, 32))"
 $pluginStageExisted = Test-Path -LiteralPath $pluginStage
 $localConfigExisted = Test-Path -LiteralPath $localConfigPath -PathType Leaf
-$taskStopped = $false
 $promoted = $false
 $localSnapshotReady = $false
 $gatewaySnapshotReady = $false
@@ -230,13 +229,11 @@ $provisioningSucceeded = $false
 $rollbackSucceeded = $false
 $launchersChanged = $false
 $agenticTaskChanged = $false
-$agenticTaskStopped = $false
 
 try {
     Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     if ($agenticTaskExisted) {
         Stop-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName -ErrorAction SilentlyContinue
-        $agenticTaskStopped = $true
     }
     Stop-OwnedWindowsNodeProcesses `
         -NodeCommandPath $nodeCommandPath `
@@ -249,7 +246,6 @@ try {
     if (Test-AgenticWindowsNodeSupervisorLockHeld -LockPath $lockPath) {
         throw "A legacy detached Windows node supervisor still owns the state lock. Stop the pre-logon Gateway task or reboot once, then rerun provisioning."
     }
-    $taskStopped = $true
     $launchersChanged = $true
     Copy-Item -LiteralPath $supervisorSource -Destination $supervisorPath -Force
     $vbsContent = New-AgenticWindowsNodeVbsContent `
@@ -391,7 +387,6 @@ fi
         -not (Test-AgenticWindowsNodeSupervisorLockHeld -LockPath $lockPath)) {
         throw "The owned S4U Windows node supervisor did not remain running or acquire its state lock."
     }
-    $agenticTaskStopped = $false
 
     # The existing logon task now asks Task Scheduler to run the same owned S4U task.
     Start-ScheduledTask -TaskName $TaskName
@@ -401,7 +396,6 @@ fi
         -not (Test-AgenticWindowsNodeSupervisorLockHeld -LockPath $lockPath)) {
         throw "The logon fallback disrupted the owned S4U Windows node task."
     }
-    $taskStopped = $false
 
     $status = ((Invoke-GatewayOpenClaw nodes status --json) -join "`n") | ConvertFrom-Json
     $node = @($status.nodes | Where-Object nodeId -eq $NodeId)
@@ -424,12 +418,10 @@ fi
     try {
         Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
         Stop-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName -ErrorAction SilentlyContinue
-        $agenticTaskStopped = $true
         Stop-OwnedWindowsNodeProcesses `
             -NodeCommandPath $nodeCommandPath `
             -SupervisorPath $supervisorPath `
             -StateDir $resolvedStateDir | Out-Null
-        $taskStopped = $true
         if ($promoted) {
             if (Test-Path -LiteralPath $pluginStage) {
                 Remove-Item -LiteralPath $pluginStage -Recurse -Force
@@ -502,13 +494,68 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
                 -ExportTaskXml {
                     Export-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName -ErrorAction Stop
                 }
-            if ($agenticTaskExisted) {
-                Start-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName
-                $agenticTaskStopped = $false
-            } else {
-                Stop-ScheduledTask -TaskPath "\OpenClaw\" -TaskName "OpenClaw Gateway Supervisor" -ErrorAction SilentlyContinue
-                Start-ScheduledTask -TaskPath "\OpenClaw\" -TaskName "OpenClaw Gateway Supervisor"
+        }
+        $testDedicatedNodeReady = {
+            try {
+                $rollbackStatus = ((Invoke-GatewayOpenClaw nodes status --json) -join "`n") | ConvertFrom-Json
+                $rollbackNode = @($rollbackStatus.nodes | Where-Object nodeId -eq $NodeId)
+                $rollbackCommands = if ($rollbackNode.Count -eq 1) {
+                    @($rollbackNode[0].commands | Sort-Object -Unique)
+                } else {
+                    @()
+                }
+                return $rollbackNode.Count -eq 1 -and
+                    $rollbackNode[0].connected -eq $true -and
+                    $rollbackCommands.Count -eq 1 -and
+                    $rollbackCommands[0] -eq $WindowsCommand
+            } catch {
+                return $false
             }
+        }
+        if ($agenticTaskExisted) {
+            Restore-WindowsNodeRuntimePostcondition `
+                -TaskLabel "$agenticTaskPath$agenticTaskName" `
+                -StartTask {
+                    Start-ScheduledTask `
+                        -TaskPath $agenticTaskPath `
+                        -TaskName $agenticTaskName `
+                        -ErrorAction Stop
+                    Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+                } `
+                -GetTaskState {
+                    (Get-ScheduledTask `
+                        -TaskPath $agenticTaskPath `
+                        -TaskName $agenticTaskName `
+                        -ErrorAction Stop).State
+                } `
+                -TestLockHeld {
+                    Test-AgenticWindowsNodeSupervisorLockHeld -LockPath $lockPath
+                } `
+                -TestNodeReady $testDedicatedNodeReady
+        } else {
+            Restore-WindowsNodeRuntimePostcondition `
+                -TaskLabel "\OpenClaw\OpenClaw Gateway Supervisor" `
+                -StartTask {
+                    Stop-ScheduledTask `
+                        -TaskPath "\OpenClaw\" `
+                        -TaskName "OpenClaw Gateway Supervisor" `
+                        -ErrorAction Stop
+                    Start-ScheduledTask `
+                        -TaskPath "\OpenClaw\" `
+                        -TaskName "OpenClaw Gateway Supervisor" `
+                        -ErrorAction Stop
+                } `
+                -GetTaskState {
+                    (Get-ScheduledTask `
+                        -TaskPath "\OpenClaw\" `
+                        -TaskName "OpenClaw Gateway Supervisor" `
+                        -ErrorAction Stop).State
+                } `
+                -TestLockHeld {
+                    Test-AgenticWindowsNodeSupervisorLockHeld -LockPath $lockPath
+                } `
+                -TestNodeReady $testDedicatedNodeReady
+            # The restored interactive task remains ready for the next logon.
         }
         $rollbackSucceeded = $true
     } catch {
@@ -527,10 +574,14 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
     }
     throw $provisioningError
 } finally {
-    if (-not $rollbackFailed -and (Test-Path -LiteralPath $transactionBackupDir)) {
+    if (($provisioningSucceeded -or $rollbackSucceeded) -and
+        -not $rollbackFailed -and
+        (Test-Path -LiteralPath $transactionBackupDir)) {
         Remove-Item -LiteralPath $transactionBackupDir -Recurse -Force -ErrorAction SilentlyContinue
     }
-    if ($gatewaySnapshotReady -and -not $rollbackFailed) {
+    if ($gatewaySnapshotReady -and
+        ($provisioningSucceeded -or $rollbackSucceeded) -and
+        -not $rollbackFailed) {
         try {
             Invoke-GatewayBash -Command "rm -rf '$gatewayConfigBackup' '$gatewayPluginBackup'" | Out-Null
         } catch {
@@ -539,19 +590,5 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
     }
     if (Test-Path -LiteralPath $pluginNext) {
         Remove-Item -LiteralPath $pluginNext -Recurse -Force -ErrorAction SilentlyContinue
-    }
-    Complete-WindowsNodeTaskState `
-        -TaskStopped $taskStopped `
-        -ProvisioningSucceeded $provisioningSucceeded `
-        -RollbackSucceeded $rollbackSucceeded `
-        -StartTask { Start-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue } |
-        Out-Null
-    if ($agenticTaskExisted) {
-        Complete-WindowsNodeTaskState `
-            -TaskStopped $agenticTaskStopped `
-            -ProvisioningSucceeded $provisioningSucceeded `
-            -RollbackSucceeded $rollbackSucceeded `
-            -StartTask { Start-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName -ErrorAction SilentlyContinue } |
-            Out-Null
     }
 }
