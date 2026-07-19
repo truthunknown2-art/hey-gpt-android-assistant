@@ -226,18 +226,20 @@ function Restore-WindowsNodeRuntimePostcondition {
         [Parameter(Mandatory = $true)][scriptblock]$StopRuntime,
         [Parameter(Mandatory = $true)][scriptblock]$GetTaskState,
         [Parameter(Mandatory = $true)][scriptblock]$TestLockHeld,
+        [Parameter(Mandatory = $true)][scriptblock]$GetNodeConnectionMarker,
         [Parameter(Mandatory = $true)][scriptblock]$TestNodeReady,
         [int]$Attempts = 45,
         [scriptblock]$Wait = { Start-Sleep -Seconds 1 }
     )
 
-    $minimumConnectedAtMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    # Both values come from the Gateway, so host/WSL clock skew cannot affect freshness.
+    $previousNodeConnectionMarker = & $GetNodeConnectionMarker
     try {
         & $StartTask
         for ($attempt = 0; $attempt -lt $Attempts; $attempt++) {
             $taskState = [string](& $GetTaskState)
             $lockHeld = [bool](& $TestLockHeld)
-            $nodeReady = [bool](& $TestNodeReady $minimumConnectedAtMs)
+            $nodeReady = [bool](& $TestNodeReady $previousNodeConnectionMarker)
             if ($taskState -eq "Running" -and $lockHeld -and $nodeReady) {
                 return
             }
@@ -258,38 +260,115 @@ function Restore-WindowsNodeRuntimePostcondition {
     }
 }
 
+function Test-WindowsNodeTaskSafeState {
+    [CmdletBinding()]
+    param([AllowEmptyString()][string]$State)
+
+    return $State -in @("Ready", "Disabled", "Absent")
+}
+
+function Test-WindowsNodeGatewayConnectionAdvanced {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][long]$PreviousConnectedAtMs,
+        [Parameter(Mandatory = $true)][long]$CurrentConnectedAtMs
+    )
+
+    return $CurrentConnectedAtMs -gt $PreviousConnectedAtMs
+}
+
+function Get-ScheduledTaskRunningProcessIds {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$TaskPath,
+        [Parameter(Mandatory = $true)][string]$TaskName
+    )
+
+    $scheduler = New-Object -ComObject "Schedule.Service"
+    try {
+        $scheduler.Connect()
+        $comTaskPath = $TaskPath.TrimEnd('\')
+        if (-not $comTaskPath) { $comTaskPath = "\" }
+        $folder = $scheduler.GetFolder($comTaskPath)
+        $registeredTask = $folder.GetTask($TaskName)
+        return @($registeredTask.GetInstances(0) | ForEach-Object {
+            [int]$_.EnginePID
+        } | Where-Object { $_ -gt 0 } | Sort-Object -Unique)
+    } finally {
+        if ($null -ne $scheduler -and [Runtime.InteropServices.Marshal]::IsComObject($scheduler)) {
+            [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($scheduler)
+        }
+    }
+}
+
+function Get-OptionalScheduledTaskRunningProcessIds {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$TaskPath,
+        [Parameter(Mandatory = $true)][string]$TaskName
+    )
+
+    if ($null -eq (Get-OptionalScheduledTaskExact -TaskPath $TaskPath -TaskName $TaskName)) {
+        return @()
+    }
+    return @(Get-ScheduledTaskRunningProcessIds -TaskPath $TaskPath -TaskName $TaskName)
+}
+
 function Stop-WindowsNodeRuntimePostcondition {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$TaskLabel,
+        [Parameter(Mandatory = $true)][scriptblock]$CaptureProcesses,
         [Parameter(Mandatory = $true)][scriptblock]$StopTasks,
         [Parameter(Mandatory = $true)][scriptblock]$StopProcesses,
         [Parameter(Mandatory = $true)][scriptblock]$GetOwnerTaskState,
+        [Parameter(Mandatory = $true)][scriptblock]$GetInteractiveTaskState,
         [Parameter(Mandatory = $true)][scriptblock]$TestLockHeld,
+        [Parameter(Mandatory = $true)][scriptblock]$TestNodeStopped,
         [int]$Attempts = 20,
+        [int]$RequiredStableObservations = 2,
         [scriptblock]$Wait = { Start-Sleep -Milliseconds 250 }
     )
 
+    if ($RequiredStableObservations -lt 1 -or $RequiredStableObservations -gt $Attempts) {
+        throw "RequiredStableObservations must be between one and Attempts."
+    }
+
     $cleanupErrors = [Collections.Generic.List[string]]::new()
+    $processCapture = $null
+    try {
+        $processCapture = & $CaptureProcesses
+    } catch {
+        $cleanupErrors.Add("process capture: $($_.Exception.Message)")
+    }
     try {
         & $StopTasks
     } catch {
         $cleanupErrors.Add("task stop: $($_.Exception.Message)")
     }
     try {
-        & $StopProcesses
+        & $StopProcesses $processCapture
     } catch {
         $cleanupErrors.Add("process stop: $($_.Exception.Message)")
     }
 
-    $taskState = "Unknown"
+    $ownerTaskState = "Unknown"
+    $interactiveTaskState = "Unknown"
     $lockHeld = $true
+    $nodeStopped = $false
+    $stableObservations = 0
     for ($attempt = 0; $attempt -lt $Attempts; $attempt++) {
         try {
-            $taskState = [string](& $GetOwnerTaskState)
+            $ownerTaskState = [string](& $GetOwnerTaskState)
         } catch {
-            $taskState = "Unknown"
-            $cleanupErrors.Add("task state: $($_.Exception.Message)")
+            $ownerTaskState = "Unknown"
+            $cleanupErrors.Add("owner task state: $($_.Exception.Message)")
+        }
+        try {
+            $interactiveTaskState = [string](& $GetInteractiveTaskState)
+        } catch {
+            $interactiveTaskState = "Unknown"
+            $cleanupErrors.Add("interactive task state: $($_.Exception.Message)")
         }
         try {
             $lockHeld = [bool](& $TestLockHeld)
@@ -297,8 +376,25 @@ function Stop-WindowsNodeRuntimePostcondition {
             $lockHeld = $true
             $cleanupErrors.Add("lock state: $($_.Exception.Message)")
         }
-        if ($taskState -ne "Running" -and -not $lockHeld -and $cleanupErrors.Count -eq 0) {
-            return
+        try {
+            $nodeStopped = [bool](& $TestNodeStopped)
+        } catch {
+            $nodeStopped = $false
+            $cleanupErrors.Add("node state: $($_.Exception.Message)")
+        }
+
+        $safe = (Test-WindowsNodeTaskSafeState -State $ownerTaskState) -and
+            (Test-WindowsNodeTaskSafeState -State $interactiveTaskState) -and
+            -not $lockHeld -and
+            $nodeStopped -and
+            $cleanupErrors.Count -eq 0
+        if ($safe) {
+            $stableObservations++
+            if ($stableObservations -ge $RequiredStableObservations) {
+                return
+            }
+        } else {
+            $stableObservations = 0
         }
         if ($attempt + 1 -lt $Attempts) {
             & $Wait
@@ -308,7 +404,7 @@ function Stop-WindowsNodeRuntimePostcondition {
     $details = if ($cleanupErrors.Count -gt 0) {
         $cleanupErrors -join "; "
     } else {
-        "ownerState=$taskState lockHeld=$lockHeld"
+        "ownerState=$ownerTaskState interactiveState=$interactiveTaskState lockHeld=$lockHeld nodeStopped=$nodeStopped stableObservations=$stableObservations"
     }
     throw "Failed runtime '$TaskLabel' could not be proven stopped; runtime state is unknown ($details)."
 }
@@ -414,15 +510,19 @@ function Get-OwnedWindowsNodeProcessIds {
         [Parameter(Mandatory = $true)][object[]]$Processes,
         [Parameter(Mandatory = $true)][string]$NodeCommandPath,
         [string]$SupervisorPath = "",
-        [string]$StateDir = ""
+        [string]$StateDir = "",
+        [int[]]$KnownRootProcessIds = @()
     )
 
     $roots = @(Get-OwnedWindowsNodeRootProcessIds -Processes $Processes -NodeCommandPath $NodeCommandPath)
+    $roots = @($roots) + @($KnownRootProcessIds | Where-Object { $_ -gt 0 })
+    $roots = @($roots | Sort-Object -Unique)
     if ($SupervisorPath -and $StateDir) {
-        $roots = @($roots + @(Get-OwnedWindowsNodeSupervisorProcessIds `
+        $roots = @($roots) + @(Get-OwnedWindowsNodeSupervisorProcessIds `
             -Processes $Processes `
             -SupervisorPath $SupervisorPath `
-            -StateDir $StateDir)) | Sort-Object -Unique
+            -StateDir $StateDir)
+        $roots = @($roots | Sort-Object -Unique)
     }
 
     if ($roots.Count -eq 0) { return @() }
@@ -455,21 +555,50 @@ function Stop-OwnedWindowsNodeProcesses {
     param(
         [Parameter(Mandatory = $true)][string]$NodeCommandPath,
         [string]$SupervisorPath = "",
-        [string]$StateDir = ""
+        [string]$StateDir = "",
+        [AllowNull()][object[]]$ProcessSnapshot = $null,
+        [int[]]$KnownRootProcessIds = @(),
+        [scriptblock]$GetProcesses = { @(Get-CimInstance Win32_Process -ErrorAction Stop) },
+        [scriptblock]$StopProcess = { param($ProcessId) Stop-Process -Id $ProcessId -Force -ErrorAction Stop },
+        [AllowNull()][scriptblock]$StopProcessSet = $null,
+        [scriptblock]$TestProcessExists = { param($ProcessId) $null -ne (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue) },
+        [int]$Attempts = 20,
+        [scriptblock]$Wait = { Start-Sleep -Milliseconds 100 }
     )
 
-    $processes = @(Get-CimInstance Win32_Process)
-    $processIds = @(Get-OwnedWindowsNodeProcessIds `
-        -Processes $processes `
-        -NodeCommandPath $NodeCommandPath `
-        -SupervisorPath $SupervisorPath `
-        -StateDir $StateDir)
-    foreach ($processId in $processIds) {
-        Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+    if ($null -eq $ProcessSnapshot) {
+        $ProcessSnapshot = @(& $GetProcesses)
     }
 
-    if ($processIds.Count -gt 0) {
-        Start-Sleep -Milliseconds 300
+    $processIds = @(Get-OwnedWindowsNodeProcessIds `
+        -Processes $ProcessSnapshot `
+        -NodeCommandPath $NodeCommandPath `
+        -SupervisorPath $SupervisorPath `
+        -StateDir $StateDir `
+        -KnownRootProcessIds $KnownRootProcessIds)
+    if ($null -ne $StopProcessSet -and $processIds.Count -gt 0) {
+        & $StopProcessSet $processIds $ProcessSnapshot
+    } else {
+        foreach ($processId in $processIds) {
+            try {
+                & $StopProcess $processId
+            } catch {
+                if ([bool](& $TestProcessExists $processId)) {
+                    throw "Failed to stop owned Windows node process $processId`: $($_.Exception.Message)"
+                }
+            }
+        }
     }
-    return $processIds
+
+    for ($attempt = 0; $attempt -lt $Attempts; $attempt++) {
+        $survivors = @($processIds | Where-Object { [bool](& $TestProcessExists $_) })
+        if ($survivors.Count -eq 0) {
+            return $processIds
+        }
+        if ($attempt + 1 -lt $Attempts) {
+            & $Wait
+        }
+    }
+
+    throw "Owned Windows node processes did not exit (pids=$($survivors -join ','))."
 }

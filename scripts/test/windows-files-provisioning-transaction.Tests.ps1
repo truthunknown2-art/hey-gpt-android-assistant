@@ -98,7 +98,8 @@ Describe "Windows provisioner transaction restore" {
                 -StopRuntime { $script:stopCalls += 1 } `
                 -GetTaskState { "Running" } `
                 -TestLockHeld { $true } `
-                -TestNodeReady { $true } `
+                -GetNodeConnectionMarker { [long]100 } `
+                -TestNodeReady { param($PreviousConnectedAtMs) $true } `
                 -Attempts 1 `
                 -Wait {}
         } | Should Throw
@@ -109,7 +110,7 @@ Describe "Windows provisioner transaction restore" {
         $script:startCalls = 0
         $script:stopTaskCalls = 0
         $script:stopProcessCalls = 0
-        $script:minimumConnectedAtMs = 0
+        $script:previousConnectedAtMs = 0
         $script:restoredTaskState = "Running"
         $script:restoredLockHeld = $true
 
@@ -120,16 +121,21 @@ Describe "Windows provisioner transaction restore" {
                 -StopRuntime {
                     Stop-WindowsNodeRuntimePostcondition `
                         -TaskLabel "test task" `
+                        -CaptureProcesses { [pscustomobject]@{} } `
                         -StopTasks { $script:stopTaskCalls += 1; $script:restoredTaskState = "Ready" } `
                         -StopProcesses { $script:stopProcessCalls += 1; $script:restoredLockHeld = $false } `
                         -GetOwnerTaskState { $script:restoredTaskState } `
+                        -GetInteractiveTaskState { "Ready" } `
                         -TestLockHeld { $script:restoredLockHeld } `
+                        -TestNodeStopped { $true } `
                         -Attempts 1 `
+                        -RequiredStableObservations 1 `
                         -Wait {}
                 } `
                 -GetTaskState { $script:restoredTaskState } `
                 -TestLockHeld { $script:restoredLockHeld } `
-                -TestNodeReady { param($MinimumConnectedAtMs) $script:minimumConnectedAtMs = $MinimumConnectedAtMs; $false } `
+                -GetNodeConnectionMarker { [long]1234 } `
+                -TestNodeReady { param($PreviousConnectedAtMs) $script:previousConnectedAtMs = $PreviousConnectedAtMs; $false } `
                 -Attempts 2 `
                 -Wait {}
         } | Should Throw
@@ -138,7 +144,7 @@ Describe "Windows provisioner transaction restore" {
         $script:stopProcessCalls | Should Be 1
         $script:restoredTaskState | Should Be "Ready"
         $script:restoredLockHeld | Should Be $false
-        $script:minimumConnectedAtMs | Should BeGreaterThan 0
+        $script:previousConnectedAtMs | Should Be 1234
     }
 
     It "accepts rollback only after task, lock, and node postconditions hold" {
@@ -151,7 +157,13 @@ Describe "Windows provisioner transaction restore" {
             -StopRuntime { $script:stopCalls += 1 } `
             -GetTaskState { "Running" } `
             -TestLockHeld { $true } `
-            -TestNodeReady { param($MinimumConnectedAtMs) $MinimumConnectedAtMs -gt 0 } `
+            -GetNodeConnectionMarker { [long]4102444800000 } `
+            -TestNodeReady {
+                param($PreviousConnectedAtMs)
+                Test-WindowsNodeGatewayConnectionAdvanced `
+                    -PreviousConnectedAtMs $PreviousConnectedAtMs `
+                    -CurrentConnectedAtMs ([long]4102444800001)
+            } `
             -Attempts 1 `
             -Wait {}
 
@@ -167,7 +179,8 @@ Describe "Windows provisioner transaction restore" {
                 -StopRuntime { throw "injected task-stop failure" } `
                 -GetTaskState { "Ready" } `
                 -TestLockHeld { $false } `
-                -TestNodeReady { param($MinimumConnectedAtMs) $false } `
+                -GetNodeConnectionMarker { [long]100 } `
+                -TestNodeReady { param($PreviousConnectedAtMs) $false } `
                 -Attempts 1 `
                 -Wait {}
         } | Should Throw
@@ -177,13 +190,124 @@ Describe "Windows provisioner transaction restore" {
         {
             Stop-WindowsNodeRuntimePostcondition `
                 -TaskLabel "test task" `
+                -CaptureProcesses { [pscustomobject]@{} } `
                 -StopTasks {} `
                 -StopProcesses {} `
                 -GetOwnerTaskState { "Running" } `
+                -GetInteractiveTaskState { "Ready" } `
                 -TestLockHeld { $true } `
+                -TestNodeStopped { $false } `
+                -Attempts 1 `
+                -RequiredStableObservations 1 `
+                -Wait {}
+        } | Should Throw
+    }
+
+    It "rejects a queued owner even when the lock is free and node is stopped" {
+        {
+            Stop-WindowsNodeRuntimePostcondition `
+                -TaskLabel "test task" `
+                -CaptureProcesses { [pscustomobject]@{} } `
+                -StopTasks {} `
+                -StopProcesses {} `
+                -GetOwnerTaskState { "Queued" } `
+                -GetInteractiveTaskState { "Ready" } `
+                -TestLockHeld { $false } `
+                -TestNodeStopped { $true } `
+                -Attempts 1 `
+                -RequiredStableObservations 1 `
+                -Wait {}
+        } | Should Throw
+    }
+
+    It "rejects an unknown interactive task state" {
+        {
+            Stop-WindowsNodeRuntimePostcondition `
+                -TaskLabel "test task" `
+                -CaptureProcesses { [pscustomobject]@{} } `
+                -StopTasks {} `
+                -StopProcesses {} `
+                -GetOwnerTaskState { "Ready" } `
+                -GetInteractiveTaskState { "Unknown" } `
+                -TestLockHeld { $false } `
+                -TestNodeStopped { $true } `
+                -Attempts 1 `
+                -RequiredStableObservations 1 `
+                -Wait {}
+        } | Should Throw
+    }
+
+    It "requires the exact node to disconnect before cleanup succeeds" {
+        {
+            Stop-WindowsNodeRuntimePostcondition `
+                -TaskLabel "test task" `
+                -CaptureProcesses { [pscustomobject]@{} } `
+                -StopTasks {} `
+                -StopProcesses {} `
+                -GetOwnerTaskState { "Ready" } `
+                -GetInteractiveTaskState { "Ready" } `
+                -TestLockHeld { $false } `
+                -TestNodeStopped { $false } `
+                -Attempts 1 `
+                -RequiredStableObservations 1 `
+                -Wait {}
+        } | Should Throw
+    }
+
+    It "rejects a stale Gateway connection marker without using the Windows clock" {
+        $script:cleanupCalls = 0
+        {
+            Restore-WindowsNodeRuntimePostcondition `
+                -TaskLabel "test task" `
+                -StartTask {} `
+                -StopRuntime { $script:cleanupCalls += 1 } `
+                -GetTaskState { "Running" } `
+                -TestLockHeld { $true } `
+                -GetNodeConnectionMarker { [long]1000 } `
+                -TestNodeReady { param($PreviousConnectedAtMs) ([long]1000 -gt [long]$PreviousConnectedAtMs) } `
                 -Attempts 1 `
                 -Wait {}
         } | Should Throw
+        $script:cleanupCalls | Should Be 1
+    }
+
+    It "accepts a newer Gateway marker when the Gateway clock is far behind Windows" {
+        Test-WindowsNodeGatewayConnectionAdvanced `
+            -PreviousConnectedAtMs ([long]946684800000) `
+            -CurrentConnectedAtMs ([long]946684800001) | Should Be $true
+    }
+
+    It "accepts a newer Gateway marker when the Gateway clock is far ahead of Windows" {
+        Test-WindowsNodeGatewayConnectionAdvanced `
+            -PreviousConnectedAtMs ([long]4102444800000) `
+            -CurrentConnectedAtMs ([long]4102444800001) | Should Be $true
+    }
+
+    It "rejects an unchanged Gateway marker" {
+        Test-WindowsNodeGatewayConnectionAdvanced `
+            -PreviousConnectedAtMs ([long]123456789) `
+            -CurrentConnectedAtMs ([long]123456789) | Should Be $false
+    }
+
+    It "still stops tasks and fails closed when process capture is denied" {
+        $script:captureStopTaskCalls = 0
+        $script:captureStopProcessCalls = 0
+        {
+            Stop-WindowsNodeRuntimePostcondition `
+                -TaskLabel "test task" `
+                -CaptureProcesses { throw "injected capture access denied" } `
+                -StopTasks { $script:captureStopTaskCalls += 1 } `
+                -StopProcesses { param($ProcessCapture) $script:captureStopProcessCalls += 1 } `
+                -GetOwnerTaskState { "Ready" } `
+                -GetInteractiveTaskState { "Ready" } `
+                -TestLockHeld { $false } `
+                -TestNodeStopped { $true } `
+                -Attempts 1 `
+                -RequiredStableObservations 1 `
+                -Wait {}
+        } | Should Throw
+        $script:captureStopTaskCalls | Should Be 1
+        $script:captureStopProcessCalls | Should Be 1
     }
 }
 
@@ -490,5 +614,95 @@ Describe "Windows file provisioner process ownership" {
 
         $supervisors | Should Be @(400)
         $tree | Should Be @(402, 401, 400)
+    }
+
+    It "fails closed when process enumeration is denied" {
+        {
+            Stop-OwnedWindowsNodeProcesses `
+                -NodeCommandPath "C:\State\node.cmd" `
+                -GetProcesses { throw "injected access denied" }
+        } | Should Throw
+    }
+
+    It "uses the exact scheduled-task pid when command lines are hidden" {
+        $processes = @(
+            [pscustomobject]@{ Name = "powershell.exe"; ProcessId = 700; ParentProcessId = 1; CommandLine = $null },
+            [pscustomobject]@{ Name = "cmd.exe"; ProcessId = 701; ParentProcessId = 700; CommandLine = $null },
+            [pscustomobject]@{ Name = "node.exe"; ProcessId = 702; ParentProcessId = 701; CommandLine = $null }
+        )
+
+        $ids = @(Get-OwnedWindowsNodeProcessIds `
+            -Processes $processes `
+            -NodeCommandPath "C:\State\node.cmd" `
+            -KnownRootProcessIds @(700))
+
+        $ids | Should Be @(702, 701, 700)
+    }
+
+    It "fails when a captured owned child survives termination" {
+        $nodeCommand = "C:\State\node.cmd"
+        $processes = @(
+            [pscustomobject]@{ Name = "cmd.exe"; ProcessId = 800; ParentProcessId = 1; CommandLine = "cmd.exe /c $nodeCommand" },
+            [pscustomobject]@{ Name = "node.exe"; ProcessId = 801; ParentProcessId = 800; CommandLine = "node openclaw node run" }
+        )
+
+        {
+            Stop-OwnedWindowsNodeProcesses `
+                -NodeCommandPath $nodeCommand `
+                -GetProcesses { $processes } `
+                -StopProcess { param($ProcessId) } `
+                -TestProcessExists { param($ProcessId) $true } `
+                -Attempts 1 `
+                -Wait {}
+        } | Should Throw
+    }
+
+    It "returns only after every captured owned pid exits" {
+        $nodeCommand = "C:\State\node.cmd"
+        $processes = @(
+            [pscustomobject]@{ Name = "cmd.exe"; ProcessId = 900; ParentProcessId = 1; CommandLine = "cmd.exe /c $nodeCommand" },
+            [pscustomobject]@{ Name = "node.exe"; ProcessId = 901; ParentProcessId = 900; CommandLine = "node openclaw node run" }
+        )
+        $script:alive = @{ 900 = $true; 901 = $true }
+
+        $stopped = @(Stop-OwnedWindowsNodeProcesses `
+            -NodeCommandPath $nodeCommand `
+            -GetProcesses { $processes } `
+            -StopProcess { param($ProcessId) $script:alive[$ProcessId] = $false } `
+            -TestProcessExists { param($ProcessId) [bool]$script:alive[$ProcessId] } `
+            -Attempts 1 `
+            -Wait {})
+
+        $stopped | Should Be @(901, 900)
+        $script:alive[900] | Should Be $false
+        $script:alive[901] | Should Be $false
+    }
+
+    It "passes the complete child-first capture to a token-boundary stop callback" {
+        $nodeCommand = "C:\State\node.cmd"
+        $script:setCapture = @()
+        $script:setSnapshotCount = 0
+        $script:setAlive = @{ 950 = $true; 951 = $true }
+        $processes = @(
+            [pscustomobject]@{ Name = "cmd.exe"; ProcessId = 950; ParentProcessId = 1; CommandLine = "cmd.exe /c $nodeCommand"; CreationDate = [datetime]::UtcNow },
+            [pscustomobject]@{ Name = "node.exe"; ProcessId = 951; ParentProcessId = 950; CommandLine = "node openclaw node run"; CreationDate = [datetime]::UtcNow }
+        )
+
+        $stopped = @(Stop-OwnedWindowsNodeProcesses `
+            -NodeCommandPath $nodeCommand `
+            -ProcessSnapshot $processes `
+            -StopProcessSet {
+                param($ProcessIds, $ProcessSnapshot)
+                $script:setCapture = @($ProcessIds)
+                $script:setSnapshotCount = @($ProcessSnapshot).Count
+                foreach ($processId in $ProcessIds) { $script:setAlive[$processId] = $false }
+            } `
+            -TestProcessExists { param($ProcessId) [bool]$script:setAlive[$ProcessId] } `
+            -Attempts 1 `
+            -Wait {})
+
+        $stopped | Should Be @(951, 950)
+        $script:setCapture | Should Be @(951, 950)
+        $script:setSnapshotCount | Should Be 2
     }
 }

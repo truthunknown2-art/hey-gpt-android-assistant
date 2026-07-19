@@ -63,6 +63,97 @@ function Register-AgenticWindowsNodeSupervisorTask {
         -Force | Out-Null
 }
 
+function Stop-AgenticWindowsNodeProcessesViaGatewayTask {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][int[]]$ProcessIds,
+        [Parameter(Mandatory = $true)][object[]]$ProcessSnapshot,
+        [Parameter(Mandatory = $true)][string]$BootstrapPath,
+        [Parameter(Mandatory = $true)][string]$GatewayTaskPath,
+        [Parameter(Mandatory = $true)][string]$GatewayTaskName,
+        [Parameter(Mandatory = $true)][string]$DedicatedStateDir,
+        [switch]$LeaveGatewayTaskStopped
+    )
+
+    if ($ProcessIds.Count -eq 0) { return }
+
+    $targets = foreach ($processId in $ProcessIds) {
+        $matches = @($ProcessSnapshot | Where-Object { [int]$_.ProcessId -eq $processId })
+        if ($matches.Count -ne 1 -or $null -eq $matches[0].CreationDate) {
+            throw "Cannot prove the creation time for owned process $processId."
+        }
+        [ordered]@{
+            id = $processId
+            startTicks = ([datetime]$matches[0].CreationDate).ToUniversalTime().Ticks
+        }
+    }
+
+    $nonce = [Guid]::NewGuid().ToString("N")
+    $markerPath = Join-Path $DedicatedStateDir "gateway-cleanup-$nonce.done"
+    $payloadJson = $targets | ConvertTo-Json -Compress
+    $payloadBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($payloadJson))
+    $markerLiteral = ConvertTo-PowerShellSingleQuotedLiteral -Value $markerPath
+    $expiresTicks = [DateTime]::UtcNow.AddMinutes(2).Ticks
+    $startMarker = "# hey-gpt-s4u-cleanup:$nonce:start"
+    $endMarker = "# hey-gpt-s4u-cleanup:$nonce:end"
+    $hook = @"
+$startMarker
+if ([DateTime]::UtcNow.Ticks -gt $expiresTicks) {
+    throw "Expired agentic Windows node cleanup request."
+}
+`$cleanupTargets = @(([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$payloadBase64')) | ConvertFrom-Json))
+foreach (`$cleanupTarget in `$cleanupTargets) {
+    `$cleanupProcess = @(Get-CimInstance Win32_Process -Filter "ProcessId=`$([int]`$cleanupTarget.id)" -ErrorAction Stop)
+    if (`$cleanupProcess.Count -eq 0) { continue }
+    if (`$cleanupProcess.Count -ne 1 -or
+        ([datetime]`$cleanupProcess[0].CreationDate).ToUniversalTime().Ticks -ne [long]`$cleanupTarget.startTicks) {
+        throw "Agentic Windows node cleanup process identity changed."
+    }
+    Stop-Process -Id ([int]`$cleanupTarget.id) -Force -ErrorAction Stop
+}
+[IO.File]::WriteAllText($markerLiteral, "ok", [Text.UTF8Encoding]::new(`$false))
+$endMarker
+"@
+
+    $bootstrapBytes = [IO.File]::ReadAllBytes($BootstrapPath)
+    $bootstrapContent = [Text.Encoding]::UTF8.GetString($bootstrapBytes)
+    if ($bootstrapContent -match '# hey-gpt-s4u-cleanup:[a-f0-9]{32}:') {
+        throw "The Gateway bootstrap already contains an unfinished cleanup hook."
+    }
+
+    $insertionPoint = '$ErrorActionPreference = "Stop"'
+    $insertionIndex = $bootstrapContent.IndexOf($insertionPoint, [StringComparison]::Ordinal)
+    if ($insertionIndex -lt 0) {
+        throw "The owned Gateway bootstrap has an unexpected format."
+    }
+    $insertionIndex += $insertionPoint.Length
+    $temporaryContent = $bootstrapContent.Insert($insertionIndex, "`r`n`r`n$hook")
+
+    try {
+        Remove-Item -LiteralPath $markerPath -Force -ErrorAction SilentlyContinue
+        [IO.File]::WriteAllText($BootstrapPath, $temporaryContent, [Text.UTF8Encoding]::new($false))
+        Stop-ScheduledTask -TaskPath $GatewayTaskPath -TaskName $GatewayTaskName -ErrorAction Stop
+        Start-ScheduledTask -TaskPath $GatewayTaskPath -TaskName $GatewayTaskName -ErrorAction Stop
+        for ($attempt = 0; $attempt -lt 80 -and -not (Test-Path -LiteralPath $markerPath); $attempt++) {
+            Start-Sleep -Milliseconds 250
+        }
+        if (-not (Test-Path -LiteralPath $markerPath) -or
+            [IO.File]::ReadAllText($markerPath) -ne "ok") {
+            throw "The S4U Gateway cleanup bridge did not confirm process termination."
+        }
+    } finally {
+        [IO.File]::WriteAllBytes($BootstrapPath, $bootstrapBytes)
+        Remove-Item -LiteralPath $markerPath -Force -ErrorAction SilentlyContinue
+        if ($LeaveGatewayTaskStopped) {
+            Stop-ScheduledTask -TaskPath $GatewayTaskPath -TaskName $GatewayTaskName -ErrorAction SilentlyContinue
+        }
+        if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($BootstrapPath)) -ne
+            [Convert]::ToBase64String($bootstrapBytes)) {
+            throw "The Gateway bootstrap was not restored byte-for-byte after cleanup."
+        }
+    }
+}
+
 function Invoke-LocalOpenClaw {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
 
@@ -126,7 +217,12 @@ if (-not (Test-Path -LiteralPath $resolvedReadRoot -PathType Container)) {
     throw "ReadRoot must be an existing directory."
 }
 
-$task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+$matchingInteractiveTasks = @(Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop)
+if ($matchingInteractiveTasks.Count -ne 1) {
+    throw "Scheduled task '$TaskName' must resolve to exactly one task."
+}
+$task = $matchingInteractiveTasks[0]
+$interactiveTaskPath = [string]$task.TaskPath
 $nodeVbsPath = Join-Path $resolvedStateDir "node.vbs"
 $nodeCommandPath = Join-Path $resolvedStateDir "node.cmd"
 $supervisorSource = (Resolve-Path (Join-Path $PSScriptRoot "lib\agentic-windows-node-supervisor.ps1")).Path
@@ -229,17 +325,65 @@ $provisioningSucceeded = $false
 $rollbackSucceeded = $false
 $launchersChanged = $false
 $agenticTaskChanged = $false
+$lockPath = Join-Path $resolvedStateDir "agentic-node-supervisor.lock"
+$testSupervisorLockHeld = {
+    Test-AgenticWindowsNodeSupervisorLockHeld -LockPath $lockPath
+}.GetNewClosure()
+$stopOwnedProcessSet = {
+    param($ProcessIds, $ProcessSnapshot)
+    Stop-AgenticWindowsNodeProcessesViaGatewayTask `
+        -ProcessIds @($ProcessIds) `
+        -ProcessSnapshot @($ProcessSnapshot) `
+        -BootstrapPath $gatewayBootstrapPath `
+        -GatewayTaskPath "\OpenClaw\" `
+        -GatewayTaskName "OpenClaw Gateway Supervisor" `
+        -DedicatedStateDir $resolvedStateDir
+}.GetNewClosure()
+$stopOwnedProcessSetAndLeaveGatewayStopped = {
+    param($ProcessIds, $ProcessSnapshot)
+    Stop-AgenticWindowsNodeProcessesViaGatewayTask `
+        -ProcessIds @($ProcessIds) `
+        -ProcessSnapshot @($ProcessSnapshot) `
+        -BootstrapPath $gatewayBootstrapPath `
+        -GatewayTaskPath "\OpenClaw\" `
+        -GatewayTaskName "OpenClaw Gateway Supervisor" `
+        -DedicatedStateDir $resolvedStateDir `
+        -LeaveGatewayTaskStopped
+}.GetNewClosure()
 
 try {
-    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    $initialKnownRootProcessIds = @(Get-ScheduledTaskRunningProcessIds `
+        -TaskPath $interactiveTaskPath `
+        -TaskName $TaskName)
+    if ($agenticTaskExisted) {
+        $initialKnownRootProcessIds = @($initialKnownRootProcessIds) + @(
+            Get-ScheduledTaskRunningProcessIds `
+                -TaskPath $agenticTaskPath `
+                -TaskName $agenticTaskName
+        )
+    } else {
+        $initialKnownRootProcessIds = @($initialKnownRootProcessIds) + @(
+            Get-ScheduledTaskRunningProcessIds `
+                -TaskPath "\OpenClaw\" `
+                -TaskName "OpenClaw Gateway Supervisor"
+        )
+    }
+    $initialKnownRootProcessIds = @($initialKnownRootProcessIds | Sort-Object -Unique)
+    $initialProcessSnapshot = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+    Stop-ScheduledTask `
+        -TaskPath $interactiveTaskPath `
+        -TaskName $TaskName `
+        -ErrorAction SilentlyContinue
     if ($agenticTaskExisted) {
         Stop-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName -ErrorAction SilentlyContinue
     }
     Stop-OwnedWindowsNodeProcesses `
         -NodeCommandPath $nodeCommandPath `
         -SupervisorPath $supervisorPath `
-        -StateDir $resolvedStateDir | Out-Null
-    $lockPath = Join-Path $resolvedStateDir "agentic-node-supervisor.lock"
+        -StateDir $resolvedStateDir `
+        -ProcessSnapshot $initialProcessSnapshot `
+        -KnownRootProcessIds $initialKnownRootProcessIds `
+        -StopProcessSet $stopOwnedProcessSet | Out-Null
     for ($attempt = 0; $attempt -lt 20 -and (Test-AgenticWindowsNodeSupervisorLockHeld -LockPath $lockPath); $attempt++) {
         Start-Sleep -Milliseconds 250
     }
@@ -416,12 +560,30 @@ fi
     $provisioningError = $_
     $rollbackError = $null
     try {
-        Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        $failedProvisioningKnownRootProcessIds = @(Get-ScheduledTaskRunningProcessIds `
+            -TaskPath $interactiveTaskPath `
+            -TaskName $TaskName)
+        $failedProvisioningKnownRootProcessIds = @($failedProvisioningKnownRootProcessIds) + @(
+            Get-OptionalScheduledTaskRunningProcessIds `
+                -TaskPath $agenticTaskPath `
+                -TaskName $agenticTaskName
+        )
+        $failedProvisioningKnownRootProcessIds = @(
+            $failedProvisioningKnownRootProcessIds | Sort-Object -Unique
+        )
+        $failedProvisioningProcessSnapshot = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+        Stop-ScheduledTask `
+            -TaskPath $interactiveTaskPath `
+            -TaskName $TaskName `
+            -ErrorAction SilentlyContinue
         Stop-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName -ErrorAction SilentlyContinue
         Stop-OwnedWindowsNodeProcesses `
             -NodeCommandPath $nodeCommandPath `
             -SupervisorPath $supervisorPath `
-            -StateDir $resolvedStateDir | Out-Null
+            -StateDir $resolvedStateDir `
+            -ProcessSnapshot $failedProvisioningProcessSnapshot `
+            -KnownRootProcessIds $failedProvisioningKnownRootProcessIds `
+            -StopProcessSet $stopOwnedProcessSet | Out-Null
         if ($promoted) {
             if (Test-Path -LiteralPath $pluginStage) {
                 Remove-Item -LiteralPath $pluginStage -Recurse -Force
@@ -495,8 +657,19 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
                     Export-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName -ErrorAction Stop
                 }
         }
+        $getDedicatedNodeConnectionMarker = {
+            $markerStatus = ((Invoke-GatewayOpenClaw nodes status --json) -join "`n") | ConvertFrom-Json
+            $markerNode = @($markerStatus.nodes | Where-Object nodeId -eq $NodeId)
+            if ($markerNode.Count -eq 0) {
+                return [long]-1
+            }
+            if ($markerNode.Count -ne 1 -or $null -eq $markerNode[0].connectedAtMs) {
+                throw "The exact dedicated node connection marker could not be captured."
+            }
+            return [long]$markerNode[0].connectedAtMs
+        }.GetNewClosure()
         $testDedicatedNodeReady = {
-            param($MinimumConnectedAtMs)
+            param($PreviousConnectedAtMs)
             try {
                 $rollbackStatus = ((Invoke-GatewayOpenClaw nodes status --json) -join "`n") | ConvertFrom-Json
                 $rollbackNode = @($rollbackStatus.nodes | Where-Object nodeId -eq $NodeId)
@@ -507,13 +680,25 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
                 }
                 return $rollbackNode.Count -eq 1 -and
                     $rollbackNode[0].connected -eq $true -and
-                    [long]$rollbackNode[0].connectedAtMs -ge [long]$MinimumConnectedAtMs -and
+                    (Test-WindowsNodeGatewayConnectionAdvanced `
+                        -PreviousConnectedAtMs ([long]$PreviousConnectedAtMs) `
+                        -CurrentConnectedAtMs ([long]$rollbackNode[0].connectedAtMs)) -and
                     $rollbackCommands.Count -eq 1 -and
                     $rollbackCommands[0] -eq $WindowsCommand
             } catch {
                 return $false
             }
-        }
+        }.GetNewClosure()
+        $testDedicatedNodeStopped = {
+            try {
+                $stoppedStatus = ((Invoke-GatewayOpenClaw nodes status --json) -join "`n") | ConvertFrom-Json
+                $stoppedNode = @($stoppedStatus.nodes | Where-Object nodeId -eq $NodeId)
+                return $stoppedNode.Count -eq 0 -or
+                    ($stoppedNode.Count -eq 1 -and $stoppedNode[0].connected -ne $true)
+            } catch {
+                return $false
+            }
+        }.GetNewClosure()
         if ($agenticTaskExisted) {
             Restore-WindowsNodeRuntimePostcondition `
                 -TaskLabel "$agenticTaskPath$agenticTaskName" `
@@ -527,30 +712,55 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
                 -StopRuntime {
                     Stop-WindowsNodeRuntimePostcondition `
                         -TaskLabel "$agenticTaskPath$agenticTaskName" `
+                        -CaptureProcesses {
+                            $knownRootProcessIds = @(Get-ScheduledTaskRunningProcessIds `
+                                -TaskPath $interactiveTaskPath `
+                                -TaskName $TaskName)
+                            $knownRootProcessIds = @($knownRootProcessIds) + @(
+                                Get-ScheduledTaskRunningProcessIds `
+                                    -TaskPath $agenticTaskPath `
+                                    -TaskName $agenticTaskName
+                            )
+                            $knownRootProcessIds = @($knownRootProcessIds | Sort-Object -Unique)
+                            return [pscustomobject]@{
+                                Processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+                                KnownRootProcessIds = @($knownRootProcessIds)
+                            }
+                        } `
                         -StopTasks {
-                            $fallbackTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
-                            if ([string]$fallbackTask.State -eq "Running") {
-                                Stop-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+                            $fallbackTask = Get-ScheduledTask `
+                                -TaskPath $interactiveTaskPath `
+                                -TaskName $TaskName `
+                                -ErrorAction Stop
+                            if (-not (Test-WindowsNodeTaskSafeState -State ([string]$fallbackTask.State))) {
+                                Stop-ScheduledTask `
+                                    -TaskPath $interactiveTaskPath `
+                                    -TaskName $TaskName `
+                                    -ErrorAction Stop
                             }
                             $failedAgenticTask = Get-OptionalScheduledTaskExact `
                                 -TaskPath $agenticTaskPath `
                                 -TaskName $agenticTaskName
-                            if ($failedAgenticTask -and [string]$failedAgenticTask.State -eq "Running") {
+                            if ($failedAgenticTask -and
+                                -not (Test-WindowsNodeTaskSafeState -State ([string]$failedAgenticTask.State))) {
                                 Stop-ScheduledTask `
                                     -TaskPath $agenticTaskPath `
                                     -TaskName $agenticTaskName `
                                     -ErrorAction Stop
                             }
-                            $fallbackAfterStop = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
-                            if ([string]$fallbackAfterStop.State -eq "Running") {
-                                throw "The interactive node launcher is still running after cleanup."
-                            }
                         } `
                         -StopProcesses {
+                            param($ProcessCapture)
+                            if ($null -eq $ProcessCapture) {
+                                throw "The owned process capture is unavailable."
+                            }
                             Stop-OwnedWindowsNodeProcesses `
                                 -NodeCommandPath $nodeCommandPath `
                                 -SupervisorPath $supervisorPath `
-                                -StateDir $resolvedStateDir | Out-Null
+                                -StateDir $resolvedStateDir `
+                                -ProcessSnapshot @($ProcessCapture.Processes) `
+                                -KnownRootProcessIds @($ProcessCapture.KnownRootProcessIds) `
+                                -StopProcessSet $stopOwnedProcessSet | Out-Null
                         } `
                         -GetOwnerTaskState {
                             (Get-ScheduledTask `
@@ -558,9 +768,15 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
                                 -TaskName $agenticTaskName `
                                 -ErrorAction Stop).State
                         } `
-                        -TestLockHeld {
-                            Test-AgenticWindowsNodeSupervisorLockHeld -LockPath $lockPath
-                        }
+                        -GetInteractiveTaskState {
+                            $interactiveAfterStop = Get-OptionalScheduledTaskExact `
+                                -TaskPath $interactiveTaskPath `
+                                -TaskName $TaskName
+                            if ($interactiveAfterStop) { return $interactiveAfterStop.State }
+                            return "Absent"
+                        } `
+                        -TestLockHeld $testSupervisorLockHeld `
+                        -TestNodeStopped $testDedicatedNodeStopped
                 } `
                 -GetTaskState {
                     (Get-ScheduledTask `
@@ -568,9 +784,8 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
                         -TaskName $agenticTaskName `
                         -ErrorAction Stop).State
                 } `
-                -TestLockHeld {
-                    Test-AgenticWindowsNodeSupervisorLockHeld -LockPath $lockPath
-                } `
+                -TestLockHeld $testSupervisorLockHeld `
+                -GetNodeConnectionMarker $getDedicatedNodeConnectionMarker `
                 -TestNodeReady $testDedicatedNodeReady
         } else {
             Restore-WindowsNodeRuntimePostcondition `
@@ -588,31 +803,55 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
                 -StopRuntime {
                     Stop-WindowsNodeRuntimePostcondition `
                         -TaskLabel "\OpenClaw\OpenClaw Gateway Supervisor" `
+                        -CaptureProcesses {
+                            $knownRootProcessIds = @(Get-ScheduledTaskRunningProcessIds `
+                                -TaskPath $interactiveTaskPath `
+                                -TaskName $TaskName)
+                            $knownRootProcessIds = @($knownRootProcessIds) + @(
+                                Get-ScheduledTaskRunningProcessIds `
+                                    -TaskPath "\OpenClaw\" `
+                                    -TaskName "OpenClaw Gateway Supervisor"
+                            )
+                            $knownRootProcessIds = @($knownRootProcessIds | Sort-Object -Unique)
+                            return [pscustomobject]@{
+                                Processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+                                KnownRootProcessIds = @($knownRootProcessIds)
+                            }
+                        } `
                         -StopTasks {
-                            $fallbackTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
-                            if ([string]$fallbackTask.State -eq "Running") {
-                                Stop-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+                            $fallbackTask = Get-ScheduledTask `
+                                -TaskPath $interactiveTaskPath `
+                                -TaskName $TaskName `
+                                -ErrorAction Stop
+                            if (-not (Test-WindowsNodeTaskSafeState -State ([string]$fallbackTask.State))) {
+                                Stop-ScheduledTask `
+                                    -TaskPath $interactiveTaskPath `
+                                    -TaskName $TaskName `
+                                    -ErrorAction Stop
                             }
                             $failedGatewayTask = Get-ScheduledTask `
                                 -TaskPath "\OpenClaw\" `
                                 -TaskName "OpenClaw Gateway Supervisor" `
                                 -ErrorAction Stop
-                            if ([string]$failedGatewayTask.State -eq "Running") {
+                            if (-not (Test-WindowsNodeTaskSafeState -State ([string]$failedGatewayTask.State))) {
                                 Stop-ScheduledTask `
                                     -TaskPath "\OpenClaw\" `
                                     -TaskName "OpenClaw Gateway Supervisor" `
                                     -ErrorAction Stop
                             }
-                            $fallbackAfterStop = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
-                            if ([string]$fallbackAfterStop.State -eq "Running") {
-                                throw "The interactive node launcher is still running after cleanup."
-                            }
                         } `
                         -StopProcesses {
+                            param($ProcessCapture)
+                            if ($null -eq $ProcessCapture) {
+                                throw "The owned process capture is unavailable."
+                            }
                             Stop-OwnedWindowsNodeProcesses `
                                 -NodeCommandPath $nodeCommandPath `
                                 -SupervisorPath $supervisorPath `
-                                -StateDir $resolvedStateDir | Out-Null
+                                -StateDir $resolvedStateDir `
+                                -ProcessSnapshot @($ProcessCapture.Processes) `
+                                -KnownRootProcessIds @($ProcessCapture.KnownRootProcessIds) `
+                                -StopProcessSet $stopOwnedProcessSetAndLeaveGatewayStopped | Out-Null
                         } `
                         -GetOwnerTaskState {
                             (Get-ScheduledTask `
@@ -620,9 +859,15 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
                                 -TaskName "OpenClaw Gateway Supervisor" `
                                 -ErrorAction Stop).State
                         } `
-                        -TestLockHeld {
-                            Test-AgenticWindowsNodeSupervisorLockHeld -LockPath $lockPath
-                        }
+                        -GetInteractiveTaskState {
+                            $interactiveAfterStop = Get-OptionalScheduledTaskExact `
+                                -TaskPath $interactiveTaskPath `
+                                -TaskName $TaskName
+                            if ($interactiveAfterStop) { return $interactiveAfterStop.State }
+                            return "Absent"
+                        } `
+                        -TestLockHeld $testSupervisorLockHeld `
+                        -TestNodeStopped $testDedicatedNodeStopped
                 } `
                 -GetTaskState {
                     (Get-ScheduledTask `
@@ -630,9 +875,8 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
                         -TaskName "OpenClaw Gateway Supervisor" `
                         -ErrorAction Stop).State
                 } `
-                -TestLockHeld {
-                    Test-AgenticWindowsNodeSupervisorLockHeld -LockPath $lockPath
-                } `
+                -TestLockHeld $testSupervisorLockHeld `
+                -GetNodeConnectionMarker $getDedicatedNodeConnectionMarker `
                 -TestNodeReady $testDedicatedNodeReady
             # The restored interactive task remains ready for the next logon.
         }
