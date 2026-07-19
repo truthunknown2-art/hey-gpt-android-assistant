@@ -87,3 +87,15 @@ private notification content is never harvested automatically. Both tools are
 optional and must also be explicitly allowlisted for the target agent.
 The activation script pins `memorySearch.provider` to `none`, retaining local
 SQLite FTS recall without embedding API calls or API-credit usage.
+
+When `windowsFileSearchEnabled` or `windowsFileReadEnabled` is explicitly set,
+the Gateway binds the optional tools to one configured voice agent, one Android
+assistant node, and one dedicated Windows node. Search first obtains live phone
+presence and returns at most 50 metadata-only matches as opaque root references.
+Read obtains an exact phone authorization for one opaque reference before it
+invokes the Windows node. The Windows executor accepts only the signed
+`assistant.windows.execute.v1` command, verifies the broker Ed25519 key, node and
+voice-session bindings, and enforces selected roots, text extensions, size and
+depth limits, reparse-point containment, denied directories/names, TOCTOU
+metadata, idempotent receipts, and a privacy-minimized ledger. It has no shell,
+generic filesystem, browser, Phone Link, or model-tool surface.

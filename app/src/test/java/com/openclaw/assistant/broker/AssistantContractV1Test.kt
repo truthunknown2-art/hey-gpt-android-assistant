@@ -45,6 +45,42 @@ class AssistantContractV1Test {
     }
 
     @Test
+    fun `delegated Windows read binds a Windows target to the live phone lease`() {
+        val fixture = Fixture()
+        val arguments = buildJsonObject {
+            put("path", "documents:Projects/Meeting Notes.md")
+            put("maxBytes", 16_384)
+        }
+        val base = fixture.signedProposal()
+        val signed = base.copy(
+            proposal = base.proposal.copy(
+                capability = AssistantCapabilityV1.WINDOWS_FILES_READ,
+                arguments = arguments,
+                argumentsHash = CanonicalJsonV1.sha256(arguments),
+                targetDeviceId = WINDOWS_NODE_ID,
+            ),
+        )
+
+        assertTrue(
+            fixture.validator.validateDelegatedWindowsRead(
+                signed,
+                expectedVoiceSessionKey = SESSION_KEY,
+                presenceDeviceId = DEVICE_ID,
+            ) is ProposalValidationV1.Accepted,
+        )
+        assertRejected(fixture, signed, ProposalRejectionV1.TARGET_DEVICE)
+        val malformedTarget = signed.copy(
+            proposal = signed.proposal.copy(targetDeviceId = "not-a-node"),
+        )
+        val rejected = fixture.validator.validateDelegatedWindowsRead(
+            malformedTarget,
+            expectedVoiceSessionKey = SESSION_KEY,
+            presenceDeviceId = DEVICE_ID,
+        ) as ProposalValidationV1.Rejected
+        assertEquals(ProposalRejectionV1.TARGET_DEVICE, rejected.reason)
+    }
+
+    @Test
     fun `argument mutation is rejected before execution`() {
         val fixture = Fixture()
         val original = fixture.signedProposal()
@@ -236,5 +272,7 @@ class AssistantContractV1Test {
         private const val SESSION_KEY = "agent:voice-main:voice-android-device"
         private const val DEVICE_ID = "paired-device"
         private const val LEASE_ID = "lease-1"
+        private const val WINDOWS_NODE_ID =
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     }
 }

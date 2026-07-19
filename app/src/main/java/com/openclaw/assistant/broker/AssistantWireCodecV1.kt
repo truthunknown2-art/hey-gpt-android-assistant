@@ -92,6 +92,25 @@ internal object AssistantWireCodecV1 {
         put("presenceLeaseId", lease.leaseId)
     }.toString()
 
+    fun encodeWindowsReadAuthorization(
+        proposal: AssistantProposalV1,
+        authorized: Boolean,
+        errorCode: String? = null,
+    ): String {
+        require(proposal.capability == AssistantCapabilityV1.WINDOWS_FILES_READ)
+        require(authorized == (errorCode == null))
+        require(errorCode == null || errorCode.matches(Regex("[A-Z0-9_]{1,64}")))
+        return buildJsonObject {
+            put("contractVersion", AssistantContractV1.VERSION)
+            put("proposalId", proposal.proposalId)
+            put("capability", proposal.capability.wireName)
+            put("argumentsHash", proposal.argumentsHash)
+            put("targetDeviceId", proposal.targetDeviceId)
+            put("authorized", authorized)
+            errorCode?.let { put("errorCode", it) }
+        }.toString()
+    }
+
     fun encodeReceipt(receipt: AssistantReceiptV1): String {
         require(receipt.resultSummary.hasAllowedSummaryFor(receipt.capability))
         return buildJsonObject {

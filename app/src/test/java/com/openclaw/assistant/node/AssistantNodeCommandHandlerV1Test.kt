@@ -90,19 +90,38 @@ class AssistantNodeCommandHandlerV1Test {
     }
 
     @Test
-    fun `unsupported private capability is denied without prompting`() = runTest {
+    fun `approved Windows read authorization is exact and reusable in the same session`() = runTest {
         val fixture = Fixture(approvalAllowed = true)
+        val request = fixture.signedJson(AssistantCapabilityV1.WINDOWS_FILES_READ)
+
+        val first = fixture.handler.handleExecute(request)
+        val second = fixture.handler.handleExecute(request)
+
+        assertTrue(first.ok)
+        assertTrue(second.ok)
+        assertEquals(1, fixture.approvalRequests)
+        assertTrue(fixture.hasWindowsGrant())
+        val payload = Json.parseToJsonElement(first.payloadJson!!).jsonObject
+        assertEquals(true, payload["authorized"]?.jsonPrimitive?.content?.toBoolean())
+        assertEquals(WINDOWS_NODE, payload["targetDeviceId"]?.jsonPrimitive?.content)
+        assertEquals("windows.files.read", payload["capability"]?.jsonPrimitive?.content)
+        assertNull(payload["errorCode"])
+    }
+
+    @Test
+    fun `denied Windows read authorization never creates a grant`() = runTest {
+        val fixture = Fixture(approvalAllowed = false)
 
         val result = fixture.handler.handleExecute(
             fixture.signedJson(AssistantCapabilityV1.WINDOWS_FILES_READ),
         )
 
         assertTrue(result.ok)
-        assertEquals(0, fixture.approvalRequests)
-        assertEquals(
-            "CAPABILITY_NOT_IMPLEMENTED",
-            Json.parseToJsonElement(result.payloadJson!!).jsonObject["errorCode"]?.jsonPrimitive?.content,
-        )
+        assertEquals(1, fixture.approvalRequests)
+        assertFalse(fixture.hasWindowsGrant())
+        val payload = Json.parseToJsonElement(result.payloadJson!!).jsonObject
+        assertEquals(false, payload["authorized"]?.jsonPrimitive?.content?.toBoolean())
+        assertEquals("PRIVATE_READ_APPROVAL_DENIED", payload["errorCode"]?.jsonPrimitive?.content)
     }
 
     @Test
@@ -657,7 +676,7 @@ class AssistantNodeCommandHandlerV1Test {
                     put("allDay", false)
                 }
                 AssistantCapabilityV1.WINDOWS_FILES_READ -> buildJsonObject {
-                    put("path", "C:/private.txt")
+                    put("path", "documents:private.txt")
                     put("maxBytes", 1_024)
                 }
                 else -> buildJsonObject {}
@@ -669,7 +688,11 @@ class AssistantNodeCommandHandlerV1Test {
                 capability = capability,
                 arguments = arguments,
                 argumentsHash = CanonicalJsonV1.sha256(arguments),
-                targetDeviceId = DEVICE,
+                targetDeviceId = if (capability == AssistantCapabilityV1.WINDOWS_FILES_READ) {
+                    WINDOWS_NODE
+                } else {
+                    DEVICE
+                },
                 voiceSessionKey = SESSION,
                 presenceLeaseId = lease.leaseId,
                 issuedAtMs = epochNow,
@@ -687,6 +710,12 @@ class AssistantNodeCommandHandlerV1Test {
             SESSION,
             DEVICE,
         )
+
+        fun hasWindowsGrant(): Boolean = grantManager.isAuthorized(
+            AssistantCapabilityV1.WINDOWS_FILES_READ,
+            SESSION,
+            WINDOWS_NODE,
+        )
     }
 
     private companion object {
@@ -699,5 +728,7 @@ class AssistantNodeCommandHandlerV1Test {
         const val STEP = "33333333-3333-4333-8333-333333333333"
         const val IDEMPOTENCY = "44444444-4444-4444-8444-444444444444"
         const val RECEIPT = "55555555-5555-4555-8555-555555555555"
+        const val WINDOWS_NODE =
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     }
 }

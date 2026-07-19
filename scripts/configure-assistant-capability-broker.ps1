@@ -6,6 +6,9 @@ param(
 $ErrorActionPreference = "Stop"
 $PluginId = "assistant-capability-broker"
 $StagePath = "/home/openclaw/.openclaw/plugin-dev/$PluginId"
+$StageNextPath = "$StagePath.next"
+
+. (Join-Path $PSScriptRoot "lib\wsl-plugin-transfer.ps1")
 
 function Invoke-WslBash {
     param([string]$Command)
@@ -32,22 +35,26 @@ function Invoke-OpenClaw {
 }
 
 $pluginWindowsPath = (Resolve-Path (Join-Path $PSScriptRoot "..\integrations\$PluginId")).Path
-$drive = $pluginWindowsPath.Substring(0, 1).ToLowerInvariant()
-$relativePath = $pluginWindowsPath.Substring(2).Replace('\', '/')
-$pluginWslPath = "/mnt/$drive$relativePath"
-$escapedSource = "'" + $pluginWslPath.Replace("'", "'\''") + "'"
+Send-PluginBundleToWsl `
+    -Distro $Distro `
+    -SourcePath $pluginWindowsPath `
+    -DestinationPath $StageNextPath `
+    -Entries @("package.json", "openclaw.plugin.json", "README.md", "dist", "test")
 
 $stageCommand = @"
 set -euo pipefail
-rm -rf '$StagePath'
-mkdir -p '$StagePath'
-cp -a $escapedSource/package.json $escapedSource/openclaw.plugin.json $escapedSource/README.md '$StagePath/'
-cp -a $escapedSource/dist $escapedSource/test '$StagePath/'
-find '$StagePath' -type d -exec chmod 755 {} +
-find '$StagePath' -type f -exec chmod 644 {} +
+find '$StageNextPath' -type d -exec chmod 755 {} +
+find '$StageNextPath' -type f -exec chmod 644 {} +
 export PATH="/home/openclaw/.openclaw/tools/node/bin:/home/openclaw/.openclaw/bin:`$PATH"
-cd '$StagePath'
+cd '$StageNextPath'
 npm test
+rm -rf '$StagePath.previous'
+if [ -e '$StagePath' ]; then mv '$StagePath' '$StagePath.previous'; fi
+if ! mv '$StageNextPath' '$StagePath'; then
+    if [ -e '$StagePath.previous' ]; then mv '$StagePath.previous' '$StagePath'; fi
+    exit 1
+fi
+rm -rf '$StagePath.previous'
 "@
 Invoke-WslBash $stageCommand | Out-Null
 
@@ -72,7 +79,9 @@ $knownTools = @(
     "assistant_calendar_next",
     "assistant_calendar_create",
     "assistant_memory_forget",
-    "assistant_memory_remember"
+    "assistant_memory_remember",
+    "assistant_windows_files_read",
+    "assistant_windows_files_search"
 ) | Sort-Object
 if ($runtime.plugin.status -ne "loaded") {
     throw "Plugin '$PluginId' did not load."

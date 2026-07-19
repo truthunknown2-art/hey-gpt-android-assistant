@@ -3,6 +3,8 @@ import { BrokerLedger } from "./ledger.js";
 import { ExplicitMemoryStore } from "./memory.js";
 import { BrokerSigningIdentityV1 } from "./signing-identity-v1.js";
 import { registerPrivateReadTools } from "./private-read-tools.js";
+import { registerWindowsFileTools } from "./windows-files-tools.js";
+import { registerWindowsNodeHostCommand } from "./windows-node-command.js";
 
 let ledger = null;
 let signingIdentity = null;
@@ -82,7 +84,11 @@ export function registerBroker(api) {
   const modelToolsRegistered = registerMemoryTools(api) + registerPrivateReadTools(api, {
     ledger: () => ledger,
     signingIdentity: () => signingIdentity,
+  }) + registerWindowsFileTools(api, {
+    ledger: () => ledger,
+    signingIdentity: () => signingIdentity,
   });
+  registerWindowsNodeHostCommand(api);
   api.registerService({
     id: "assistant-capability-broker",
     start: async (ctx) => {
@@ -137,6 +143,27 @@ export default {
       calendarWritesEnabled: { type: "boolean", default: false },
       privateReadAgentId: { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,63}$", default: "voice-main" },
       androidNodeId: { type: "string", pattern: "^[a-f0-9]{64}$" },
+      windowsFileSearchEnabled: { type: "boolean", default: false },
+      windowsFileReadEnabled: { type: "boolean", default: false },
+      windowsFileAgentId: { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,63}$", default: "voice-main" },
+      windowsNodeId: { type: "string", pattern: "^[a-f0-9]{64}$" },
+      windowsNodeEnabled: { type: "boolean", default: false },
+      windowsVoiceSessionKey: { type: "string", minLength: 1, maxLength: 256 },
+      windowsBrokerKeyId: { type: "string", pattern: "^[A-Za-z0-9._-]{1,128}$" },
+      windowsBrokerPublicKeyBase64Url: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" },
+      windowsReadRoots: {
+        type: "object",
+        minProperties: 1,
+        maxProperties: 10,
+        propertyNames: { pattern: "^[a-z][a-z0-9_-]{0,31}$" },
+        additionalProperties: { type: "string", minLength: 3 },
+      },
+      windowsReadExtensions: {
+        type: "array",
+        minItems: 1,
+        maxItems: 100,
+        items: { type: "string", pattern: "^\\.[A-Za-z0-9]{1,12}$" },
+      },
     },
     additionalProperties: false,
   },

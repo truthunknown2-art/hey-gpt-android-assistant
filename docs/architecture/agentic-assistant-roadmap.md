@@ -309,6 +309,12 @@ Build versioned contracts, presence leases, broker plan/receipt storage, shared
 Android executor internals, the read-only Windows helper, safe Android reads,
 and explicit local memory tools. Side-effect capabilities remain disabled.
 
+Current implementation status (2026-07-19): the signed Windows search/read
+slice is deployed through a dedicated one-command node, automated contract and
+executor tests pass, and unauthenticated search fails closed. Physical phone
+approval, Wi-Fi/mobile-data repetition, lock-transition fault injection, and
+endurance acceptance remain open; Phase 1 is not complete.
+
 Vertical slice:
 
 ```text

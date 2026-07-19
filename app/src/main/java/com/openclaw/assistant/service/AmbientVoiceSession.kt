@@ -115,8 +115,8 @@ internal class AmbientVoiceSession(
             finish(if (keyguardManager.isDeviceLocked) "secure_lock" else "gateway_unavailable")
             return false
         }
-        AssistantPrivateReadApprovals.registry.revokeSession(sessionKey, targetDeviceId)
-        AssistantPrivateReadGrants.manager.revokeSession(sessionKey, targetDeviceId)
+        AssistantPrivateReadApprovals.registry.revokeVoiceSession(sessionKey)
+        AssistantPrivateReadGrants.manager.revokeVoiceSession(sessionKey)
         presenceLease = AssistantPresenceLeases.manager.issue(sessionKey, targetDeviceId)
 
         acquireWakeLock()
@@ -352,8 +352,8 @@ internal class AmbientVoiceSession(
         if (!active.get() || !finishing.compareAndSet(false, true)) return
         privateResultBinding?.close()
         privateResultBinding = null
-        AssistantPrivateReadApprovals.registry.revokeSession(sessionKey, targetDeviceId)
-        AssistantPrivateReadGrants.manager.revokeSession(sessionKey, targetDeviceId)
+        AssistantPrivateReadApprovals.registry.revokeVoiceSession(sessionKey)
+        AssistantPrivateReadGrants.manager.revokeVoiceSession(sessionKey)
         presenceLease?.let { AssistantPresenceLeases.manager.revoke(it.leaseId) }
         presenceLease = null
         val capturedSessionJob = sessionJob

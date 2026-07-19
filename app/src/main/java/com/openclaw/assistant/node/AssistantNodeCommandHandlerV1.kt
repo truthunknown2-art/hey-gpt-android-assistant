@@ -69,6 +69,9 @@ internal class AssistantNodeCommandHandlerV1(
         }
         val expectedDeviceId = lease.targetDeviceId
         val expectedSessionKey = lease.voiceSessionKey
+        if (signed.proposal.capability == AssistantCapabilityV1.WINDOWS_FILES_READ) {
+            return handleWindowsReadAuthorization(signed, expectedDeviceId, expectedSessionKey)
+        }
         if (signed.proposal.capability == AssistantCapabilityV1.ANDROID_PHONE_CALL_CONTACT) {
             return handleContactCall(signed, expectedDeviceId, expectedSessionKey)
         }
@@ -118,6 +121,66 @@ internal class AssistantNodeCommandHandlerV1(
             expectedVoiceSessionKey = expectedSessionKey,
         ).deliverPrivateResultOrFail(signed.proposal)
         return sanitizedResult(outcome)
+    }
+
+    private suspend fun handleWindowsReadAuthorization(
+        signed: com.openclaw.assistant.broker.SignedAssistantProposalV1,
+        presenceDeviceId: String,
+        expectedSessionKey: String,
+    ): GatewaySession.InvokeResult {
+        val proposal = signed.proposal
+        val initialValidation = executor.validateDelegatedWindowsRead(
+            signed = signed,
+            expectedVoiceSessionKey = expectedSessionKey,
+            presenceDeviceId = presenceDeviceId,
+        )
+        if (initialValidation is ProposalValidationV1.Rejected) {
+            return windowsReadAuthorization(
+                proposal,
+                authorized = false,
+                errorCode = "PROPOSAL_${initialValidation.reason.name}",
+            )
+        }
+        if (!privateReadGrants.isAuthorized(
+                proposal.capability,
+                expectedSessionKey,
+                proposal.targetDeviceId,
+            )
+        ) {
+            val approved = runCatching { privateReadApprovalGate.request(signed) }.getOrDefault(false)
+            if (!approved) {
+                return windowsReadAuthorization(
+                    proposal,
+                    authorized = false,
+                    errorCode = "PRIVATE_READ_APPROVAL_DENIED",
+                )
+            }
+            if (!securityGate()) {
+                return windowsReadAuthorization(
+                    proposal,
+                    authorized = false,
+                    errorCode = "UNLOCKED_PRESENCE_REQUIRED",
+                )
+            }
+            val finalValidation = executor.validateDelegatedWindowsRead(
+                signed = signed,
+                expectedVoiceSessionKey = expectedSessionKey,
+                presenceDeviceId = presenceDeviceId,
+            )
+            if (finalValidation is ProposalValidationV1.Rejected) {
+                return windowsReadAuthorization(
+                    proposal,
+                    authorized = false,
+                    errorCode = "PROPOSAL_${finalValidation.reason.name}",
+                )
+            }
+            privateReadGrants.grant(
+                proposal.capability,
+                expectedSessionKey,
+                proposal.targetDeviceId,
+            )
+        }
+        return windowsReadAuthorization(proposal, authorized = true)
     }
 
     private suspend fun handleContactCall(
@@ -231,6 +294,21 @@ internal class AssistantNodeCommandHandlerV1(
         GatewaySession.InvokeResult.ok(AssistantWireCodecV1.encodeReceipt(outcome.receipt))
     }.getOrElse {
         GatewaySession.InvokeResult.error("RECEIPT_POLICY_REJECTED", "Assistant receipt was rejected")
+    }
+
+    private fun windowsReadAuthorization(
+        proposal: com.openclaw.assistant.broker.AssistantProposalV1,
+        authorized: Boolean,
+        errorCode: String? = null,
+    ): GatewaySession.InvokeResult = runCatching {
+        GatewaySession.InvokeResult.ok(
+            AssistantWireCodecV1.encodeWindowsReadAuthorization(proposal, authorized, errorCode),
+        )
+    }.getOrElse {
+        GatewaySession.InvokeResult.error(
+            "AUTHORIZATION_POLICY_REJECTED",
+            "Windows read authorization was rejected",
+        )
     }
 
     private suspend fun AssistantExecutionOutcomeV1.deliverPrivateResultOrFail(

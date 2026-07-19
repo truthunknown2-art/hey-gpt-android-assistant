@@ -239,6 +239,16 @@ internal class AssistantCapabilityExecutorV1(
         expectedVoiceSessionKey = expectedVoiceSessionKey,
     )
 
+    fun validateDelegatedWindowsRead(
+        signed: SignedAssistantProposalV1,
+        expectedVoiceSessionKey: String,
+        presenceDeviceId: String,
+    ): ProposalValidationV1 = validator.validateDelegatedWindowsRead(
+        signed = signed,
+        expectedVoiceSessionKey = expectedVoiceSessionKey,
+        presenceDeviceId = presenceDeviceId,
+    )
+
     fun execute(
         signed: SignedAssistantProposalV1,
         expectedDeviceId: String,

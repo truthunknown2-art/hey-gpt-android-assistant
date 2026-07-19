@@ -207,9 +207,30 @@ during the retention window, including after notification dismissal. It cannot
 recover earlier chats that never generated a captured notification. Full inbox
 history would require a separate approved integration.
 
-Windows Phone Link does not automatically become an OpenClaw tool. It can remain
-a manual convenience; automating it would require a separately connected
-Windows node or a narrowly scoped desktop capability.
+Windows Phone Link does not automatically become an OpenClaw tool. The deployed
+Windows file bridge instead uses a dedicated scheduled-task node with one fixed
+`assistant.windows.execute.v1` command. `assistant_windows_files_search` returns
+only metadata and opaque root references while the bound phone voice session is
+unlocked. `assistant_windows_files_read` accepts only one returned reference and
+requires the phone's secure private-read approval before bounded UTF-8 content
+leaves the selected root. The Gateway globally denies generic node shell,
+approval-management, and browser-proxy commands.
+
+Provision an already paired dedicated Windows node idempotently with:
+
+```powershell
+pwsh -File .\scripts\enable-assistant-windows-files.ps1 `
+  -NodeId <WINDOWS_NODE_ID> `
+  -AndroidNodeId <ANDROID_ASSISTANT_NODE_ID> `
+  -BrokerKeyId <BROKER_PUBLIC_KEY_ID> `
+  -BrokerPublicKeyBase64Url <BROKER_PUBLIC_KEY>
+```
+
+The script validates that the scheduled task belongs to the dedicated state
+directory, stages and tests the plugin before atomic replacement, pins the
+Windows node/voice session/broker public key, preserves only the `documents`
+read-root alias by default, restarts both sides, and fails unless the connected
+node advertises exactly the fixed command.
 
 ## Lock transition policy
 
@@ -243,6 +264,11 @@ not securely locked. A later transition to secure lock terminates the main lane.
   details only on the phone.
 - Calendar creation denial or a lock transition inserts nothing; approval
   inserts the exact event once.
+- Windows filename search fails without the active unlocked voice session and
+  returns metadata plus opaque references only when the session is live.
+- The first Windows content read in a voice session shows the exact on-phone
+  approval; denial returns no content, approval returns only bounded UTF-8 text,
+  and traversal, denied names, links, binary files, and oversize reads fail.
 - Contact calling and SMS require fresh on-phone approval for every outbound
   action.
 - Securely locked Hey GPT uses only `agent:locked-voice:*` and cannot call tools.

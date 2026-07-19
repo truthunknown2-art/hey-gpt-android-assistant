@@ -150,6 +150,38 @@ internal class AssistantProposalValidatorV1(
         signed: SignedAssistantProposalV1,
         expectedDeviceId: String,
         expectedVoiceSessionKey: String,
+    ): ProposalValidationV1 = validateInternal(
+        signed = signed,
+        expectedDeviceId = expectedDeviceId,
+        expectedVoiceSessionKey = expectedVoiceSessionKey,
+        presenceDeviceId = expectedDeviceId,
+    )
+
+    /** Validates a broker-signed Windows read against the live phone presence lease. */
+    fun validateDelegatedWindowsRead(
+        signed: SignedAssistantProposalV1,
+        expectedVoiceSessionKey: String,
+        presenceDeviceId: String,
+    ): ProposalValidationV1 {
+        if (
+            signed.proposal.capability != AssistantCapabilityV1.WINDOWS_FILES_READ ||
+            !signed.proposal.targetDeviceId.matches(WINDOWS_NODE_ID_PATTERN)
+        ) {
+            return ProposalValidationV1.Rejected(ProposalRejectionV1.TARGET_DEVICE)
+        }
+        return validateInternal(
+            signed = signed,
+            expectedDeviceId = null,
+            expectedVoiceSessionKey = expectedVoiceSessionKey,
+            presenceDeviceId = presenceDeviceId,
+        )
+    }
+
+    private fun validateInternal(
+        signed: SignedAssistantProposalV1,
+        expectedDeviceId: String?,
+        expectedVoiceSessionKey: String,
+        presenceDeviceId: String,
     ): ProposalValidationV1 {
         val proposal = signed.proposal
         if (proposal.contractVersion != AssistantContractV1.VERSION) {
@@ -167,7 +199,7 @@ internal class AssistantProposalValidatorV1(
         if (!constantTimeEquals(proposal.argumentsHash, CanonicalJsonV1.sha256(proposal.arguments))) {
             return ProposalValidationV1.Rejected(ProposalRejectionV1.ARGUMENT_HASH)
         }
-        if (proposal.targetDeviceId != expectedDeviceId) {
+        if (expectedDeviceId != null && proposal.targetDeviceId != expectedDeviceId) {
             return ProposalValidationV1.Rejected(ProposalRejectionV1.TARGET_DEVICE)
         }
         if (proposal.voiceSessionKey != expectedVoiceSessionKey) {
@@ -195,7 +227,7 @@ internal class AssistantProposalValidatorV1(
         val lease = presenceLeases.validate(
             proposal.presenceLeaseId,
             proposal.voiceSessionKey,
-            proposal.targetDeviceId,
+            presenceDeviceId,
         )
         if (lease !is PresenceLeaseValidation.Valid) {
             return ProposalValidationV1.Rejected(ProposalRejectionV1.PRESENCE_LEASE)
@@ -216,6 +248,10 @@ internal class AssistantProposalValidatorV1(
         val leftBytes = left.toByteArray(Charsets.US_ASCII)
         val rightBytes = right.toByteArray(Charsets.US_ASCII)
         return MessageDigest.isEqual(leftBytes, rightBytes)
+    }
+
+    private companion object {
+        val WINDOWS_NODE_ID_PATTERN = Regex("[a-f0-9]{64}")
     }
 }
 
@@ -306,8 +342,8 @@ private object AssistantArgumentsV1 {
                 arguments.optionalLong("limit", 1L..50L)
         AssistantCapabilityV1.WINDOWS_FILES_READ ->
             arguments.hasOnly("path", "maxBytes") &&
-                arguments.requiredString("path", 1..1024) &&
-                arguments.optionalLong("maxBytes", 1L..1_000_000L)
+                arguments.requiredWindowsFileReference("path") &&
+                arguments.optionalLong("maxBytes", 1L..65_536L)
     }
 
     private fun JsonObject.hasOnly(vararg names: String): Boolean = keys.all { it in names }
@@ -315,6 +351,20 @@ private object AssistantArgumentsV1 {
     private fun JsonObject.requiredString(name: String, length: IntRange): Boolean {
         val value = this[name] as? JsonPrimitive ?: return false
         return value.isString && value.content.trim().length in length
+    }
+
+    private fun JsonObject.requiredWindowsFileReference(name: String): Boolean {
+        val value = this[name] as? JsonPrimitive ?: return false
+        if (!value.isString || value.content.length !in 3..1024) return false
+        val separator = value.content.indexOf(':')
+        if (separator !in 1..32) return false
+        val alias = value.content.substring(0, separator)
+        val relative = value.content.substring(separator + 1)
+        return alias.matches(Regex("[a-z][a-z0-9_-]{0,31}")) &&
+            relative.isNotBlank() &&
+            '\\' !in relative &&
+            relative.none { it.code < 0x20 || it.code == 0x7f } &&
+            relative.split('/').none { it.isEmpty() || it == "." || it == ".." }
     }
 
     private fun JsonObject.optionalLong(name: String, range: LongRange): Boolean {

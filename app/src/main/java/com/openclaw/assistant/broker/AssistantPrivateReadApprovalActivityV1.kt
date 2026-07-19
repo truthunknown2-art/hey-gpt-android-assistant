@@ -68,6 +68,11 @@ internal class AssistantPrivateReadApprovalActivityV1 : ComponentActivity() {
                 val limit = pending.arguments["limit"]?.jsonPrimitive?.intOrNull ?: 5
                 getString(R.string.assistant_private_read_calendar_message, limit)
             }
+            AssistantCapabilityV1.WINDOWS_FILES_READ -> {
+                val path = pending.arguments["path"]?.jsonPrimitive?.content.orEmpty()
+                val maxBytes = pending.arguments["maxBytes"]?.jsonPrimitive?.intOrNull ?: 16_384
+                getString(R.string.assistant_private_read_windows_file_message, path, maxBytes)
+            }
             else -> getString(R.string.assistant_private_read_generic_message, pending.capability.wireName)
         }
         dialog = AlertDialog.Builder(this)

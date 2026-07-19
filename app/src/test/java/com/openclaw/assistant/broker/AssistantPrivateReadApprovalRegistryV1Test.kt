@@ -73,13 +73,33 @@ class AssistantPrivateReadApprovalRegistryV1Test {
         assertEquals(0, registry.pendingCount())
     }
 
+    @Test
+    fun `voice session revoke denies a pending delegated Windows approval`() = runTest {
+        val registry = AssistantPrivateReadApprovalRegistryV1()
+        val ticket = registry.register(signed(
+            capability = AssistantCapabilityV1.WINDOWS_FILES_READ,
+            targetDeviceId = "windows-node",
+        ))!!
+        val decision = async { registry.await(ticket) }
+        yield()
+
+        registry.revokeVoiceSession("agent:voice-main:voice-android-device")
+
+        assertFalse(decision.await())
+        assertEquals(0, registry.pendingCount())
+    }
+
     private fun signed(
         capability: AssistantCapabilityV1 = AssistantCapabilityV1.ANDROID_CONTACTS_SEARCH,
+        targetDeviceId: String = "paired-device",
     ): SignedAssistantProposalV1 {
-        val arguments = if (capability == AssistantCapabilityV1.ANDROID_CONTACTS_SEARCH) {
-            buildJsonObject { put("query", "Jen") }
-        } else {
-            buildJsonObject {}
+        val arguments = when (capability) {
+            AssistantCapabilityV1.ANDROID_CONTACTS_SEARCH -> buildJsonObject { put("query", "Jen") }
+            AssistantCapabilityV1.WINDOWS_FILES_READ -> buildJsonObject {
+                put("path", "documents:private.txt")
+                put("maxBytes", 1_024)
+            }
+            else -> buildJsonObject {}
         }
         return SignedAssistantProposalV1(
             AssistantProposalV1(
@@ -89,7 +109,7 @@ class AssistantPrivateReadApprovalRegistryV1Test {
                 capability = capability,
                 arguments = arguments,
                 argumentsHash = CanonicalJsonV1.sha256(arguments),
-                targetDeviceId = "paired-device",
+                targetDeviceId = targetDeviceId,
                 voiceSessionKey = "agent:voice-main:voice-android-device",
                 presenceLeaseId = "lease-1",
                 issuedAtMs = 1_700_000_000_000L,

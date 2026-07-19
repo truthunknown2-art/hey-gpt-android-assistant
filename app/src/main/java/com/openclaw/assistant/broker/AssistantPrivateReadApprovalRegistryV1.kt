@@ -91,6 +91,15 @@ internal class AssistantPrivateReadApprovalRegistryV1 {
         items.forEach { it.decision.complete(false) }
     }
 
+    fun revokeVoiceSession(voiceSessionKey: String) {
+        val items = synchronized(lock) {
+            val matches = pending.values.filter { it.snapshot.voiceSessionKey == voiceSessionKey }
+            pending.entries.removeAll { it.value in matches }
+            matches
+        }
+        items.forEach { it.decision.complete(false) }
+    }
+
     fun revokeAll() {
         val items = synchronized(lock) {
             val copy = pending.values.toList()

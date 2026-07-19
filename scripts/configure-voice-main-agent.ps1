@@ -12,12 +12,23 @@ $PluginId = "voice-assistant-tools"
 $BrokerPluginId = "assistant-capability-broker"
 $MediaCommand = "media.play_search"
 $MessengerCommand = "notifications.list_package"
+$WindowsExecuteCommand = "assistant.windows.execute.v1"
+$RestrictedNodeCommands = @(
+    "browser.proxy",
+    "system.execApprovals.get",
+    "system.execApprovals.set",
+    "system.run",
+    "system.run.prepare",
+    "system.which"
+)
 $ExpectedTools = @(
     "android_media_play",
     "messenger_notifications_read",
     "web_fetch",
     "web_search"
 ) | Sort-Object
+
+. (Join-Path $PSScriptRoot "lib\wsl-plugin-transfer.ps1")
 
 function Invoke-OpenClaw {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
@@ -78,25 +89,30 @@ function Resolve-AssistantNodeId {
 
 function Install-VoiceToolsPlugin {
     $pluginWindowsPath = (Resolve-Path (Join-Path $PSScriptRoot "..\integrations\openclaw-voice-tools")).Path
-    $drive = $pluginWindowsPath.Substring(0, 1).ToLowerInvariant()
-    $relativePath = $pluginWindowsPath.Substring(2).Replace('\', '/')
-    $pluginWslPath = "/mnt/$drive$relativePath"
-
-    $escapedPath = "'" + $pluginWslPath.Replace("'", "'\''") + "'"
     $stagingPath = "/home/openclaw/.openclaw/plugin-dev/$PluginId"
+    $stagingNextPath = "$stagingPath.next"
     $nodeBin = "/home/openclaw/.openclaw/tools/node/bin"
     $openClawBin = "/home/openclaw/.openclaw/bin"
+    Send-PluginBundleToWsl `
+        -Distro $Distro `
+        -SourcePath $pluginWindowsPath `
+        -DestinationPath $stagingNextPath `
+        -Entries @("package.json", "openclaw.plugin.json", "README.md", "dist", "test")
+
     $stageCommand = @"
 set -euo pipefail
-rm -rf '$stagingPath'
-mkdir -p '$stagingPath'
-cp -a $escapedPath/package.json $escapedPath/openclaw.plugin.json $escapedPath/README.md '$stagingPath/'
-cp -a $escapedPath/dist $escapedPath/test '$stagingPath/'
-find '$stagingPath' -type d -exec chmod 755 {} +
-find '$stagingPath' -type f -exec chmod 644 {} +
+find '$stagingNextPath' -type d -exec chmod 755 {} +
+find '$stagingNextPath' -type f -exec chmod 644 {} +
 export PATH="${nodeBin}:${openClawBin}:`$PATH"
-cd '$stagingPath'
+cd '$stagingNextPath'
 npm test
+rm -rf '$stagingPath.previous'
+if [ -e '$stagingPath' ]; then mv '$stagingPath' '$stagingPath.previous'; fi
+if ! mv '$stagingNextPath' '$stagingPath'; then
+    if [ -e '$stagingPath.previous' ]; then mv '$stagingPath.previous' '$stagingPath'; fi
+    exit 1
+fi
+rm -rf '$stagingPath.previous'
 "@
     Invoke-WslBash $stageCommand | Out-Null
 
@@ -132,6 +148,8 @@ This agent is activated by a nearby wake phrase while the phone is unlocked. Kee
 - When available, use `assistant_sms_send` only after the user explicitly asks to send a text to a named contact. Pass the exact intended message, and let the phone privately resolve and display the recipient and full text for a fresh one-shot approval. Never claim delivery; `sent=true` confirms carrier submission only.
 - When available, use `assistant_calendar_next` for upcoming calendar questions. Titles and times are spoken privately by the unlocked phone; never ask for or invent those details after its sanitized receipt.
 - When available, use `assistant_calendar_create` only after the user explicitly asks to add an event. Resolve the intended local date and time, then let the phone show the real calendar, title, and schedule for a fresh one-shot approval. Only claim success when `created=true`.
+- When available, use `assistant_windows_files_search` only for an explicit question about files in the user-selected Windows roots. It returns opaque paths and metadata only, requires the current unlocked voice session, and cannot run shell commands.
+- Use `assistant_windows_files_read` only with an opaque path returned by Windows file search. The phone must display and approve the first bounded content read in the voice session; never claim file contents when approval or the tool fails.
 - Never send or reply to messages without `assistant_sms_send`, call anyone without `assistant_phone_call`, purchase, post, upload, submit forms, change account or device settings, administer the Gateway, or look for a workaround when a capability is unavailable.
 - Do not claim an action succeeded unless the corresponding tool returned success.
 '@
@@ -159,14 +177,14 @@ if ($NodeId) {
 $nodeConfig = ((Invoke-OpenClaw config get gateway.nodes) -join "`n") | ConvertFrom-Json
 $dangerousCaptureCommands = @("camera.clip", "camera.snap", "screen.record")
 $allowCommands = @(@($nodeConfig.allowCommands) + $MediaCommand + $MessengerCommand) |
-    Where-Object { $_ -notin $dangerousCaptureCommands } |
+    Where-Object { $_ -notin $dangerousCaptureCommands -and $_ -notin $RestrictedNodeCommands } |
     Sort-Object -Unique
 $denyCommands = @(@($nodeConfig.denyCommands) + @(
     "calendar.add",
     "contacts.add",
     "notifications.actions",
     "sms.send"
-)) | Sort-Object -Unique
+) + $RestrictedNodeCommands) | Sort-Object -Unique
 Invoke-OpenClaw config set gateway.nodes.allowCommands ($allowCommands | ConvertTo-Json -Compress) --strict-json | Out-Null
 Invoke-OpenClaw config set gateway.nodes.denyCommands ($denyCommands | ConvertTo-Json -Compress) --strict-json | Out-Null
 Invoke-OpenClaw config validate | Out-Null
@@ -206,6 +224,16 @@ if ($brokerEntry.Count -eq 1) {
     }
     if ($brokerConfig.calendarWritesEnabled -eq $true -and $privateReadAgentId -eq $AgentId) {
         $ExpectedTools = @($ExpectedTools + "assistant_calendar_create") | Sort-Object -Unique
+    }
+    $windowsFileAgentId = if ([string]$brokerConfig.windowsFileAgentId) { [string]$brokerConfig.windowsFileAgentId } else { "voice-main" }
+    if ($brokerConfig.windowsFileSearchEnabled -eq $true -and $windowsFileAgentId -eq $AgentId) {
+        $ExpectedTools = @($ExpectedTools + "assistant_windows_files_search") | Sort-Object -Unique
+        if ($WindowsExecuteCommand -notin $allowCommands) {
+            throw "Windows file search is enabled but '$WindowsExecuteCommand' is not in gateway.nodes.allowCommands."
+        }
+    }
+    if ($brokerConfig.windowsFileReadEnabled -eq $true -and $windowsFileAgentId -eq $AgentId) {
+        $ExpectedTools = @($ExpectedTools + "assistant_windows_files_read") | Sort-Object -Unique
     }
 }
 

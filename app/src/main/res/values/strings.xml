@@ -520,6 +520,8 @@
     <string name="assistant_contact_sms_deny">Cancel</string>
     <string name="assistant_private_read_calendar">upcoming calendar events</string>
     <string name="assistant_private_read_calendar_message">Allow the assistant to read and speak up to %1$d upcoming calendar events on this unlocked phone for 10 minutes?</string>
+    <string name="assistant_private_read_windows_file">Windows file content</string>
+    <string name="assistant_private_read_windows_file_message">Allow OpenClaw to read up to %2$d bytes from &quot;%1$s&quot; on the configured Windows PC during this unlocked voice session? This permission expires after 10 minutes.</string>
     <string name="assistant_calendar_create_channel">Assistant calendar approvals</string>
     <string name="assistant_calendar_create_title">Create calendar event?</string>
     <string name="assistant_calendar_create_message">Event: %1$s\nCalendar: %2$s\nWhen: %3$s</string>
@@ -1110,7 +1112,7 @@
     <string name="assistant_broker_trust_deny">Not now</string>
     <string name="assistant_broker_changed_title">Assistant broker identity changed</string>
     <string name="assistant_broker_changed_message">The broker identity does not match the key already trusted by this phone. Agent actions remain disabled.\n\nTrusted:\n%1$s\n\nPresented:\n%2$s\n\nDo not proceed unless you intentionally reset broker trust.</string>
-    <string name="assistant_private_read_title">Allow private phone access?</string>
+    <string name="assistant_private_read_title">Allow private access?</string>
     <string name="assistant_private_read_contacts">Contacts search</string>
     <string name="assistant_contact_call_channel">Call approvals</string>
     <string name="assistant_contact_call_title">Confirm call</string>

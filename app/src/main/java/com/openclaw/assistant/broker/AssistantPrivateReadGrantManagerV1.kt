@@ -79,6 +79,12 @@ internal class AssistantPrivateReadGrantManagerV1(
         }
     }
 
+    fun revokeVoiceSession(voiceSessionKey: String) {
+        synchronized(lock) {
+            grants.entries.removeAll { it.key.voiceSessionKey == voiceSessionKey }
+        }
+    }
+
     fun revoke(
         capability: AssistantCapabilityV1,
         voiceSessionKey: String,

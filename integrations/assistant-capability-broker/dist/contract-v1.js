@@ -62,6 +62,19 @@ function requiredString(value, name, minimum, maximum) {
     && value[name].trim().length <= maximum;
 }
 
+function windowsFileReference(value) {
+  if (typeof value !== "string" || value.length < 3 || value.length > 1_024) return false;
+  const separator = value.indexOf(":");
+  if (separator < 1 || separator > 32) return false;
+  const alias = value.slice(0, separator);
+  const relative = value.slice(separator + 1);
+  return /^[a-z][a-z0-9_-]{0,31}$/.test(alias)
+    && relative.trim().length > 0
+    && !relative.includes("\\")
+    && !/[\u0000-\u001f\u007f]/.test(relative)
+    && relative.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+
 export function validateArguments(capability, args) {
   if (!isRecord(args)) fail("ARGUMENT_SCHEMA", "arguments must be an object");
   let valid = false;
@@ -106,8 +119,8 @@ export function validateArguments(capability, args) {
       break;
     case "windows.files.read":
       valid = exactKeys(args, ["path", "maxBytes"])
-        && requiredString(args, "path", 1, 1024)
-        && optionalInteger(args, "maxBytes", 1, 1_000_000);
+        && windowsFileReference(args.path)
+        && optionalInteger(args, "maxBytes", 1, 65_536);
       break;
     default:
       fail("CAPABILITY", "unknown capability");

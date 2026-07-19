@@ -50,6 +50,20 @@ class AssistantPrivateReadGrantManagerV1Test {
     }
 
     @Test
+    fun `voice session revocation also removes grants delegated to another device`() {
+        val manager = AssistantPrivateReadGrantManagerV1(nowElapsedMs = { 1_000L })
+        manager.grant(CONTACTS, SESSION, DEVICE)
+        manager.grant(AssistantCapabilityV1.WINDOWS_FILES_READ, SESSION, "windows-node")
+        manager.grant(CONTACTS, "other-session", DEVICE)
+
+        manager.revokeVoiceSession(SESSION)
+
+        assertFalse(manager.isAuthorized(CONTACTS, SESSION, DEVICE))
+        assertFalse(manager.isAuthorized(AssistantCapabilityV1.WINDOWS_FILES_READ, SESSION, "windows-node"))
+        assertTrue(manager.isAuthorized(CONTACTS, "other-session", DEVICE))
+    }
+
+    @Test
     fun `reissue cannot extend beyond the fixed ten minute ttl`() {
         var now = 1_000L
         val manager = AssistantPrivateReadGrantManagerV1(nowElapsedMs = { now })
