@@ -24,7 +24,10 @@ Deliver a production-usable assistant spanning the S10+ and Windows PC with:
 - [x] Spotify exact-track playback, bounded Messenger notification previews, and web search/fetch are available through named tools.
 - [x] Signed contact-based calling resolves the recipient on-phone and requires a fresh one-shot approval before launch.
 - [x] Signed contact-based SMS resolves the recipient on-phone, displays the complete message in a secure one-shot approval, and waits for Android carrier submission callbacks.
-- [x] Exact installed Android build: `7432fd1`, versionCode 496.
+- [x] Signed upcoming-calendar reads keep event details phone-local and require a scoped private-read approval.
+- [x] Signed calendar creation resolves the writable calendar on-phone and requires a fresh one-shot approval for the exact title and schedule.
+- [x] Exact installed Android build: `7bb14a4`, versionCode 498; helper node `7bb14a4-dev` is approved and connected.
+- [x] Live broker 0.6.0 exposes seven signed tools; `voice-main` has exactly 13 tools on Luna and `locked-voice` has zero.
 
 ## Acceptance Gates
 
@@ -43,7 +46,8 @@ Deliver a production-usable assistant spanning the S10+ and Windows PC with:
 - [ ] Physically verify signed contact-based calling, including ambiguity, denial, lock-during-approval, and successful launch.
 - [x] Add signed SMS compose/send with recipient and body shown on-phone; sending always requires a fresh confirmation.
 - [ ] Physically verify signed SMS ambiguity, denial, lock-during-approval, successful carrier submission, and sent-message appearance.
-- [ ] Add calendar reads privately and calendar writes with a fresh confirmation.
+- [x] Add calendar reads privately and calendar writes with a fresh confirmation.
+- [ ] Physically verify calendar-read denial/approval/private speech and calendar-create denial, lock cancellation, successful insertion, and no duplicate event.
 - [ ] Move Messenger reads to the same phone-private delivery boundary before supporting message history.
 
 ### 3. Selected Windows Actions

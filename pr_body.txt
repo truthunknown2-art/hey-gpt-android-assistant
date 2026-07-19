@@ -4,13 +4,15 @@
 - keep secure-keyguard speech in a separate persistent zero-tool lane
 - use ChatGPT/Codex OAuth subscription access with `openai/gpt-5.6-luna`, never Terra
 - add signed, device-bound Android execution with live-presence leases, durable receipts, and phone approval
-- enable private phone-spoken contact search, one-shot approved contact calling/SMS, and explicit persistent memory without exposing generic node control
+- enable private phone-spoken contact/calendar reads, one-shot approved contact calling, SMS, and calendar creation, and explicit persistent memory without exposing generic node control
 
 ## Current Luna Tool Surface
 
 `voice-main` exposes exactly:
 
 - `android_media_play`
+- `assistant_calendar_create`
+- `assistant_calendar_next`
 - `assistant_contacts_search`
 - `assistant_memory_forget`
 - `assistant_memory_remember`
@@ -30,27 +32,30 @@ The assistant capability broker owns a persistent Ed25519 signing identity, cano
 
 Contact names and phone numbers never return to Luna, tool content/details, chat history, or the durable ledger. The model supplies only a bounded query and limit. The configured S10+ performs the read, requires a scoped on-phone approval, speaks the result through the active unlocked voice session, and returns only status, match count, truncation, and private-delivery confirmation.
 
+`assistant_calendar_next` applies the same private-delivery boundary to up to ten upcoming visible calendar occurrences within 31 days, including expanded recurring events. Titles and times are spoken only by the unlocked S10+; Luna receives only status, event count, truncation, and delivery confirmation. `assistant_calendar_create` accepts only a bounded title, start/end epoch, and all-day flag. The phone selects its writable calendar locally, shows the real calendar/title/local schedule in a secure one-shot approval, revalidates the signed proposal after approval, and returns only `created=true`.
+
 `assistant_sms_send` accepts a bounded contact query and the exact message dictated to Luna. The S10+ resolves the number locally and shows the real recipient, number, and complete text in a secure one-shot approval. After approval it revalidates the signed proposal and unlocked presence, waits for Android's per-part carrier submission callbacks, and returns only `sent=true`. Recipient/number/message are not stored in the durable ledger or receipt; a missing callback becomes terminal `UNKNOWN` and is never retried automatically.
 
 Explicit memory writes only low-sensitivity facts after an explicit user request. It rejects credentials, payment data, security answers, contact records, raw message content, and automatic harvesting. The managed `MEMORY.md` section treats facts as data rather than instructions and is backed by a private per-workspace SQLite ledger.
 
 ## Existing Actions And Limits
 
-Spotify exact-track support uses the official App Remote SDK after one-time authorization and verifies matching unpaused playback. `assistant_phone_call` accepts only a contact-name query; the S10+ resolves exactly one recipient locally, shows the real name/number in a secure one-shot approval, and returns only whether the call was placed or the dialer requires a tap. `assistant_sms_send` uses the same private contact resolution with a separate fresh approval for every exact message. Messenger currently reads bounded active-notification previews only; it does not claim inbox-history access. Calendar, Messenger-history, and selected Windows actions remain roadmap work and will use named signed capabilities rather than generic automation.
+Spotify exact-track support uses the official App Remote SDK after one-time authorization and verifies matching unpaused playback. `assistant_phone_call` accepts only a contact-name query; the S10+ resolves exactly one recipient locally, shows the real name/number in a secure one-shot approval, and returns only whether the call was placed or the dialer requires a tap. `assistant_sms_send` uses the same private contact resolution with a separate fresh approval for every exact message. Messenger currently reads bounded active-notification previews only; it does not claim inbox-history access. Messenger-history and selected Windows actions remain roadmap work and will use named signed capabilities rather than generic automation.
 
 ## Verification
 
-- installed S10+ APK: `openclaw-7432fd1-debug.apk`, versionCode 496
-- APK SHA-256: `8DF6F8A525892F7B6662D5623243089F8D8029DCE29FB96C86CE5B3B0E2DEC1D`
-- S10+ helper: connected and approved as `7432fd1-dev` with both signed assistant commands
-- broker 0.5.0: 30 tests, 29 passed, 1 expected platform skip
-- live broker: five optional tools registered, zero pending proposals and zero terminal receipts before physical call/SMS acceptance
-- full Android gate: 416 tests across 74 suites, 0 failures/errors, 2 expected skips; lint and full debug assembly passed
+- installed S10+ APK: `openclaw-7bb14a4-debug.apk`, versionCode 498
+- APK SHA-256: `DD5316BDE260AEB3B7C5E1F03CE116A96A396A32B878FC1132D7CC080FD6057C`
+- S10+ helper: connected and approved as `7bb14a4-dev` with both signed assistant commands plus calendar/SMS scopes
+- broker 0.6.0: 35 tests, 34 passed, 1 expected platform skip
+- live broker: seven optional tools registered, zero pending proposals and zero terminal receipts before physical acceptance
+- full Android gate: 438 tests across 75 suites, 0 failures/errors, 2 expected skips; lint and full debug assembly passed
 - exact clean-commit `assembleFullDebug --rerun-tasks`: passed
 - a headless Luna call request selected `assistant_phone_call` and was correctly refused before plan creation because no active unlocked phone voice session existed
-- exact implementation commit `7432fd1` passed GitHub `Build & Check PR` run 43
+- exact implementation commit `7bb14a4` passed GitHub `Build & Check PR` run 45
 - both deployed voice agents: `openai/gpt-5.6-luna`
+- live `voice-main`: exactly 13 intended tools; live `locked-voice`: zero tools and a 3.1-second policy smoke response
 
 ## Remaining Gates
 
-This PR remains draft pending physical unlocked contact read/call/SMS approval, private-speech, denial, ambiguity, lock-cancellation, and successful-action tests; explicit memory recall/forget testing; secure-lock and barge-in regression tests; Spotify and Messenger expiry tests; cellular Tailscale verification; Windows firewall enforcement; reboot/endurance testing; calendar/desktop capability work; and blocker review in the existing GPT-5.6 Pro `Android Voice Assistant Review` conversation.
+This PR remains draft pending physical unlocked contact/calendar reads and call/SMS/calendar-write approval, private-speech, denial, ambiguity, lock-cancellation, and successful-action tests; explicit memory recall/forget testing; secure-lock and barge-in regression tests; Spotify and Messenger expiry tests; cellular Tailscale verification; Windows firewall enforcement; reboot/endurance testing; desktop capability work; and blocker review in the existing GPT-5.6 Pro `Android Voice Assistant Review` conversation.

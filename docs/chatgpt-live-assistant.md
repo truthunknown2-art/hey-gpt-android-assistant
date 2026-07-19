@@ -3,7 +3,7 @@
 This fork makes **Hey GPT** an OpenClaw-owned voice conversation. The phone
 handles wake detection, speech recognition, and speech playback; the paired
 OpenClaw Gateway supplies the GPT agent, persistent history, read-only web tools,
-and two narrowly scoped Android tools. This path uses the Gateway's existing
+and narrowly scoped signed Android tools. This path uses the Gateway's existing
 OpenAI OAuth configuration and does not enable the paid OpenAI Realtime API.
 
 The official consumer ChatGPT Live app remains available through an explicit
@@ -59,8 +59,9 @@ separate official Live button.
 1. Install the APK and complete Gateway pairing.
 2. Grant microphone and notification permission.
 3. Enable notification-listener access if notification reading is wanted.
-4. Contacts, SMS, location, calendar, camera, and accessibility are not required
-   by the `voice-main` tool policy.
+4. Grant only permissions for enabled signed actions. The current contact,
+   call, SMS, and calendar slices use contacts, phone, SMS, and calendar access;
+   location, camera, and accessibility remain outside the `voice-main` policy.
 5. Set the Hey GPT wake phrase to `hey g p t` and enable wake-word detection.
 6. On Samsung, allow background activity, set battery use to Unrestricted, and
    exclude the app from Sleeping apps.
@@ -91,8 +92,9 @@ LAN and tailnet URLs used to open the dashboard, and configure
 result with `openclaw security audit --deep`.
 
 Build and install this fork before configuring the voice agents. The custom
-Android node must be connected and advertise both `media.play_search` and
-`notifications.list_package`; the configuration script fails closed otherwise.
+Android node must be connected and advertise the fixed signed commands plus the
+explicit legacy media/notification capabilities; each configuration script
+fails closed if its required command surface is unavailable.
 
 Create the curated unlocked voice agent and the secure-lock agent once:
 
@@ -121,6 +123,19 @@ an exact on-phone approval for a 10-minute, session-bound private-read grant.
 Matching names and numbers are spoken by the phone and never returned to the
 model, Gateway transcript, tool `details`, or durable receipt.
 
+Enable the signed private calendar slice after installing and approving the
+calendar-capable helper build:
+
+```powershell
+.\scripts\enable-assistant-calendar.ps1
+```
+
+The script preserves the already enabled memory/contact/call/SMS tools and adds
+`assistant_calendar_next` and `assistant_calendar_create`. Upcoming event details
+are spoken only on the unlocked phone under the scoped private-read approval.
+Every calendar creation shows the locally selected calendar, exact title, and
+local schedule in a fresh one-shot phone approval before insertion.
+
 The locked agent must retain an empty effective tool list. It cannot browse,
 execute shell commands, read private stores, send messages, or invoke Android
 actions.
@@ -146,7 +161,7 @@ as the current answer.
 ## Android tools
 
 The unlocked `voice-main` agent does not receive OpenClaw's generic `nodes` tool.
-It receives two optional plugin tools that fail closed against one configured,
+It receives named plugin tools that fail closed against one configured,
 connected Android node:
 
 - `android_media_play` invokes only `media.play_search` with Spotify fixed as
@@ -172,6 +187,14 @@ only Spotify's built-in remote-control authorization.
 - `assistant_contacts_search` invokes only the broker's signed presence and
   execute commands. The broker fixes the phone identity and live voice session,
   and the Android executor owns approval, provider access, and private speech.
+- `assistant_phone_call` and `assistant_sms_send` resolve the contact locally and
+  require a fresh secure phone approval for the real recipient and outbound
+  action. The SMS path also displays the complete message and waits for carrier
+  submission callbacks.
+- `assistant_calendar_next` reads a bounded upcoming window and speaks titles and
+  times only on the phone. `assistant_calendar_create` requires a fresh secure
+  approval for the exact calendar, title, and local schedule; only a boolean
+  creation receipt returns to the model.
 
 Read-only web requests use `web_search` and `web_fetch`. Hosted search is
 pinned to OpenClaw's managed `codex` provider and its bounded hosted-search
@@ -187,9 +210,6 @@ history would require a separate approved integration.
 Windows Phone Link does not automatically become an OpenClaw tool. It can remain
 a manual convenience; automating it would require a separately connected
 Windows node or a narrowly scoped desktop capability.
-
-`phone.call` remains unavailable to remote agent sessions until an explicit
-on-device confirmation flow exists.
 
 ## Lock transition policy
 
@@ -219,6 +239,12 @@ not securely locked. A later transition to secure lock terminates the main lane.
   advertising `media.play_search` and physically starts the requested track.
 - A Messenger preview remains readable after notification dismissal when
   notification access was enabled when it arrived.
+- A calendar read prompts once per scoped private-read session and speaks event
+  details only on the phone.
+- Calendar creation denial or a lock transition inserts nothing; approval
+  inserts the exact event once.
+- Contact calling and SMS require fresh on-phone approval for every outbound
+  action.
 - Securely locked Hey GPT uses only `agent:locked-voice:*` and cannot call tools.
 - Locking during listening, request processing, or TTS ends the main session.
 - The explicit Live button opens the official ChatGPT app exactly once.
