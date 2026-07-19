@@ -43,6 +43,7 @@ const DENIED_FILE_NAMES = [
   /(?:credential|password|secret|token)/i,
   /\.(?:key|kdbx|p12|pfx|pem)$/i,
 ];
+const DEFAULT_FILE_OPS = Object.freeze({ closeSync, fstatSync, openSync, readSync });
 
 class WindowsNodeCommandError extends Error {
   constructor(code) {
@@ -246,7 +247,12 @@ function decodeUtf8(buffer) {
       const candidate = buffer.subarray(0, buffer.length - trim);
       const text = new TextDecoder("utf-8", { fatal: true }).decode(candidate);
       if (text.includes("\u0000")) fail("FILE_ENCODING_DENIED");
-      return { text: text.replace(/^\uFEFF/, ""), bytes: candidate };
+      const hasBom = candidate.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf]));
+      return {
+        text: text.replace(/^\uFEFF/, ""),
+        bytes: hasBom ? candidate.subarray(3) : candidate,
+        consumedBytes: candidate.length,
+      };
     } catch (error) {
       if (error instanceof WindowsNodeCommandError) throw error;
     }
@@ -254,32 +260,43 @@ function decodeUtf8(buffer) {
   fail("FILE_ENCODING_DENIED");
 }
 
-function readFile(proposal, roots, extensions) {
+function sameFileIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function readFile(proposal, roots, extensions, fileOps) {
   const maxBytes = proposal.arguments.maxBytes ?? 16 * 1_024;
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_READ_BYTES) {
     fail("ARGUMENT_SCHEMA");
   }
   const resolved = resolveReference(proposal.arguments.path, roots, extensions);
-  const fd = openSync(resolved.real, "r");
+  const fd = fileOps.openSync(resolved.real, "r");
   let before;
   let after;
   let bytesRead;
   const buffer = Buffer.alloc(maxBytes + 4);
   try {
-    before = fstatSync(fd);
-    bytesRead = readSync(fd, buffer, 0, buffer.length, 0);
-    after = fstatSync(fd);
+    before = fileOps.fstatSync(fd);
+    bytesRead = fileOps.readSync(fd, buffer, 0, buffer.length, 0);
+    after = fileOps.fstatSync(fd);
   } finally {
-    closeSync(fd);
+    fileOps.closeSync(fd);
   }
-  if (before.size !== after.size || before.mtimeMs !== after.mtimeMs) fail("FILE_CHANGED");
+  if (
+    !sameFileIdentity(resolved.stat, before) ||
+    !sameFileIdentity(before, after) ||
+    before.size !== after.size ||
+    before.mtimeMs !== after.mtimeMs
+  ) {
+    fail("FILE_CHANGED");
+  }
   const available = buffer.subarray(0, Math.min(bytesRead, maxBytes));
   const decoded = decodeUtf8(available);
   return {
     path: resolved.reference,
     content: decoded.text,
     bytes: decoded.bytes.length,
-    truncated: before.size > decoded.bytes.length,
+    truncated: before.size > decoded.consumedBytes,
     sha256: `sha256:${createHash("sha256").update(decoded.bytes).digest("hex")}`,
   };
 }
@@ -293,6 +310,7 @@ export class WindowsFilesNodeExecutorV1 {
     roots,
     extensions,
     nowMs = Date.now,
+    fileOps = {},
   }) {
     if (!NODE_ID_PATTERN.test(expectedNodeId ?? "")) fail("NODE_ID_INVALID");
     if (typeof expectedVoiceSessionKey !== "string" || !expectedVoiceSessionKey.trim()) {
@@ -306,6 +324,7 @@ export class WindowsFilesNodeExecutorV1 {
     this.roots = normalizeRoots(roots);
     this.extensions = normalizeExtensions(extensions);
     this.nowMs = nowMs;
+    this.fileOps = { ...DEFAULT_FILE_OPS, ...fileOps };
     this.receipts = new Map();
   }
 
@@ -331,7 +350,7 @@ export class WindowsFilesNodeExecutorV1 {
       const resultSummary = proposal.capability === "windows.files.search"
         ? searchFiles(proposal, this.roots, this.extensions)
         : proposal.capability === "windows.files.read"
-          ? readFile(proposal, this.roots, this.extensions)
+          ? readFile(proposal, this.roots, this.extensions, this.fileOps)
           : fail("CAPABILITY_NOT_IMPLEMENTED");
       receipt = terminalReceipt(proposal, startedAtMs, "COMPLETED", resultSummary);
     } catch (error) {

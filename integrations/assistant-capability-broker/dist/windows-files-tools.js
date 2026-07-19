@@ -22,6 +22,8 @@ const ERROR_CODE_PATTERN = /^[A-Z0-9_]{1,64}$/;
 const PRESENCE_TIMEOUT_MS = 10_000;
 const AUTHORIZATION_TIMEOUT_MS = 60_000;
 const WINDOWS_COMMAND_TIMEOUT_MS = 30_000;
+const WINDOWS_SEARCH_PROPOSAL_LIFETIME_MS = 10_000;
+const WINDOWS_READ_PROPOSAL_LIFETIME_MS = 30_000;
 const MAX_AUTHORIZATION_BYTES = 16 * 1_024;
 const MAX_WINDOWS_RESPONSE_BYTES = 512 * 1_024;
 const RECEIPT_STATUSES = new Set(["COMPLETED", "DENIED", "CANCELLED", "FAILED", "UNKNOWN"]);
@@ -106,6 +108,16 @@ function parsePresence(value) {
     fail("PRESENCE_RESPONSE_INVALID");
   }
   return presence;
+}
+
+async function invokePresence(api, nodeId) {
+  return parsePresence(await api.runtime.nodes.invoke({
+    nodeId,
+    command: PRESENCE_COMMAND,
+    params: {},
+    timeoutMs: PRESENCE_TIMEOUT_MS,
+    idempotencyKey: randomUUID(),
+  }));
 }
 
 function parseAuthorization(value, proposal) {
@@ -313,13 +325,7 @@ async function executeWindowsFiles({
     "WINDOWS_NODE_UNAVAILABLE",
     "WINDOWS_SIGNED_COMMAND_UNAVAILABLE",
   );
-  const presence = parsePresence(await api.runtime.nodes.invoke({
-    nodeId: androidNodeId,
-    command: PRESENCE_COMMAND,
-    params: {},
-    timeoutMs: PRESENCE_TIMEOUT_MS,
-    idempotencyKey: randomUUID(),
-  }));
+  const presence = await invokePresence(api, androidNodeId);
   const planId = randomUUID();
   ledger.createPlan({
     planId,
@@ -337,7 +343,9 @@ async function executeWindowsFiles({
     voiceSessionKey,
     presenceLeaseId: presence.presenceLeaseId,
     planId,
-    lifetimeMs: 60_000,
+    lifetimeMs: capability === WINDOWS_READ_CAPABILITY
+      ? WINDOWS_READ_PROPOSAL_LIFETIME_MS
+      : WINDOWS_SEARCH_PROPOSAL_LIFETIME_MS,
   });
   const signed = signingIdentity.sign(proposal);
   ledger.recordProposal(signed);
@@ -361,6 +369,21 @@ async function executeWindowsFiles({
         startedAtMs,
         "UNKNOWN",
         controlledCode(error, "WINDOWS_AUTHORIZATION_UNAVAILABLE"),
+      );
+    }
+  }
+  if (!receipt) {
+    try {
+      const executionPresence = await invokePresence(api, androidNodeId);
+      if (executionPresence.presenceLeaseId !== proposal.presenceLeaseId) {
+        fail("PRESENCE_LEASE_CHANGED");
+      }
+    } catch (error) {
+      receipt = terminalReceipt(
+        proposal,
+        startedAtMs,
+        "UNKNOWN",
+        controlledCode(error, "PRESENCE_RECHECK_UNAVAILABLE"),
       );
     }
   }

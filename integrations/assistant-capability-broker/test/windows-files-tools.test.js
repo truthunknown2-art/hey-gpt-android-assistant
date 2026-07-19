@@ -19,6 +19,7 @@ const ANDROID_NODE_ID = "a".repeat(64);
 const WINDOWS_NODE_ID = "b".repeat(64);
 const SESSION = `agent:voice-main:voice-android-${ANDROID_NODE_ID.slice(0, 32)}`;
 const PRESENCE_LEASE = "66666666-6666-4666-8666-666666666666";
+const REPLACEMENT_PRESENCE_LEASE = "77777777-7777-4777-8777-777777777777";
 const RECEIPT_ID = "55555555-5555-4555-8555-555555555555";
 
 function receiptFor(proposal, resultSummary, overrides = {}) {
@@ -52,11 +53,17 @@ function authorizationFor(proposal, authorized = true, errorCode = undefined) {
   };
 }
 
-function fixture({ authorize = true, windowsResponse } = {}) {
+function fixture({
+  authorize = true,
+  windowsResponse,
+  presenceLeases = [PRESENCE_LEASE, PRESENCE_LEASE],
+  failPresenceAt = -1,
+} = {}) {
   const directory = mkdtempSync(path.join(tmpdir(), "assistant-windows-tools-"));
   const signingIdentity = new BrokerSigningIdentityV1(path.join(directory, "signing"));
   const ledger = new BrokerLedger(path.join(directory, "ledger"));
   const calls = [];
+  let presenceCall = 0;
   const api = {
     runtime: {
       nodes: {
@@ -74,7 +81,11 @@ function fixture({ authorize = true, windowsResponse } = {}) {
         invoke: async (input) => {
           calls.push(input);
           if (input.command === PRESENCE_COMMAND) {
-            return { payload: { contractVersion: 1, presenceLeaseId: PRESENCE_LEASE } };
+            const index = presenceCall;
+            presenceCall += 1;
+            if (index === failPresenceAt) throw new Error("phone presence unavailable");
+            const presenceLeaseId = presenceLeases[index] ?? presenceLeases.at(-1);
+            return { payload: { contractVersion: 1, presenceLeaseId } };
           }
           if (input.command === EXECUTE_COMMAND) {
             return {
@@ -149,13 +160,15 @@ describe("signed Windows file tools", () => {
       assert.equal(result.details.matches[0].path, "documents:Projects/Meeting Notes.md");
       assert.deepEqual(subject.calls.map((call) => call.command), [
         PRESENCE_COMMAND,
+        PRESENCE_COMMAND,
         WINDOWS_EXECUTE_COMMAND,
       ]);
-      const signed = subject.calls[1].params;
+      const signed = subject.calls[2].params;
       assert.equal(signed.proposal.targetDeviceId, WINDOWS_NODE_ID);
       assert.equal(signed.proposal.voiceSessionKey, SESSION);
       assert.equal(signed.proposal.presenceLeaseId, PRESENCE_LEASE);
       assert.equal(signed.proposal.risk, "LOW");
+      assert.equal(signed.proposal.expiresAtMs - signed.proposal.issuedAtMs, 10_000);
       const stored = subject.ledger.getReceiptByProposal(signed.proposal.proposalId);
       assert.equal(stored.result_summary_json, '{"matchCount":1,"truncated":false}');
       assert.equal(stored.result_summary_json.includes("Meeting"), false);
@@ -177,17 +190,53 @@ describe("signed Windows file tools", () => {
       assert.deepEqual(subject.calls.map((call) => call.command), [
         PRESENCE_COMMAND,
         EXECUTE_COMMAND,
+        PRESENCE_COMMAND,
         WINDOWS_EXECUTE_COMMAND,
       ]);
-      assert.deepEqual(subject.calls[1].params, subject.calls[2].params);
-      const proposal = subject.calls[2].params.proposal;
+      assert.deepEqual(subject.calls[1].params, subject.calls[3].params);
+      const proposal = subject.calls[3].params.proposal;
       assert.equal(proposal.risk, "MEDIUM");
+      assert.equal(proposal.expiresAtMs - proposal.issuedAtMs, 30_000);
       const stored = subject.ledger.getReceiptByProposal(proposal.proposalId);
       assert.equal(
         stored.result_summary_json,
         '{"bytes":31,"sha256":"sha256:ce3889b02851ee7c44093568bf69ad146bf8ff8ae0aa96c96d109f7dbf3e0524","truncated":false}',
       );
       assert.equal(stored.result_summary_json.includes("Agenda"), false);
+    } finally {
+      subject.close();
+    }
+  });
+
+  it("fails closed when phone presence changes before Windows execution", async () => {
+    const subject = fixture({ presenceLeases: [PRESENCE_LEASE, REPLACEMENT_PRESENCE_LEASE] });
+    try {
+      const result = await searchWindowsFiles(options(subject, { query: "meeting" }));
+
+      assert.deepEqual(result.details, {
+        status: "UNKNOWN",
+        errorCode: "PRESENCE_LEASE_CHANGED",
+      });
+      assert.deepEqual(subject.calls.map((call) => call.command), [
+        PRESENCE_COMMAND,
+        PRESENCE_COMMAND,
+      ]);
+      assert.equal(subject.ledger.status().pendingProposals, 0);
+    } finally {
+      subject.close();
+    }
+  });
+
+  it("fails closed when the execution-time presence check is unavailable", async () => {
+    const subject = fixture({ failPresenceAt: 1 });
+    try {
+      const result = await searchWindowsFiles(options(subject, { query: "meeting" }));
+
+      assert.deepEqual(result.details, {
+        status: "UNKNOWN",
+        errorCode: "PRESENCE_RECHECK_UNAVAILABLE",
+      });
+      assert.equal(subject.calls.some((call) => call.command === WINDOWS_EXECUTE_COMMAND), false);
     } finally {
       subject.close();
     }

@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  openSync as nativeOpenSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -15,7 +22,7 @@ const WINDOWS_NODE_ID = "b".repeat(64);
 const VOICE_SESSION = `agent:voice-main:voice-android-${"a".repeat(32)}`;
 const PRESENCE_LEASE = "66666666-6666-4666-8666-666666666666";
 
-function fixture() {
+function fixture({ fileOps = {} } = {}) {
   const directory = mkdtempSync(path.join(tmpdir(), "assistant-windows-node-"));
   const root = path.join(directory, "Documents");
   mkdirSync(path.join(root, "Projects"), { recursive: true });
@@ -34,6 +41,7 @@ function fixture() {
     brokerKeyId: descriptor.keyId,
     brokerPublicKeyBase64Url: descriptor.publicKeyBase64Url,
     roots: { documents: root },
+    fileOps,
   });
   const signed = (capability, args, overrides = {}) => signing.sign(createProposal({
     capability,
@@ -96,6 +104,60 @@ describe("signed Windows files node command", () => {
       assert.equal(first.resultSummary.truncated, true);
       assert.match(first.resultSummary.sha256, /^sha256:[0-9a-f]{64}$/);
       assert.deepEqual(second, first);
+    } finally {
+      subject.close();
+    }
+  });
+
+  it("normalizes a UTF-8 BOM without corrupting byte counts or hashes", () => {
+    const subject = fixture();
+    try {
+      writeFileSync(
+        path.join(subject.root, "Projects", "bom.txt"),
+        Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("hello", "utf8")]),
+      );
+      const receipt = subject.executor.handle(JSON.stringify(subject.signed(
+        "windows.files.read",
+        { path: "documents:Projects/bom.txt", maxBytes: 64 },
+      )));
+
+      assert.equal(receipt.status, "COMPLETED");
+      assert.equal(receipt.resultSummary.content, "hello");
+      assert.equal(receipt.resultSummary.bytes, 5);
+      assert.equal(receipt.resultSummary.truncated, false);
+      assert.equal(
+        receipt.resultSummary.sha256,
+        "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+      );
+    } finally {
+      subject.close();
+    }
+  });
+
+  it("rejects a file replaced between path validation and descriptor open", () => {
+    let replaced = false;
+    const subject = fixture({
+      fileOps: {
+        openSync(filePath, flags) {
+          if (!replaced && path.basename(filePath) === "Meeting Notes.md") {
+            renameSync(filePath, `${filePath}.validated`);
+            writeFileSync(filePath, Buffer.alloc(31, 0x78));
+            replaced = true;
+          }
+          return nativeOpenSync(filePath, flags);
+        },
+      },
+    });
+    try {
+      const receipt = subject.executor.handle(JSON.stringify(subject.signed(
+        "windows.files.read",
+        { path: "documents:Projects/Meeting Notes.md", maxBytes: 64 },
+      )));
+
+      assert.equal(replaced, true);
+      assert.equal(receipt.status, "FAILED");
+      assert.equal(receipt.errorCode, "FILE_CHANGED");
+      assert.equal("resultSummary" in receipt, false);
     } finally {
       subject.close();
     }

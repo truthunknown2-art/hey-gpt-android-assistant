@@ -34,6 +34,18 @@ function Invoke-LocalOpenClaw {
     return $output
 }
 
+function Invoke-GatewayBash {
+    param([Parameter(Mandatory = $true)][string]$Command)
+
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Command))
+    $runner = "printf '%s' '$encoded' | base64 -d | bash"
+    $output = & wsl.exe -d $Distro -- bash -lc $runner
+    if ($LASTEXITCODE -ne 0) {
+        throw "Gateway command failed."
+    }
+    return $output
+}
+
 function Invoke-GatewayOpenClaw {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
 
@@ -41,13 +53,7 @@ function Invoke-GatewayOpenClaw {
         "'" + $_.Replace("'", "'\''") + "'"
     })
     $command = "openclaw " + ($quotedArguments -join " ")
-    $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($command))
-    $runner = "printf '%s' '$encoded' | base64 -d | bash"
-    $output = & wsl.exe -d $Distro -- bash -lc $runner
-    if ($LASTEXITCODE -ne 0) {
-        throw "Gateway OpenClaw command failed: openclaw $($Arguments -join ' ')"
-    }
-    return $output
+    return Invoke-GatewayBash -Command $command
 }
 
 function Assert-ChildPath {
@@ -63,6 +69,9 @@ function Assert-ChildPath {
 
 if ($NodeId -notmatch '^[a-f0-9]{64}$' -or $AndroidNodeId -notmatch '^[a-f0-9]{64}$') {
     throw "NodeId and AndroidNodeId must each be exactly 64 lowercase hexadecimal characters."
+}
+if ($Distro -notmatch '^[A-Za-z0-9._-]+$' -or $AgentId -notmatch '^[a-z0-9][a-z0-9_-]{0,63}$') {
+    throw "Distro or AgentId has an invalid format."
 }
 if ($BrokerKeyId -notmatch '^[A-Za-z0-9._-]{1,128}$') {
     throw "BrokerKeyId has an invalid format."
@@ -90,13 +99,47 @@ $pluginParent = Join-Path $resolvedStateDir "plugin-dev"
 $pluginStage = Assert-ChildPath -Path (Join-Path $pluginParent $PluginId) -Parent $resolvedStateDir -Label "Plugin stage"
 $pluginNext = Assert-ChildPath -Path "$pluginStage.next" -Parent $resolvedStateDir -Label "Plugin next stage"
 $pluginPrevious = Assert-ChildPath -Path "$pluginStage.previous" -Parent $resolvedStateDir -Label "Plugin previous stage"
-$voiceSessionKey = "agent:${AgentId}:voice-android-$AndroidNodeId"
+$transactionId = [Guid]::NewGuid().ToString("N")
+$localConfigPath = Assert-ChildPath -Path (Join-Path $resolvedStateDir "openclaw.json") -Parent $resolvedStateDir -Label "Local config"
+$localConfigBackup = Assert-ChildPath -Path "$localConfigPath.rollback.$transactionId" -Parent $resolvedStateDir -Label "Local config backup"
+$gatewayConfigPath = "/home/openclaw/.openclaw/openclaw.json"
+$gatewayConfigBackup = "$gatewayConfigPath.rollback.$transactionId"
+$gatewayPluginStage = "/home/openclaw/.openclaw/plugin-dev/$PluginId"
+$gatewayPluginBackup = "$gatewayPluginStage.rollback.$transactionId"
+$voiceSessionKey = "agent:${AgentId}:voice-android-$($AndroidNodeId.Substring(0, 32))"
+$pluginStageExisted = Test-Path -LiteralPath $pluginStage
+$localConfigExisted = Test-Path -LiteralPath $localConfigPath -PathType Leaf
 $taskStopped = $false
 $promoted = $false
+$localSnapshotReady = $false
+$gatewaySnapshotReady = $false
+$gatewayPluginExisted = $false
+$rollbackFailed = $false
 
 try {
     Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     $taskStopped = $true
+    if ($localConfigExisted) {
+        Copy-Item -LiteralPath $localConfigPath -Destination $localConfigBackup -Force
+    }
+    $localSnapshotReady = $true
+
+$gatewaySnapshot = @"
+set -euo pipefail
+trap 'rm -rf "$gatewayConfigBackup" "$gatewayPluginBackup"' ERR
+test -f '$gatewayConfigPath'
+cp -a '$gatewayConfigPath' '$gatewayConfigBackup'
+rm -rf '$gatewayPluginBackup'
+if [ -e '$gatewayPluginStage' ]; then
+  cp -a '$gatewayPluginStage' '$gatewayPluginBackup'
+  printf 'present'
+else
+  printf 'absent'
+fi
+"@
+    $gatewayPluginExisted = (((Invoke-GatewayBash -Command $gatewaySnapshot) -join "").Trim() -eq "present")
+    $gatewaySnapshotReady = $true
+
     foreach ($path in @($pluginNext, $pluginPrevious)) {
         if (Test-Path -LiteralPath $path) {
             Remove-Item -LiteralPath $path -Recurse -Force
@@ -145,6 +188,10 @@ try {
     }
     Invoke-LocalOpenClaw config set nodeHost.browserProxy.enabled false --strict-json | Out-Null
     Invoke-LocalOpenClaw config validate | Out-Null
+    $configuredVoiceSessionKey = ((Invoke-LocalOpenClaw config get "plugins.entries.$PluginId.config.windowsVoiceSessionKey") -join "`n").Trim().Trim('"')
+    if ($configuredVoiceSessionKey -ne $voiceSessionKey) {
+        throw "Dedicated Windows node voice-session binding does not match the Android session key."
+    }
 
     & (Join-Path $PSScriptRoot "configure-assistant-capability-broker.ps1") -Distro $Distro
 
@@ -192,16 +239,69 @@ try {
     }
     Write-Host "Windows file bridge is active for '$AgentId' on node $NodeId with root alias 'documents'."
 } catch {
-    if ($promoted -and (Test-Path -LiteralPath $pluginPrevious)) {
+    $provisioningError = $_
+    $rollbackError = $null
+    try {
         Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
         $taskStopped = $true
-        if (Test-Path -LiteralPath $pluginStage) {
-            Remove-Item -LiteralPath $pluginStage -Recurse -Force
+        if ($promoted) {
+            if (Test-Path -LiteralPath $pluginStage) {
+                Remove-Item -LiteralPath $pluginStage -Recurse -Force
+            }
+            if ($pluginStageExisted -and (Test-Path -LiteralPath $pluginPrevious)) {
+                Move-Item -LiteralPath $pluginPrevious -Destination $pluginStage
+            }
         }
-        Move-Item -LiteralPath $pluginPrevious -Destination $pluginStage
+
+        if ($localSnapshotReady) {
+            if ($localConfigExisted) {
+                if (-not (Test-Path -LiteralPath $localConfigBackup -PathType Leaf)) {
+                    throw "Local config rollback snapshot is missing."
+                }
+                Copy-Item -LiteralPath $localConfigBackup -Destination $localConfigPath -Force
+            } elseif (Test-Path -LiteralPath $localConfigPath) {
+                Remove-Item -LiteralPath $localConfigPath -Force
+            }
+        }
+
+        if ($gatewaySnapshotReady) {
+            $restoreGateway = @"
+set -euo pipefail
+test -f '$gatewayConfigBackup'
+rm -rf '$gatewayPluginStage' '$gatewayPluginStage.next' '$gatewayPluginStage.previous'
+if [ '$($gatewayPluginExisted.ToString().ToLowerInvariant())' = 'true' ]; then
+  test -d '$gatewayPluginBackup'
+  mv '$gatewayPluginBackup' '$gatewayPluginStage'
+fi
+cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
+"@
+            Invoke-GatewayBash -Command $restoreGateway | Out-Null
+            Invoke-GatewayOpenClaw config validate | Out-Null
+            Invoke-GatewayOpenClaw gateway restart | Out-Null
+        }
+    } catch {
+        $rollbackError = $_
     }
-    throw
+
+    if ($rollbackError) {
+        $rollbackFailed = $true
+        throw "Provisioning failed: $($provisioningError.Exception.Message) Rollback also failed: $($rollbackError.Exception.Message)"
+    }
+    throw $provisioningError
 } finally {
+    if (-not $rollbackFailed -and (Test-Path -LiteralPath $localConfigBackup)) {
+        Remove-Item -LiteralPath $localConfigBackup -Force -ErrorAction SilentlyContinue
+    }
+    if ($gatewaySnapshotReady -and -not $rollbackFailed) {
+        try {
+            Invoke-GatewayBash -Command "rm -rf '$gatewayConfigBackup' '$gatewayPluginBackup'" | Out-Null
+        } catch {
+            Write-Warning "Could not remove Gateway rollback snapshots: $($_.Exception.Message)"
+        }
+    }
+    if (Test-Path -LiteralPath $pluginNext) {
+        Remove-Item -LiteralPath $pluginNext -Recurse -Force -ErrorAction SilentlyContinue
+    }
     if ($taskStopped) {
         Start-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     }

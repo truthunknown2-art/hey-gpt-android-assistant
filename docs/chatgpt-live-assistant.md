@@ -213,7 +213,9 @@ Windows file bridge instead uses a dedicated scheduled-task node with one fixed
 only metadata and opaque root references while the bound phone voice session is
 unlocked. `assistant_windows_files_read` accepts only one returned reference and
 requires the phone's secure private-read approval before bounded UTF-8 content
-leaves the selected root. The Gateway globally denies generic node shell,
+leaves the selected root. Both tools recheck the same short-lived Android
+presence lease immediately before invoking Windows; a locked phone, expired
+lease, or replacement voice session fails closed. The Gateway globally denies generic node shell,
 approval-management, and browser-proxy commands.
 
 Provision an already paired dedicated Windows node idempotently with:
@@ -228,9 +230,12 @@ pwsh -File .\scripts\enable-assistant-windows-files.ps1 `
 
 The script validates that the scheduled task belongs to the dedicated state
 directory, stages and tests the plugin before atomic replacement, pins the
-Windows node/voice session/broker public key, preserves only the `documents`
-read-root alias by default, restarts both sides, and fails unless the connected
-node advertises exactly the fixed command.
+Windows node to the Android session key's 32-character device suffix and the
+broker public key, preserves only the `documents` read-root alias by default,
+restarts both sides, and fails unless the connected node advertises exactly the
+fixed command. Before mutation it snapshots the Windows node config plus the
+Gateway config and broker stage; any later failure restores all three before
+the scheduled node is restarted.
 
 ## Lock transition policy
 
