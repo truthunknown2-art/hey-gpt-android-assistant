@@ -26,6 +26,53 @@ $RestrictedNodeCommands = @(
 
 . (Join-Path $PSScriptRoot "lib\windows-files-provisioning-transaction.ps1")
 
+function Register-AgenticWindowsNodeTask {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$UserId,
+        [Parameter(Mandatory = $true)][string]$SupervisorPath,
+        [Parameter(Mandatory = $true)][string]$DedicatedStateDir
+    )
+
+    $powerShellPath = @(
+        (Get-Command pwsh.exe -ErrorAction SilentlyContinue).Source,
+        (Get-Command powershell.exe -ErrorAction SilentlyContinue).Source
+    ) | Where-Object { $_ } | Select-Object -First 1
+    if (-not $powerShellPath) {
+        throw "PowerShell is required for the tracked Windows node supervisor."
+    }
+
+    $arguments = @(
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy", "Bypass",
+        "-File", ('"' + $SupervisorPath + '"'),
+        "-StateDir", ('"' + $DedicatedStateDir + '"')
+    ) -join " "
+    $action = New-ScheduledTaskAction -Execute $powerShellPath -Argument $arguments
+    $bootTrigger = New-ScheduledTaskTrigger -AtStartup
+    $bootTrigger.Delay = "PT30S"
+    $logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $UserId
+    $principal = New-ScheduledTaskPrincipal -UserId $UserId -LogonType S4U -RunLevel Limited
+    $settings = New-ScheduledTaskSettingsSet `
+        -MultipleInstances IgnoreNew `
+        -RestartCount 999 `
+        -RestartInterval (New-TimeSpan -Minutes 1) `
+        -ExecutionTimeLimit ([TimeSpan]::Zero) `
+        -StartWhenAvailable `
+        -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries
+
+    Register-ScheduledTask `
+        -TaskName $Name `
+        -Action $action `
+        -Trigger @($bootTrigger, $logonTrigger) `
+        -Principal $principal `
+        -Settings $settings `
+        -Force | Out-Null
+}
+
 function Invoke-LocalOpenClaw {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
 
@@ -90,10 +137,28 @@ if (-not (Test-Path -LiteralPath $resolvedReadRoot -PathType Container)) {
 }
 
 $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
-$expectedLauncher = Join-Path $resolvedStateDir "node.vbs"
-$taskLaunchers = @($task.Actions | ForEach-Object { [IO.Path]::GetFullPath([string]$_.Execute) })
-if ($expectedLauncher -notin $taskLaunchers) {
+$expectedLegacyLauncher = Join-Path $resolvedStateDir "node.vbs"
+$nodeCommandPath = Join-Path $resolvedStateDir "node.cmd"
+$supervisorSource = (Resolve-Path (Join-Path $PSScriptRoot "lib\agentic-windows-node-supervisor.ps1")).Path
+$supervisorPath = Join-Path $resolvedStateDir "agentic-windows-node-supervisor.ps1"
+$taskActions = @($task.Actions)
+$legacyTaskOwned = $taskActions.Count -eq 1 -and
+    [IO.Path]::GetFullPath([string]$taskActions[0].Execute) -ieq $expectedLegacyLauncher
+$managedTaskOwned = $taskActions.Count -eq 1 -and
+    [IO.Path]::GetFileName([string]$taskActions[0].Execute) -in @("pwsh.exe", "powershell.exe") -and
+    ([string]$taskActions[0].Arguments).IndexOf($supervisorPath, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+    ([string]$taskActions[0].Arguments).IndexOf($resolvedStateDir, [StringComparison]::OrdinalIgnoreCase) -ge 0
+if (-not ($legacyTaskOwned -or $managedTaskOwned)) {
     throw "Scheduled task '$TaskName' does not belong to the dedicated state directory."
+}
+$currentWindowsUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+$currentShortUser = $currentWindowsUser.Split('\')[-1]
+$taskUser = [string]$task.Principal.UserId
+if ($taskUser -notin @($currentWindowsUser, $currentShortUser)) {
+    throw "Scheduled task '$TaskName' belongs to a different Windows user."
+}
+if (-not (Test-Path -LiteralPath $nodeCommandPath -PathType Leaf)) {
+    throw "The dedicated node command is missing from '$resolvedStateDir'."
 }
 
 $pluginSource = (Resolve-Path (Join-Path $PSScriptRoot "..\integrations\$PluginId")).Path
@@ -102,6 +167,11 @@ $pluginStage = Assert-ChildPath -Path (Join-Path $pluginParent $PluginId) -Paren
 $pluginNext = Assert-ChildPath -Path "$pluginStage.next" -Parent $resolvedStateDir -Label "Plugin next stage"
 $pluginPrevious = Assert-ChildPath -Path "$pluginStage.previous" -Parent $resolvedStateDir -Label "Plugin previous stage"
 $transactionId = [Guid]::NewGuid().ToString("N")
+$taskBackupPath = Assert-ChildPath -Path (Join-Path $resolvedStateDir "task.rollback.$transactionId.xml") -Parent $resolvedStateDir -Label "Task backup"
+$taskXmlBackup = Export-ScheduledTask -TaskName $TaskName
+[IO.File]::WriteAllText($taskBackupPath, $taskXmlBackup, [Text.UTF8Encoding]::new($false))
+$supervisorExisted = Test-Path -LiteralPath $supervisorPath -PathType Leaf
+$supervisorBackup = if ($supervisorExisted) { [IO.File]::ReadAllBytes($supervisorPath) } else { $null }
 $localConfigPath = Assert-ChildPath -Path (Join-Path $resolvedStateDir "openclaw.json") -Parent $resolvedStateDir -Label "Local config"
 $localConfigBackup = Assert-ChildPath -Path "$localConfigPath.rollback.$transactionId" -Parent $resolvedStateDir -Label "Local config backup"
 $gatewayConfigPath = "/home/openclaw/.openclaw/openclaw.json"
@@ -119,10 +189,19 @@ $gatewayPluginExisted = $false
 $rollbackFailed = $false
 $provisioningSucceeded = $false
 $rollbackSucceeded = $false
+$taskReconfigured = $false
 
 try {
     Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    Stop-OwnedWindowsNodeProcesses -NodeCommandPath $nodeCommandPath | Out-Null
     $taskStopped = $true
+    $taskReconfigured = $true
+    Copy-Item -LiteralPath $supervisorSource -Destination $supervisorPath -Force
+    Register-AgenticWindowsNodeTask `
+        -Name $TaskName `
+        -UserId $currentWindowsUser `
+        -SupervisorPath $supervisorPath `
+        -DedicatedStateDir $resolvedStateDir
     if ($localConfigExisted) {
         Copy-Item -LiteralPath $localConfigPath -Destination $localConfigBackup -Force
     }
@@ -228,6 +307,11 @@ fi
     $taskStopped = $false
     Start-Sleep -Seconds 5
 
+    $runningTask = Get-ScheduledTask -TaskName $TaskName
+    if ([string]$runningTask.State -ne "Running") {
+        throw "Tracked Windows node supervisor exited instead of remaining active."
+    }
+
     $status = ((Invoke-GatewayOpenClaw nodes status --json) -join "`n") | ConvertFrom-Json
     $node = @($status.nodes | Where-Object nodeId -eq $NodeId)
     if ($node.Count -ne 1 -or $node[0].connected -ne $true) {
@@ -248,6 +332,7 @@ fi
     $rollbackError = $null
     try {
         Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        Stop-OwnedWindowsNodeProcesses -NodeCommandPath $nodeCommandPath | Out-Null
         $taskStopped = $true
         if ($promoted) {
             if (Test-Path -LiteralPath $pluginStage) {
@@ -284,6 +369,15 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
             Invoke-GatewayOpenClaw config validate | Out-Null
             Invoke-GatewayOpenClaw gateway restart | Out-Null
         }
+
+        if ($taskReconfigured) {
+            Register-ScheduledTask -TaskName $TaskName -Xml $taskXmlBackup -Force | Out-Null
+            if ($supervisorExisted) {
+                [IO.File]::WriteAllBytes($supervisorPath, $supervisorBackup)
+            } elseif (Test-Path -LiteralPath $supervisorPath) {
+                Remove-Item -LiteralPath $supervisorPath -Force
+            }
+        }
         $rollbackSucceeded = $true
     } catch {
         $rollbackError = $_
@@ -295,6 +389,7 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
         Write-Warning "Preserved local config snapshot: $localConfigBackup"
         Write-Warning "Preserved Gateway config snapshot: ${Distro}:$gatewayConfigBackup"
         Write-Warning "Preserved Gateway plugin snapshot: ${Distro}:$gatewayPluginBackup"
+        Write-Warning "Preserved scheduled-task snapshot: $taskBackupPath"
         Write-Warning "After manual restoration, validate and restart the Gateway, then run: Start-ScheduledTask -TaskName '$TaskName'"
         throw "Provisioning failed: $($provisioningError.Exception.Message) Rollback also failed: $($rollbackError.Exception.Message)"
     }
@@ -312,6 +407,9 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
     }
     if (Test-Path -LiteralPath $pluginNext) {
         Remove-Item -LiteralPath $pluginNext -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if (-not $rollbackFailed -and (Test-Path -LiteralPath $taskBackupPath)) {
+        Remove-Item -LiteralPath $taskBackupPath -Force -ErrorAction SilentlyContinue
     }
     Complete-WindowsNodeTaskState `
         -TaskStopped $taskStopped `
