@@ -1,0 +1,14 @@
+{
+  "id": "assistant-capability-broker",
+  "name": "Assistant Capability Broker",
+  "description": "Durable typed plans and receipts for the agentic assistant.",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "activation": {
+    "onStartup": true
+  }
+}

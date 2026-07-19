@@ -8,6 +8,9 @@ import android.os.PowerManager
 import android.util.Log
 import com.openclaw.assistant.OpenClawApplication
 import com.openclaw.assistant.R
+import com.openclaw.assistant.broker.AssistantPresenceLeases
+import com.openclaw.assistant.broker.PresenceLease
+import com.openclaw.assistant.broker.PresenceLeaseValidation
 import com.openclaw.assistant.data.SettingsRepository
 import com.openclaw.assistant.gateway.GatewayVoiceTurnController
 import com.openclaw.assistant.speech.SpeechRecognizerManager
@@ -82,6 +85,8 @@ internal class AmbientVoiceSession(
     private var lockMonitorJob: Job? = null
     private var token: String = ""
     private var sessionKey: String = ""
+    private var targetDeviceId: String = ""
+    private var presenceLease: PresenceLease? = null
     private var uiState = AmbientVoiceUiState()
     private var wakeLock: PowerManager.WakeLock? = null
 
@@ -92,10 +97,12 @@ internal class AmbientVoiceSession(
         if (token.isBlank() || sessionKey.isBlank() || !active.compareAndSet(false, true)) return false
         this.token = token
         this.sessionKey = sessionKey
-        if (!ensureUnlocked("before_start") || !app.nodeRuntime.chatHealthOk.value) {
+        targetDeviceId = app.nodeRuntime.deviceId.orEmpty()
+        if (keyguardManager.isDeviceLocked || !app.nodeRuntime.chatHealthOk.value || targetDeviceId.isBlank()) {
             finish(if (keyguardManager.isDeviceLocked) "secure_lock" else "gateway_unavailable")
             return false
         }
+        presenceLease = AssistantPresenceLeases.manager.issue(sessionKey, targetDeviceId)
 
         acquireWakeLock()
         if (settings.ttsEnabled && !ttsManager.initializeCurrentProvider()) {
@@ -242,10 +249,36 @@ internal class AmbientVoiceSession(
     }
 
     private fun ensureUnlocked(reason: String): Boolean {
-        if (!keyguardManager.isDeviceLocked) return true
-        Log.w(TAG, "Ending ambient voice session after secure lock: $reason")
-        finish("secure_lock")
-        return false
+        if (keyguardManager.isDeviceLocked) {
+            Log.w(TAG, "Ending ambient voice session after secure lock: $reason")
+            finish("secure_lock")
+            return false
+        }
+        if (!app.nodeRuntime.chatHealthOk.value) {
+            Log.w(TAG, "Ending ambient voice session after Gateway disconnect: $reason")
+            finish("gateway_disconnected")
+            return false
+        }
+        val lease = presenceLease
+        if (lease == null) {
+            finish("presence_lease_missing")
+            return false
+        }
+        return when (val validation = AssistantPresenceLeases.manager.validateAndRenew(
+            lease.leaseId,
+            sessionKey,
+            targetDeviceId,
+        )) {
+            is PresenceLeaseValidation.Valid -> {
+                presenceLease = validation.lease
+                true
+            }
+            is PresenceLeaseValidation.Rejected -> {
+                Log.w(TAG, "Ending ambient voice session after presence rejection: ${validation.reason}")
+                finish("presence_lease_rejected")
+                false
+            }
+        }
     }
 
     private fun publish(
@@ -271,6 +304,8 @@ internal class AmbientVoiceSession(
 
     private fun finish(reason: String) {
         if (!active.get() || !finishing.compareAndSet(false, true)) return
+        presenceLease?.let { AssistantPresenceLeases.manager.revoke(it.leaseId) }
+        presenceLease = null
         val capturedSessionJob = sessionJob
         val capturedMonitorJob = lockMonitorJob
         sessionJob = null
