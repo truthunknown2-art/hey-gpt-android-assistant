@@ -735,6 +735,13 @@ while (`$true) {
             $stream.Dispose()
         }
     }
+
+    It "keeps provisioner callbacks in the script session that owns their helper functions" {
+        $provisioner = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) `
+            "scripts\enable-assistant-windows-files.ps1"
+
+        [IO.File]::ReadAllText($provisioner) | Should Not Match '\.GetNewClosure\('
+    }
 }
 
 Describe "Windows file provisioner process ownership" {

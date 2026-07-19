@@ -126,7 +126,7 @@ function Stop-AgenticWindowsNodeProcessesViaGatewayTask {
             throw "The OpenClaw Gateway supervisor task no longer matches its canonical least-privilege definition."
         }
         return $candidate
-    }.GetNewClosure()
+    }
     & $getValidatedGatewayTask | Out-Null
 
     $hook = New-AgenticWindowsNodeGatewayCleanupHook `
@@ -387,7 +387,7 @@ $agenticTaskChanged = $false
 $lockPath = Join-Path $resolvedStateDir "agentic-node-supervisor.lock"
 $testSupervisorLockHeld = {
     Test-AgenticWindowsNodeSupervisorLockHeld -LockPath $lockPath
-}.GetNewClosure()
+}
 $testDedicatedNodeStopped = {
     try {
         $stoppedStatus = ((Invoke-GatewayOpenClaw nodes status --json) -join "`n") | ConvertFrom-Json
@@ -397,7 +397,7 @@ $testDedicatedNodeStopped = {
     } catch {
         return $false
     }
-}.GetNewClosure()
+}
 $stopOwnedProcessSet = {
     param($ProcessIds, $ProcessSnapshot)
     Stop-AgenticWindowsNodeProcessesViaGatewayTask `
@@ -411,7 +411,7 @@ $stopOwnedProcessSet = {
         -DedicatedStateDir $resolvedStateDir `
         -ExpectedUserSid $currentWindowsUserSid `
         -PowerShellPath $powerShellPath
-}.GetNewClosure()
+}
 $stopOwnedProcessSetAndLeaveGatewayStopped = {
     param($ProcessIds, $ProcessSnapshot)
     Stop-AgenticWindowsNodeProcessesViaGatewayTask `
@@ -426,7 +426,7 @@ $stopOwnedProcessSetAndLeaveGatewayStopped = {
         -ExpectedUserSid $currentWindowsUserSid `
         -PowerShellPath $powerShellPath `
         -LeaveGatewayTaskStopped
-}.GetNewClosure()
+}
 
 try {
     Stop-WindowsNodeRuntimePostcondition `
@@ -776,7 +776,7 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
                 throw "The exact dedicated node connection marker could not be captured."
             }
             return [long]$markerNode[0].connectedAtMs
-        }.GetNewClosure()
+        }
         $testDedicatedNodeReady = {
             param($PreviousConnectedAtMs)
             try {
@@ -797,7 +797,7 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
             } catch {
                 return $false
             }
-        }.GetNewClosure()
+        }
         if ($agenticTaskExisted) {
             Restore-WindowsNodeRuntimePostcondition `
                 -TaskLabel "$agenticTaskPath$agenticTaskName" `
