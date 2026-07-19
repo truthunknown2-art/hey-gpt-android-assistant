@@ -191,6 +191,9 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.google.code.gson:gson:2.10.1")
 
+    // Spotify App Remote (official AAR; provenance in THIRD_PARTY_LICENSES.md)
+    implementation(files("libs/spotify-app-remote-release-0.8.0.aar"))
+
     // Serialization
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.1")
 

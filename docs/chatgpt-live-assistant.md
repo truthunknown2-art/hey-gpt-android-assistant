@@ -139,9 +139,17 @@ connected Android node:
 - `android_media_play` invokes only `media.play_search` with Spotify fixed as
   the package. For exact tracks, the model resolves a public Spotify track page
   and supplies only a strict `spotify:track:<22-character-id>` plus bounded title
-  and artist fields. Android uses Spotify's media-session URI action and reports
-  success only after observing playing state with matching metadata. The
-  structured play-from-search intent remains an unconfirmed fallback.
+  and artist fields. Android uses the user-authorized Spotify App Remote SDK and
+  reports success only after observing an unpaused PlayerState with matching URI
+  or metadata. The public client ID is configured locally on the phone; no client
+  secret or Web API token reaches OpenClaw. Structured media-session search
+  remains an unconfirmed fallback for non-exact requests.
+
+Spotify exact-track playback needs one-time phone setup under **Settings >
+Spotify control**. Register the displayed Android package and SHA-1 fingerprint
+in Spotify's Developer Dashboard, allowlist the displayed redirect URI, paste
+the public client ID, and tap **Save and authorize**. The App Remote SDK requests
+only Spotify's built-in remote-control authorization.
 - `messenger_notifications_read` invokes only `notifications.list_package`.
   Android filters to `com.facebook.orca` before returning sender, a bounded text
   preview, and timestamp. Up to 100 previews are retained in app-private storage

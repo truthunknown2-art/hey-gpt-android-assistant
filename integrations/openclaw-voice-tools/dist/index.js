@@ -147,7 +147,7 @@ export default {
     api.registerTool({
       name: "android_media_play",
       label: "Play Spotify",
-      description: "Play Spotify on the configured Android phone. For an exact track, first use web_search to find its public open.spotify.com/track URL, convert the final 22-character ID to spotify:track:ID, and pass spotifyUri with title and artist. playbackConfirmed is true only when Android reports playing state with matching metadata.",
+      description: "Play Spotify on the configured Android phone through its locally authorized Spotify control. For an exact track, first use web_search to find its public open.spotify.com/track URL, convert the final 22-character ID to spotify:track:ID, and pass spotifyUri with title and artist. playbackConfirmed is true only when Android reports unpaused state with matching URI or metadata.",
       parameters: {
         type: "object",
         required: ["query"],

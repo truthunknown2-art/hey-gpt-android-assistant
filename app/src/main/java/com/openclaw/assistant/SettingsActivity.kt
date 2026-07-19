@@ -59,6 +59,7 @@ import com.openclaw.assistant.gateway.AgentInfo
 import com.openclaw.assistant.ui.backend.BackendListActivity
 import com.openclaw.assistant.ui.backend.ToolProgressFeed
 import com.openclaw.assistant.ui.bridge.MobileBridgeSettingsScreen
+import com.openclaw.assistant.ui.settings.SpotifySettingsScreen
 import com.openclaw.assistant.ui.theme.OpenClawAssistantTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import com.openclaw.assistant.utils.GatewayConfigUtils
@@ -454,6 +455,7 @@ fun SettingsScreen(
                         IconButton(onClick = onCredits) {
                             Icon(Icons.Default.Info, contentDescription = stringResource(R.string.credits_title))
                         }
+                        if (selectedSettingsCategory != SettingsCategory.Spotify) {
                         TextButton(
                             onClick = {
                                 settings.connectionType = if (openClawTabIndex == 0) {
@@ -545,6 +547,7 @@ fun SettingsScreen(
                             enabled = true
                         ) {
                             Text(stringResource(R.string.save_button))
+                        }
                         }
                     }
                 )
@@ -1511,6 +1514,11 @@ fun SettingsScreen(
                 Spacer(modifier = Modifier.height(24.dp))
             }
 
+            if (selectedSettingsCategory == SettingsCategory.Spotify) {
+                SpotifySettingsScreen(settings)
+                Spacer(modifier = Modifier.height(24.dp))
+            }
+
             // === WAKE WORD SECTION ===
             if (selectedSettingsCategory == SettingsCategory.WakeWord) {
             CollapsibleSection(title = stringResource(R.string.wake_word), collapsible = false) {
@@ -1964,6 +1972,7 @@ private enum class SettingsCategory {
     Backend,
     Chat,
     Voice,
+    Spotify,
     MobileBridge,
     WakeWord,
     Diagnostics,
@@ -1977,6 +1986,7 @@ private fun SettingsCategory.title(): String = when (this) {
     SettingsCategory.Backend -> stringResource(R.string.settings_category_connections)
     SettingsCategory.Chat -> stringResource(R.string.settings_category_chat)
     SettingsCategory.Voice -> stringResource(R.string.settings_category_voice_mode)
+    SettingsCategory.Spotify -> stringResource(R.string.settings_category_spotify)
     SettingsCategory.MobileBridge -> stringResource(R.string.settings_category_mobile_bridge)
     SettingsCategory.WakeWord -> stringResource(R.string.wake_word)
     SettingsCategory.Diagnostics -> stringResource(R.string.diagnostics_title)
@@ -2007,6 +2017,12 @@ private fun SettingsOverviewMenu(
             subtitle = stringResource(R.string.settings_category_voice_desc),
             icon = Icons.Default.GraphicEq,
             onClick = { onSelected(SettingsCategory.Voice) },
+        ),
+        SettingsOverviewItem(
+            title = stringResource(R.string.settings_category_spotify),
+            subtitle = stringResource(R.string.settings_category_spotify_desc),
+            icon = Icons.Default.MusicNote,
+            onClick = { onSelected(SettingsCategory.Spotify) },
         ),
         SettingsOverviewItem(
             title = stringResource(R.string.settings_category_mobile_bridge),

@@ -144,4 +144,27 @@ class MediaHandlerTest {
     assertEquals("INVALID_SPOTIFY_URI", result.error?.code)
     assertFalse(executed)
   }
+
+  @Test
+  fun `Spotify setup failure retains its actionable error code`() = runTest {
+    val setupHandler = MediaHandler(
+      context = context,
+      json = Json,
+      invokeErrorFromThrowable = { "ERROR" to (it.message ?: "error") },
+      playbackExecutor = SpotifyPlaybackExecutor {
+        throw SpotifyPlaybackException(
+          "SPOTIFY_SETUP_REQUIRED",
+          "Complete Spotify control setup in the phone app first",
+        )
+      },
+      isPackageAvailable = { true },
+    )
+
+    val result = setupHandler.handlePlaySearch(
+      """{"query":"Alive Pearl Jam","spotifyUri":"spotify:track:4Qbjmdlv1eZDD1u8SWe1pt"}""",
+    )
+
+    assertFalse(result.ok)
+    assertEquals("SPOTIFY_SETUP_REQUIRED", result.error?.code)
+  }
 }

@@ -40,6 +40,11 @@ internal fun interface SpotifyPlaybackExecutor {
   suspend fun play(request: SpotifyPlaybackRequest): SpotifyPlaybackReceipt
 }
 
+internal class SpotifyPlaybackException(
+  val code: String,
+  override val message: String,
+) : RuntimeException(message)
+
 class MediaHandler internal constructor(
   private val context: Context,
   private val json: Json,
@@ -55,7 +60,7 @@ class MediaHandler internal constructor(
     context = context,
     json = json,
     invokeErrorFromThrowable = invokeErrorFromThrowable,
-    playbackExecutor = AndroidSpotifyPlaybackExecutor(context),
+    playbackExecutor = SpotifyAppRemotePlaybackExecutor(context),
     isPackageAvailable = {
       context.packageManager.getLaunchIntentForPackage(it) != null
     },
@@ -118,6 +123,8 @@ class MediaHandler internal constructor(
           put("packageName", JsonPrimitive(requestedPackage))
         }.toString()
       )
+    } catch (error: SpotifyPlaybackException) {
+      GatewaySession.InvokeResult.error(error.code, error.message)
     } catch (error: Throwable) {
       val (code, message) = invokeErrorFromThrowable(error)
       GatewaySession.InvokeResult.error(code, message)
