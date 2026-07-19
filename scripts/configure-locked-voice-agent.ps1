@@ -2,7 +2,7 @@
 param(
     [string]$Distro = "OpenClawGateway",
     [string]$AgentId = "locked-voice",
-    [string]$Model = "openai/gpt-5.6-sol"
+    [string]$Model = "openai/gpt-5.6-luna"
 )
 
 $ErrorActionPreference = "Stop"
