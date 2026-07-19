@@ -133,12 +133,14 @@ if ($Disable) {
     Invoke-OpenClaw config set "agents.list[$agentIndex].tools.alsoAllow" ($nextAllow | ConvertTo-Json -Compress) --strict-json | Out-Null
     Invoke-OpenClaw config set "agents.list[$agentIndex].tools.deny" ($nextDeny | ConvertTo-Json -Compress) --strict-json | Out-Null
 } else {
-    $resolvedNodeId = Resolve-AssistantNodeId -RequestedNodeId $NodeId
     $nodeConfig = ((Invoke-OpenClaw config get gateway.nodes) -join "`n") | ConvertFrom-Json
     $allowCommands = @(@($nodeConfig.allowCommands) + $PresenceCommand + $ExecuteCommand) | Sort-Object -Unique
     $denyCommands = @($nodeConfig.denyCommands | Where-Object { $_ -notin @($PresenceCommand, $ExecuteCommand) }) | Sort-Object -Unique
     Invoke-OpenClaw config set gateway.nodes.allowCommands ($allowCommands | ConvertTo-Json -Compress) --strict-json | Out-Null
     Invoke-OpenClaw config set gateway.nodes.denyCommands ($denyCommands | ConvertTo-Json -Compress) --strict-json | Out-Null
+    Invoke-OpenClaw config validate | Out-Null
+    Invoke-OpenClaw gateway restart | Out-Null
+    $resolvedNodeId = Resolve-AssistantNodeId -RequestedNodeId $NodeId
     Invoke-OpenClaw config set "plugins.entries.$PluginId.config.androidNodeId" ('"' + $resolvedNodeId + '"') --strict-json | Out-Null
     Invoke-OpenClaw config set "plugins.entries.$PluginId.config.privateReadAgentId" ('"' + $AgentId + '"') --strict-json | Out-Null
     Invoke-OpenClaw config set "plugins.entries.$PluginId.config.privateReadsEnabled" true --strict-json | Out-Null
