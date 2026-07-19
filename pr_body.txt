@@ -4,7 +4,7 @@
 - keep secure-keyguard speech in a separate persistent zero-tool lane
 - use ChatGPT/Codex OAuth subscription access with `openai/gpt-5.6-luna`, never Terra
 - add signed, device-bound Android execution with live-presence leases, durable receipts, and phone approval
-- enable private phone-spoken contact search and explicit persistent memory without exposing generic node control
+- enable private phone-spoken contact search, one-shot approved contact calling, and explicit persistent memory without exposing generic node control
 
 ## Current Luna Tool Surface
 
@@ -14,6 +14,7 @@
 - `assistant_contacts_search`
 - `assistant_memory_forget`
 - `assistant_memory_remember`
+- `assistant_phone_call`
 - `memory_get`
 - `memory_search`
 - `messenger_notifications_read`
@@ -32,19 +33,20 @@ Explicit memory writes only low-sensitivity facts after an explicit user request
 
 ## Existing Actions And Limits
 
-Spotify exact-track support uses the official App Remote SDK after one-time authorization and verifies matching unpaused playback. Messenger currently reads bounded active-notification previews only; it does not claim inbox-history access. Selected calling, SMS, calendar, Messenger-history, and Windows actions remain roadmap work and will use named signed capabilities rather than generic automation.
+Spotify exact-track support uses the official App Remote SDK after one-time authorization and verifies matching unpaused playback. `assistant_phone_call` accepts only a contact-name query; the S10+ resolves exactly one recipient locally, shows the real name/number in a secure one-shot approval, and returns only whether the call was placed or the dialer requires a tap. Messenger currently reads bounded active-notification previews only; it does not claim inbox-history access. SMS, calendar, Messenger-history, and selected Windows actions remain roadmap work and will use named signed capabilities rather than generic automation.
 
 ## Verification
 
-- installed S10+ APK: `openclaw-d9f60af-debug.apk`, versionCode 492
-- APK SHA-256: `A59D790E1C0A33A1E1A4AC857FDBC16547752810A3E84EDE872857212A01AC19`
-- S10+ helper: connected and approved as `d9f60af-dev` with both signed assistant commands
-- broker 0.3.3: 23 tests, 22 passed, 1 expected platform skip
-- live broker: three optional tools registered, zero pending proposals, zero terminal receipts before physical contact acceptance
-- full Android gate at the contact-delivery implementation commit: 392 tests across 71 suites, 0 failures/errors, 2 expected skips; lint and both debug assemblies passed
-- exact installed-head `assembleFullDebug`: passed
+- installed S10+ APK: `openclaw-4e76bf3-debug.apk`, versionCode 494
+- APK SHA-256: `9CB1E0050A4FC6D3AB75C789EFBB04B4B93FE0DFC7FCA01B18C478D073E1D893`
+- S10+ helper: connected and approved as `4e76bf3-dev` with both signed assistant commands
+- broker 0.4.0: 26 tests, 25 passed, 1 expected platform skip
+- live broker: four optional tools registered, zero pending proposals and zero terminal receipts before physical call acceptance
+- full Android gate: 404 tests across 72 suites, 0 failures/errors, 2 expected skips; lint and full debug assembly passed
+- exact clean-commit `assembleFullDebug --rerun-tasks`: passed
+- a headless Luna call request selected `assistant_phone_call` and was correctly refused before plan creation because no active unlocked phone voice session existed
 - both deployed voice agents: `openai/gpt-5.6-luna`
 
 ## Remaining Gates
 
-This PR remains draft pending physical unlocked contact approval/private-speech/cancellation tests, explicit memory recall/forget testing, secure-lock and barge-in regression tests, Spotify and Messenger expiry tests, cellular Tailscale verification, Windows firewall enforcement, reboot/endurance testing, selected call/SMS/calendar/desktop capability work, and blocker review in the existing GPT-5.6 Pro `Android Voice Assistant Review` conversation.
+This PR remains draft pending physical unlocked contact read/call approval, private-speech, denial, ambiguity, and lock-cancellation tests; explicit memory recall/forget testing; secure-lock and barge-in regression tests; Spotify and Messenger expiry tests; cellular Tailscale verification; Windows firewall enforcement; reboot/endurance testing; SMS/calendar/desktop capability work; and blocker review in the existing GPT-5.6 Pro `Android Voice Assistant Review` conversation.
