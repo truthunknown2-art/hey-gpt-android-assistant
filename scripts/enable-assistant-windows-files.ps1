@@ -69,9 +69,13 @@ function Stop-AgenticWindowsNodeProcessesViaGatewayTask {
         [Parameter(Mandatory = $true)][int[]]$ProcessIds,
         [Parameter(Mandatory = $true)][object[]]$ProcessSnapshot,
         [Parameter(Mandatory = $true)][string]$BootstrapPath,
+        [Parameter(Mandatory = $true)][string]$BootstrapBackupPath,
+        [Parameter(Mandatory = $true)][string]$BootstrapHashPath,
         [Parameter(Mandatory = $true)][string]$GatewayTaskPath,
         [Parameter(Mandatory = $true)][string]$GatewayTaskName,
         [Parameter(Mandatory = $true)][string]$DedicatedStateDir,
+        [Parameter(Mandatory = $true)][string]$ExpectedUserSid,
+        [Parameter(Mandatory = $true)][string]$PowerShellPath,
         [switch]$LeaveGatewayTaskStopped
     )
 
@@ -92,34 +96,47 @@ function Stop-AgenticWindowsNodeProcessesViaGatewayTask {
     $markerPath = Join-Path $DedicatedStateDir "gateway-cleanup-$nonce.done"
     $payloadJson = $targets | ConvertTo-Json -Compress
     $payloadBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($payloadJson))
-    $markerLiteral = ConvertTo-PowerShellSingleQuotedLiteral -Value $markerPath
     $expiresTicks = [DateTime]::UtcNow.AddMinutes(2).Ticks
-    $startMarker = "# hey-gpt-s4u-cleanup:$nonce:start"
-    $endMarker = "# hey-gpt-s4u-cleanup:$nonce:end"
-    $hook = @"
-$startMarker
-if ([DateTime]::UtcNow.Ticks -gt $expiresTicks) {
-    throw "Expired agentic Windows node cleanup request."
-}
-`$cleanupTargets = @(([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$payloadBase64')) | ConvertFrom-Json))
-foreach (`$cleanupTarget in `$cleanupTargets) {
-    `$cleanupProcess = @(Get-CimInstance Win32_Process -Filter "ProcessId=`$([int]`$cleanupTarget.id)" -ErrorAction Stop)
-    if (`$cleanupProcess.Count -eq 0) { continue }
-    if (`$cleanupProcess.Count -ne 1 -or
-        ([datetime]`$cleanupProcess[0].CreationDate).ToUniversalTime().Ticks -ne [long]`$cleanupTarget.startTicks) {
-        throw "Agentic Windows node cleanup process identity changed."
+    if (-not (Test-Path -LiteralPath $BootstrapBackupPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $BootstrapHashPath -PathType Leaf)) {
+        throw "The persisted Gateway bootstrap transaction backup is incomplete."
     }
-    Stop-Process -Id ([int]`$cleanupTarget.id) -Force -ErrorAction Stop
-}
-[IO.File]::WriteAllText($markerLiteral, "ok", [Text.UTF8Encoding]::new(`$false))
-$endMarker
-"@
-
-    $bootstrapBytes = [IO.File]::ReadAllBytes($BootstrapPath)
+    $expectedBootstrapHash = [IO.File]::ReadAllText($BootstrapHashPath).Trim()
+    if ($expectedBootstrapHash -notmatch '^[A-F0-9]{64}$' -or
+        (Get-FileHash -LiteralPath $BootstrapBackupPath -Algorithm SHA256).Hash -cne $expectedBootstrapHash) {
+        throw "The persisted Gateway bootstrap transaction backup is corrupt."
+    }
+    $bootstrapBytes = [IO.File]::ReadAllBytes($BootstrapBackupPath)
     $bootstrapContent = [Text.Encoding]::UTF8.GetString($bootstrapBytes)
-    if ($bootstrapContent -match '# hey-gpt-s4u-cleanup:[a-f0-9]{32}:') {
-        throw "The Gateway bootstrap already contains an unfinished cleanup hook."
+    if ((Get-FileHash -LiteralPath $BootstrapPath -Algorithm SHA256).Hash -cne $expectedBootstrapHash) {
+        throw "The Gateway bootstrap changed after the transaction backup was persisted."
     }
+
+    $getValidatedGatewayTask = {
+        $candidate = Get-ScheduledTask `
+            -TaskPath $GatewayTaskPath `
+            -TaskName $GatewayTaskName `
+            -ErrorAction Stop
+        $assessment = Get-OpenClawGatewaySupervisorTaskAssessment `
+            -Task $candidate `
+            -ExpectedUserSid $ExpectedUserSid `
+            -PowerShellPath $PowerShellPath `
+            -BootstrapPath $BootstrapPath
+        if (-not $assessment.IsOwned -or $assessment.NeedsUpdate) {
+            throw "The OpenClaw Gateway supervisor task no longer matches its canonical least-privilege definition."
+        }
+        return $candidate
+    }.GetNewClosure()
+    & $getValidatedGatewayTask | Out-Null
+
+    $hook = New-AgenticWindowsNodeGatewayCleanupHook `
+        -Nonce $nonce `
+        -BootstrapPath $BootstrapPath `
+        -BootstrapBackupPath $BootstrapBackupPath `
+        -ExpectedBootstrapSha256 $expectedBootstrapHash `
+        -MarkerPath $markerPath `
+        -PayloadBase64 $payloadBase64 `
+        -ExpiresUtcTicks $expiresTicks
 
     $insertionPoint = '$ErrorActionPreference = "Stop"'
     $insertionIndex = $bootstrapContent.IndexOf($insertionPoint, [StringComparison]::Ordinal)
@@ -131,6 +148,8 @@ $endMarker
 
     try {
         Remove-Item -LiteralPath $markerPath -Force -ErrorAction SilentlyContinue
+        # Re-fetch immediately before granting the task the temporary cleanup request.
+        & $getValidatedGatewayTask | Out-Null
         [IO.File]::WriteAllText($BootstrapPath, $temporaryContent, [Text.UTF8Encoding]::new($false))
         Stop-ScheduledTask -TaskPath $GatewayTaskPath -TaskName $GatewayTaskName -ErrorAction Stop
         Start-ScheduledTask -TaskPath $GatewayTaskPath -TaskName $GatewayTaskName -ErrorAction Stop
@@ -146,9 +165,20 @@ $endMarker
         Remove-Item -LiteralPath $markerPath -Force -ErrorAction SilentlyContinue
         if ($LeaveGatewayTaskStopped) {
             Stop-ScheduledTask -TaskPath $GatewayTaskPath -TaskName $GatewayTaskName -ErrorAction SilentlyContinue
+        } else {
+            & $getValidatedGatewayTask | Out-Null
+            if ((Get-ScheduledTask `
+                    -TaskPath $GatewayTaskPath `
+                    -TaskName $GatewayTaskName `
+                    -ErrorAction Stop).State -ne "Running") {
+                Start-ScheduledTask `
+                    -TaskPath $GatewayTaskPath `
+                    -TaskName $GatewayTaskName `
+                    -ErrorAction Stop
+            }
         }
-        if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($BootstrapPath)) -ne
-            [Convert]::ToBase64String($bootstrapBytes)) {
+        if ((Get-FileHash -LiteralPath $BootstrapPath -Algorithm SHA256).Hash -cne
+            $expectedBootstrapHash) {
             throw "The Gateway bootstrap was not restored byte-for-byte after cleanup."
         }
     }
@@ -269,16 +299,42 @@ $gatewayBootstrapPath = Join-Path $env:ProgramData "OpenClaw\Start-OpenClawGatew
 if (-not (Test-Path -LiteralPath $gatewayBootstrapPath -PathType Leaf)) {
     throw "The owned OpenClaw Gateway boot supervisor is missing."
 }
-$gatewayTask = Get-ScheduledTask -TaskPath "\OpenClaw\" -TaskName "OpenClaw Gateway Supervisor" -ErrorAction Stop
-$gatewayTaskActions = @($gatewayTask.Actions)
-if ($gatewayTaskActions.Count -ne 1 -or
-    ([string]$gatewayTaskActions[0].Arguments).IndexOf($gatewayBootstrapPath, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
-    @($gatewayTask.Triggers | Where-Object { $_.CimClass.CimClassName -eq "MSFT_TaskBootTrigger" }).Count -ne 1) {
-    throw "The OpenClaw Gateway boot supervisor task is not the expected owned task."
+$gatewayTaskPath = "\OpenClaw\"
+$gatewayTaskName = "OpenClaw Gateway Supervisor"
+$gatewayTask = Get-ScheduledTask -TaskPath $gatewayTaskPath -TaskName $gatewayTaskName -ErrorAction Stop
+$gatewayTaskAssessment = Get-OpenClawGatewaySupervisorTaskAssessment `
+    -Task $gatewayTask `
+    -ExpectedUserSid $currentWindowsUserSid `
+    -PowerShellPath $powerShellPath `
+    -BootstrapPath $gatewayBootstrapPath
+if (-not $gatewayTaskAssessment.IsOwned -or $gatewayTaskAssessment.NeedsUpdate) {
+    throw "The OpenClaw Gateway boot supervisor task does not match its canonical least-privilege definition."
 }
-$gatewayTaskUser = [string]$gatewayTask.Principal.UserId
-if ((Resolve-WindowsAccountSid -AccountId $gatewayTaskUser) -ne $currentWindowsUserSid) {
-    throw "The OpenClaw Gateway boot supervisor belongs to a different Windows user."
+$gatewayBootstrapContent = [IO.File]::ReadAllText($gatewayBootstrapPath)
+if ($gatewayBootstrapContent -match '# hey-gpt-s4u-cleanup:[a-f0-9]{32}:') {
+    Stop-ScheduledTask -TaskPath $gatewayTaskPath -TaskName $gatewayTaskName -ErrorAction Stop
+    Start-ScheduledTask -TaskPath $gatewayTaskPath -TaskName $gatewayTaskName -ErrorAction Stop
+    for ($attempt = 0; $attempt -lt 80; $attempt++) {
+        if ([IO.File]::ReadAllText($gatewayBootstrapPath) -notmatch '# hey-gpt-s4u-cleanup:[a-f0-9]{32}:') {
+            break
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    if ([IO.File]::ReadAllText($gatewayBootstrapPath) -match '# hey-gpt-s4u-cleanup:[a-f0-9]{32}:') {
+        throw "The unfinished Gateway cleanup hook could not restore its persisted bootstrap."
+    }
+}
+$gatewayTask = Get-ScheduledTask -TaskPath $gatewayTaskPath -TaskName $gatewayTaskName -ErrorAction Stop
+$gatewayTaskAssessment = Get-OpenClawGatewaySupervisorTaskAssessment `
+    -Task $gatewayTask `
+    -ExpectedUserSid $currentWindowsUserSid `
+    -PowerShellPath $powerShellPath `
+    -BootstrapPath $gatewayBootstrapPath
+if (-not $gatewayTaskAssessment.IsOwned -or $gatewayTaskAssessment.NeedsUpdate) {
+    throw "The recovered OpenClaw Gateway supervisor task is no longer canonical."
+}
+if ($gatewayTask.State -ne "Running") {
+    Start-ScheduledTask -TaskPath $gatewayTaskPath -TaskName $gatewayTaskName -ErrorAction Stop
 }
 
 $pluginSource = (Resolve-Path (Join-Path $PSScriptRoot "..\integrations\$PluginId")).Path
@@ -294,10 +350,13 @@ $transactionBackupDir = Assert-ChildPath `
 New-Item -ItemType Directory -Path $transactionBackupDir -Force | Out-Null
 $nodeVbsBackupPath = Join-Path $transactionBackupDir "node.vbs"
 $gatewayBootstrapBackupPath = Join-Path $transactionBackupDir "Start-OpenClawGateway.ps1"
+$gatewayBootstrapHashPath = Join-Path $transactionBackupDir "Start-OpenClawGateway.ps1.sha256"
 $supervisorBackupPath = Join-Path $transactionBackupDir "agentic-windows-node-supervisor.ps1"
 $agenticTaskBackupPath = Join-Path $transactionBackupDir "agentic-windows-node-supervisor.xml"
 Copy-Item -LiteralPath $nodeVbsPath -Destination $nodeVbsBackupPath -ErrorAction Stop
 Copy-Item -LiteralPath $gatewayBootstrapPath -Destination $gatewayBootstrapBackupPath -ErrorAction Stop
+$gatewayBootstrapHash = (Get-FileHash -LiteralPath $gatewayBootstrapBackupPath -Algorithm SHA256).Hash
+[IO.File]::WriteAllText($gatewayBootstrapHashPath, $gatewayBootstrapHash, [Text.UTF8Encoding]::new($false))
 $agenticTaskExisted = $null -ne $agenticTask
 if ($agenticTaskExisted) {
     $agenticTaskBackupXml = Export-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName
@@ -329,15 +388,29 @@ $lockPath = Join-Path $resolvedStateDir "agentic-node-supervisor.lock"
 $testSupervisorLockHeld = {
     Test-AgenticWindowsNodeSupervisorLockHeld -LockPath $lockPath
 }.GetNewClosure()
+$testDedicatedNodeStopped = {
+    try {
+        $stoppedStatus = ((Invoke-GatewayOpenClaw nodes status --json) -join "`n") | ConvertFrom-Json
+        $stoppedNode = @($stoppedStatus.nodes | Where-Object nodeId -eq $NodeId)
+        return $stoppedNode.Count -eq 0 -or
+            ($stoppedNode.Count -eq 1 -and $stoppedNode[0].connected -ne $true)
+    } catch {
+        return $false
+    }
+}.GetNewClosure()
 $stopOwnedProcessSet = {
     param($ProcessIds, $ProcessSnapshot)
     Stop-AgenticWindowsNodeProcessesViaGatewayTask `
         -ProcessIds @($ProcessIds) `
         -ProcessSnapshot @($ProcessSnapshot) `
         -BootstrapPath $gatewayBootstrapPath `
-        -GatewayTaskPath "\OpenClaw\" `
-        -GatewayTaskName "OpenClaw Gateway Supervisor" `
-        -DedicatedStateDir $resolvedStateDir
+        -BootstrapBackupPath $gatewayBootstrapBackupPath `
+        -BootstrapHashPath $gatewayBootstrapHashPath `
+        -GatewayTaskPath $gatewayTaskPath `
+        -GatewayTaskName $gatewayTaskName `
+        -DedicatedStateDir $resolvedStateDir `
+        -ExpectedUserSid $currentWindowsUserSid `
+        -PowerShellPath $powerShellPath
 }.GetNewClosure()
 $stopOwnedProcessSetAndLeaveGatewayStopped = {
     param($ProcessIds, $ProcessSnapshot)
@@ -345,51 +418,87 @@ $stopOwnedProcessSetAndLeaveGatewayStopped = {
         -ProcessIds @($ProcessIds) `
         -ProcessSnapshot @($ProcessSnapshot) `
         -BootstrapPath $gatewayBootstrapPath `
-        -GatewayTaskPath "\OpenClaw\" `
-        -GatewayTaskName "OpenClaw Gateway Supervisor" `
+        -BootstrapBackupPath $gatewayBootstrapBackupPath `
+        -BootstrapHashPath $gatewayBootstrapHashPath `
+        -GatewayTaskPath $gatewayTaskPath `
+        -GatewayTaskName $gatewayTaskName `
         -DedicatedStateDir $resolvedStateDir `
+        -ExpectedUserSid $currentWindowsUserSid `
+        -PowerShellPath $powerShellPath `
         -LeaveGatewayTaskStopped
 }.GetNewClosure()
 
 try {
-    $initialKnownRootProcessIds = @(Get-ScheduledTaskRunningProcessIds `
-        -TaskPath $interactiveTaskPath `
-        -TaskName $TaskName)
-    if ($agenticTaskExisted) {
-        $initialKnownRootProcessIds = @($initialKnownRootProcessIds) + @(
-            Get-ScheduledTaskRunningProcessIds `
+    Stop-WindowsNodeRuntimePostcondition `
+        -TaskLabel "pre-provision Windows node runtime" `
+        -CaptureProcesses {
+            $knownRootProcessIds = @(Get-ScheduledTaskRunningProcessIds `
+                -TaskPath $interactiveTaskPath `
+                -TaskName $TaskName)
+            if ($agenticTaskExisted) {
+                $knownRootProcessIds = @($knownRootProcessIds) + @(
+                    Get-ScheduledTaskRunningProcessIds `
+                        -TaskPath $agenticTaskPath `
+                        -TaskName $agenticTaskName
+                )
+            }
+            return [pscustomobject]@{
+                Processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+                KnownRootProcessIds = @($knownRootProcessIds | Sort-Object -Unique)
+            }
+        } `
+        -StopTasks {
+            $interactiveBeforeMutation = Get-ScheduledTask `
+                -TaskPath $interactiveTaskPath `
+                -TaskName $TaskName `
+                -ErrorAction Stop
+            if (-not (Test-WindowsNodeTaskSafeState -State ([string]$interactiveBeforeMutation.State))) {
+                Stop-ScheduledTask `
+                    -TaskPath $interactiveTaskPath `
+                    -TaskName $TaskName `
+                    -ErrorAction Stop
+            }
+            $agenticBeforeMutation = Get-OptionalScheduledTaskExact `
                 -TaskPath $agenticTaskPath `
                 -TaskName $agenticTaskName
-        )
-    } else {
-        $initialKnownRootProcessIds = @($initialKnownRootProcessIds) + @(
-            Get-ScheduledTaskRunningProcessIds `
-                -TaskPath "\OpenClaw\" `
-                -TaskName "OpenClaw Gateway Supervisor"
-        )
-    }
-    $initialKnownRootProcessIds = @($initialKnownRootProcessIds | Sort-Object -Unique)
-    $initialProcessSnapshot = @(Get-CimInstance Win32_Process -ErrorAction Stop)
-    Stop-ScheduledTask `
-        -TaskPath $interactiveTaskPath `
-        -TaskName $TaskName `
-        -ErrorAction SilentlyContinue
-    if ($agenticTaskExisted) {
-        Stop-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName -ErrorAction SilentlyContinue
-    }
-    Stop-OwnedWindowsNodeProcesses `
-        -NodeCommandPath $nodeCommandPath `
-        -SupervisorPath $supervisorPath `
-        -StateDir $resolvedStateDir `
-        -ProcessSnapshot $initialProcessSnapshot `
-        -KnownRootProcessIds $initialKnownRootProcessIds `
-        -StopProcessSet $stopOwnedProcessSet | Out-Null
-    for ($attempt = 0; $attempt -lt 20 -and (Test-AgenticWindowsNodeSupervisorLockHeld -LockPath $lockPath); $attempt++) {
-        Start-Sleep -Milliseconds 250
-    }
-    if (Test-AgenticWindowsNodeSupervisorLockHeld -LockPath $lockPath) {
-        throw "A legacy detached Windows node supervisor still owns the state lock. Stop the pre-logon Gateway task or reboot once, then rerun provisioning."
-    }
+            if ($agenticBeforeMutation -and
+                -not (Test-WindowsNodeTaskSafeState -State ([string]$agenticBeforeMutation.State))) {
+                Stop-ScheduledTask `
+                    -TaskPath $agenticTaskPath `
+                    -TaskName $agenticTaskName `
+                    -ErrorAction Stop
+            }
+        } `
+        -StopProcesses {
+            param($ProcessCapture)
+            if ($null -eq $ProcessCapture) {
+                throw "The pre-provision owned process capture is unavailable."
+            }
+            Stop-OwnedWindowsNodeProcesses `
+                -NodeCommandPath $nodeCommandPath `
+                -SupervisorPath $supervisorPath `
+                -StateDir $resolvedStateDir `
+                -ProcessSnapshot @($ProcessCapture.Processes) `
+                -KnownRootProcessIds @($ProcessCapture.KnownRootProcessIds) `
+                -StopProcessSet $stopOwnedProcessSet | Out-Null
+        } `
+        -GetOwnerTaskState {
+            $ownerBeforeMutation = Get-OptionalScheduledTaskExact `
+                -TaskPath $agenticTaskPath `
+                -TaskName $agenticTaskName
+            if ($ownerBeforeMutation) { return $ownerBeforeMutation.State }
+            return "Absent"
+        } `
+        -GetInteractiveTaskState {
+            $interactiveAfterStop = Get-OptionalScheduledTaskExact `
+                -TaskPath $interactiveTaskPath `
+                -TaskName $TaskName
+            if ($interactiveAfterStop) { return $interactiveAfterStop.State }
+            return "Absent"
+        } `
+        -TestLockHeld $testSupervisorLockHeld `
+        -TestNodeStopped $testDedicatedNodeStopped
+
     $launchersChanged = $true
     Copy-Item -LiteralPath $supervisorSource -Destination $supervisorPath -Force
     $vbsContent = New-AgenticWindowsNodeVbsContent `
@@ -685,16 +794,6 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
                         -CurrentConnectedAtMs ([long]$rollbackNode[0].connectedAtMs)) -and
                     $rollbackCommands.Count -eq 1 -and
                     $rollbackCommands[0] -eq $WindowsCommand
-            } catch {
-                return $false
-            }
-        }.GetNewClosure()
-        $testDedicatedNodeStopped = {
-            try {
-                $stoppedStatus = ((Invoke-GatewayOpenClaw nodes status --json) -join "`n") | ConvertFrom-Json
-                $stoppedNode = @($stoppedStatus.nodes | Where-Object nodeId -eq $NodeId)
-                return $stoppedNode.Count -eq 0 -or
-                    ($stoppedNode.Count -eq 1 -and $stoppedNode[0].connected -ne $true)
             } catch {
                 return $false
             }

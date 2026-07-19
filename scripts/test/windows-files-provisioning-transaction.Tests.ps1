@@ -254,6 +254,23 @@ Describe "Windows provisioner transaction restore" {
         } | Should Throw
     }
 
+    It "rejects a connected hidden orphan when no command line or owned pid can be captured" {
+        {
+            Stop-WindowsNodeRuntimePostcondition `
+                -TaskLabel "pre-provision Windows node runtime" `
+                -CaptureProcesses { [pscustomobject]@{ Processes = @(); KnownRootProcessIds = @() } } `
+                -StopTasks {} `
+                -StopProcesses { param($ProcessCapture) } `
+                -GetOwnerTaskState { "Absent" } `
+                -GetInteractiveTaskState { "Ready" } `
+                -TestLockHeld { $false } `
+                -TestNodeStopped { $false } `
+                -Attempts 2 `
+                -RequiredStableObservations 2 `
+                -Wait {}
+        } | Should Throw
+    }
+
     It "rejects a stale Gateway connection marker without using the Windows clock" {
         $script:cleanupCalls = 0
         {
@@ -382,6 +399,73 @@ Describe "Windows node launcher rendering" {
         }
     }
 
+    function New-TestGatewayTask {
+        param(
+            [string]$Execute = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            [string]$Arguments = (New-OpenClawGatewaySupervisorActionArguments `
+                -BootstrapPath "C:\ProgramData\OpenClaw\Start-OpenClawGateway.ps1"),
+            [object[]]$Triggers = @([pscustomobject]@{
+                CimClass = [pscustomobject]@{ CimClassName = "MSFT_TaskBootTrigger" }
+                Delay = "PT30S"
+                Enabled = $true
+                StartBoundary = ""
+                EndBoundary = ""
+                ExecutionTimeLimit = ""
+                Repetition = [pscustomobject]@{
+                    Interval = ""
+                    Duration = ""
+                    StopAtDurationEnd = $false
+                }
+            }),
+            [string]$LogonType = "S4U",
+            [string]$RunLevel = "Limited"
+        )
+
+        return [pscustomobject]@{
+            Actions = @([pscustomobject]@{
+                Execute = $Execute
+                Arguments = $Arguments
+                WorkingDirectory = ""
+            })
+            Triggers = $Triggers
+            Principal = [pscustomobject]@{
+                UserId = "S-1-5-21-1-2-3-1001"
+                LogonType = $LogonType
+                RunLevel = $RunLevel
+                ProcessTokenSidType = "Default"
+                RequiredPrivilege = @()
+            }
+            Settings = [pscustomobject]@{
+                MultipleInstances = "IgnoreNew"
+                RestartCount = 3
+                RestartInterval = "PT1M"
+                ExecutionTimeLimit = "PT0S"
+                StartWhenAvailable = $true
+                DisallowStartIfOnBatteries = $false
+                StopIfGoingOnBatteries = $false
+                Enabled = $true
+                AllowDemandStart = $true
+                AllowHardTerminate = $true
+                Compatibility = "Win7"
+                Hidden = $false
+                Priority = 7
+                RunOnlyIfIdle = $false
+                RunOnlyIfNetworkAvailable = $false
+                WakeToRun = $false
+                UseUnifiedSchedulingEngine = $true
+                Volatile = $false
+                DeleteExpiredTaskAfter = ""
+                MaintenanceSettings = $null
+                IdleSettings = [pscustomobject]@{
+                    StopOnIdleEnd = $true
+                    RestartOnIdle = $false
+                    IdleDuration = "PT10M"
+                    WaitTimeout = "PT1H"
+                }
+            }
+        }
+    }
+
     It "accepts an exact owned S4U boot task without requiring repair" {
         $assessment = Get-AgenticWindowsNodeSupervisorTaskAssessment `
             -Task (New-TestAgenticTask) `
@@ -392,6 +476,88 @@ Describe "Windows node launcher rendering" {
 
         $assessment.IsOwned | Should Be $true
         $assessment.NeedsUpdate | Should Be $false
+    }
+
+    It "accepts only the exact least-privilege Gateway supervisor definition" {
+        $assessment = Get-OpenClawGatewaySupervisorTaskAssessment `
+            -Task (New-TestGatewayTask) `
+            -ExpectedUserSid "S-1-5-21-1-2-3-1001" `
+            -PowerShellPath "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" `
+            -BootstrapPath "C:\ProgramData\OpenClaw\Start-OpenClawGateway.ps1"
+
+        $assessment.IsOwned | Should Be $true
+        $assessment.NeedsUpdate | Should Be $false
+    }
+
+    It "rejects Gateway executable, arguments, logon, run-level, and trigger drift" {
+        $extraTrigger = [pscustomobject]@{
+            CimClass = [pscustomobject]@{ CimClassName = "MSFT_TaskTimeTrigger" }
+        }
+        $disabledBoot = (New-TestGatewayTask).Triggers[0]
+        $disabledBoot.Enabled = $false
+        $driftedTasks = @(
+            (New-TestGatewayTask -Execute "C:\Windows\System32\cmd.exe"),
+            (New-TestGatewayTask -Arguments '-NoProfile -Command whoami'),
+            (New-TestGatewayTask -LogonType "Interactive"),
+            (New-TestGatewayTask -RunLevel "Highest"),
+            (New-TestGatewayTask -Triggers @((New-TestGatewayTask).Triggers[0], $extraTrigger))
+        )
+
+        foreach ($task in $driftedTasks) {
+            $assessment = Get-OpenClawGatewaySupervisorTaskAssessment `
+                -Task $task `
+                -ExpectedUserSid "S-1-5-21-1-2-3-1001" `
+                -PowerShellPath "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" `
+                -BootstrapPath "C:\ProgramData\OpenClaw\Start-OpenClawGateway.ps1"
+            $assessment.IsOwned | Should Be $false
+        }
+
+        $disabledAssessment = Get-OpenClawGatewaySupervisorTaskAssessment `
+            -Task (New-TestGatewayTask -Triggers @($disabledBoot)) `
+            -ExpectedUserSid "S-1-5-21-1-2-3-1001" `
+            -PowerShellPath "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" `
+            -BootstrapPath "C:\ProgramData\OpenClaw\Start-OpenClawGateway.ps1"
+        $disabledAssessment.IsOwned | Should Be $true
+        $disabledAssessment.NeedsUpdate | Should Be $true
+    }
+
+    It "self-restores an abandoned cleanup hook before rejecting it after expiry" {
+        $bootstrap = Join-Path $TestDrive "Start-OpenClawGateway.ps1"
+        $backup = Join-Path $TestDrive "transaction\Start-OpenClawGateway.ps1"
+        $marker = Join-Path $TestDrive "cleanup.done"
+        New-Item -ItemType Directory -Path (Split-Path -Parent $backup) -Force | Out-Null
+        $original = @'
+$ErrorActionPreference = "Stop"
+$script:gatewayOriginalReached = $true
+'@
+        [IO.File]::WriteAllText($bootstrap, $original, [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($backup, $original, [Text.UTF8Encoding]::new($false))
+        $expectedHash = (Get-FileHash -LiteralPath $backup -Algorithm SHA256).Hash
+        $nonce = "0123456789abcdef0123456789abcdef"
+        $payload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("[]"))
+        $hook = New-AgenticWindowsNodeGatewayCleanupHook `
+            -Nonce $nonce `
+            -BootstrapPath $bootstrap `
+            -BootstrapBackupPath $backup `
+            -ExpectedBootstrapSha256 $expectedHash `
+            -MarkerPath $marker `
+            -PayloadBase64 $payload `
+            -ExpiresUtcTicks ([DateTime]::UtcNow.AddMinutes(-1).Ticks)
+        $hook | Should Match "hey-gpt-s4u-cleanup:${nonce}:start"
+        $hook | Should Match "hey-gpt-s4u-cleanup:${nonce}:end"
+        $temporary = $original.Insert(
+            $original.IndexOf('$ErrorActionPreference = "Stop"') + '$ErrorActionPreference = "Stop"'.Length,
+            "`r`n`r`n$hook"
+        )
+
+        # This is the state left by terminating the provisioner immediately after its temporary write.
+        [IO.File]::WriteAllText($bootstrap, $temporary, [Text.UTF8Encoding]::new($false))
+        { . $bootstrap } | Should Throw
+
+        (Get-FileHash -LiteralPath $bootstrap -Algorithm SHA256).Hash | Should Be $expectedHash
+        [IO.File]::ReadAllText($bootstrap) | Should Be $original
+        [IO.File]::ReadAllText($bootstrap) | Should Not Match "hey-gpt-s4u-cleanup"
+        Test-Path -LiteralPath $marker | Should Be $false
     }
 
     It "rejects altered action arguments and additional triggers" {

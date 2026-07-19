@@ -30,6 +30,19 @@ function New-AgenticWindowsNodeSupervisorActionArguments {
     ) -join " "
 }
 
+function New-OpenClawGatewaySupervisorActionArguments {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$BootstrapPath)
+
+    return @(
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy", "Bypass",
+        "-File", ('"' + $BootstrapPath + '"')
+    ) -join " "
+}
+
 function Resolve-WindowsAccountSid {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string]$AccountId)
@@ -141,6 +154,155 @@ function Get-AgenticWindowsNodeSupervisorTaskAssessment {
         @($Task.Principal.RequiredPrivilege | Where-Object { $_ }).Count -ne 0
 
     return [pscustomobject]@{ IsOwned = $true; NeedsUpdate = $needsUpdate }
+}
+
+function Get-OpenClawGatewaySupervisorTaskAssessment {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object]$Task,
+        [Parameter(Mandatory = $true)][string]$ExpectedUserSid,
+        [Parameter(Mandatory = $true)][string]$PowerShellPath,
+        [Parameter(Mandatory = $true)][string]$BootstrapPath
+    )
+
+    $actions = @($Task.Actions)
+    $triggers = @($Task.Triggers)
+    $bootTriggers = @($triggers | Where-Object { $_.CimClass.CimClassName -eq "MSFT_TaskBootTrigger" })
+    $expectedArguments = New-OpenClawGatewaySupervisorActionArguments -BootstrapPath $BootstrapPath
+    $executeMatches = $false
+    if ($actions.Count -eq 1 -and [string]$actions[0].Execute) {
+        try {
+            $executeMatches = [IO.Path]::GetFullPath([string]$actions[0].Execute) -ieq `
+                [IO.Path]::GetFullPath($PowerShellPath)
+        } catch {
+            $executeMatches = $false
+        }
+    }
+    $principalSid = try {
+        Resolve-WindowsAccountSid -AccountId ([string]$Task.Principal.UserId)
+    } catch {
+        $null
+    }
+
+    $isOwned = $actions.Count -eq 1 -and
+        $executeMatches -and
+        [string]$actions[0].Arguments -ceq $expectedArguments -and
+        -not [string]$actions[0].WorkingDirectory -and
+        $principalSid -eq $ExpectedUserSid -and
+        [string]$Task.Principal.LogonType -eq "S4U" -and
+        [string]$Task.Principal.RunLevel -eq "Limited" -and
+        $triggers.Count -eq 1 -and
+        $bootTriggers.Count -eq 1
+    if (-not $isOwned) {
+        return [pscustomobject]@{ IsOwned = $false; NeedsUpdate = $false }
+    }
+
+    $settings = $Task.Settings
+    $needsUpdate = [string]$bootTriggers[0].Delay -ne "PT30S" -or
+        [bool]$bootTriggers[0].Enabled -ne $true -or
+        [string]$bootTriggers[0].StartBoundary -ne "" -or
+        [string]$bootTriggers[0].EndBoundary -ne "" -or
+        [string]$bootTriggers[0].ExecutionTimeLimit -ne "" -or
+        [string]$bootTriggers[0].Repetition.Interval -ne "" -or
+        [string]$bootTriggers[0].Repetition.Duration -ne "" -or
+        [bool]$bootTriggers[0].Repetition.StopAtDurationEnd -ne $false -or
+        [string]$settings.MultipleInstances -ne "IgnoreNew" -or
+        [int]$settings.RestartCount -ne 3 -or
+        [string]$settings.RestartInterval -ne "PT1M" -or
+        [string]$settings.ExecutionTimeLimit -ne "PT0S" -or
+        [bool]$settings.StartWhenAvailable -ne $true -or
+        [bool]$settings.DisallowStartIfOnBatteries -ne $false -or
+        [bool]$settings.StopIfGoingOnBatteries -ne $false -or
+        [bool]$settings.Enabled -ne $true -or
+        [bool]$settings.AllowDemandStart -ne $true -or
+        [bool]$settings.AllowHardTerminate -ne $true -or
+        [string]$settings.Compatibility -ne "Win7" -or
+        [bool]$settings.Hidden -ne $false -or
+        [int]$settings.Priority -ne 7 -or
+        [bool]$settings.RunOnlyIfIdle -ne $false -or
+        [bool]$settings.RunOnlyIfNetworkAvailable -ne $false -or
+        [bool]$settings.WakeToRun -ne $false -or
+        [bool]$settings.UseUnifiedSchedulingEngine -ne $true -or
+        [bool]$settings.Volatile -ne $false -or
+        [string]$settings.DeleteExpiredTaskAfter -ne "" -or
+        $null -ne $settings.MaintenanceSettings -or
+        [bool]$settings.IdleSettings.StopOnIdleEnd -ne $true -or
+        [bool]$settings.IdleSettings.RestartOnIdle -ne $false -or
+        [string]$settings.IdleSettings.IdleDuration -ne "PT10M" -or
+        [string]$settings.IdleSettings.WaitTimeout -ne "PT1H" -or
+        [string]$Task.Principal.ProcessTokenSidType -ne "Default" -or
+        @($Task.Principal.RequiredPrivilege | Where-Object { $_ }).Count -ne 0
+
+    return [pscustomobject]@{ IsOwned = $true; NeedsUpdate = $needsUpdate }
+}
+
+function New-AgenticWindowsNodeGatewayCleanupHook {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Nonce,
+        [Parameter(Mandatory = $true)][string]$BootstrapPath,
+        [Parameter(Mandatory = $true)][string]$BootstrapBackupPath,
+        [Parameter(Mandatory = $true)][string]$ExpectedBootstrapSha256,
+        [Parameter(Mandatory = $true)][string]$MarkerPath,
+        [Parameter(Mandatory = $true)][string]$PayloadBase64,
+        [Parameter(Mandatory = $true)][long]$ExpiresUtcTicks
+    )
+
+    if ($Nonce -notmatch '^[a-f0-9]{32}$' -or $ExpectedBootstrapSha256 -notmatch '^[A-F0-9]{64}$') {
+        throw "The cleanup hook identity or bootstrap hash is invalid."
+    }
+    if ($PayloadBase64 -notmatch '^[A-Za-z0-9+/]*={0,2}$') {
+        throw "The cleanup hook payload is invalid."
+    }
+
+    $bootstrapLiteral = ConvertTo-PowerShellSingleQuotedLiteral -Value $BootstrapPath
+    $backupLiteral = ConvertTo-PowerShellSingleQuotedLiteral -Value $BootstrapBackupPath
+    $markerLiteral = ConvertTo-PowerShellSingleQuotedLiteral -Value $MarkerPath
+    $restoreTempLiteral = ConvertTo-PowerShellSingleQuotedLiteral `
+        -Value "$BootstrapPath.restore-$Nonce.tmp"
+    $restorePreviousLiteral = ConvertTo-PowerShellSingleQuotedLiteral `
+        -Value "$BootstrapPath.restore-$Nonce.previous"
+
+    return @"
+# hey-gpt-s4u-cleanup:${Nonce}:start
+`$cleanupBootstrap = $bootstrapLiteral
+`$cleanupBackup = $backupLiteral
+`$cleanupRestoreTemp = $restoreTempLiteral
+`$cleanupRestorePrevious = $restorePreviousLiteral
+`$cleanupExpectedHash = '$ExpectedBootstrapSha256'
+try {
+    if (-not (Test-Path -LiteralPath `$cleanupBackup -PathType Leaf) -or
+        (Get-FileHash -LiteralPath `$cleanupBackup -Algorithm SHA256 -ErrorAction Stop).Hash -cne `$cleanupExpectedHash) {
+        throw "The persisted Gateway bootstrap backup is missing or corrupt."
+    }
+    [IO.File]::WriteAllBytes(`$cleanupRestoreTemp, [IO.File]::ReadAllBytes(`$cleanupBackup))
+    if ((Get-FileHash -LiteralPath `$cleanupRestoreTemp -Algorithm SHA256 -ErrorAction Stop).Hash -cne `$cleanupExpectedHash) {
+        throw "The staged Gateway bootstrap restoration is corrupt."
+    }
+    [IO.File]::Replace(`$cleanupRestoreTemp, `$cleanupBootstrap, `$cleanupRestorePrevious, `$true)
+    if ((Get-FileHash -LiteralPath `$cleanupBootstrap -Algorithm SHA256 -ErrorAction Stop).Hash -cne `$cleanupExpectedHash) {
+        throw "The Gateway bootstrap restoration could not be verified."
+    }
+} finally {
+    Remove-Item -LiteralPath `$cleanupRestoreTemp -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath `$cleanupRestorePrevious -Force -ErrorAction SilentlyContinue
+}
+if ([DateTime]::UtcNow.Ticks -gt $ExpiresUtcTicks) {
+    throw "Expired agentic Windows node cleanup request."
+}
+`$cleanupTargets = @(([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$PayloadBase64')) | ConvertFrom-Json))
+foreach (`$cleanupTarget in `$cleanupTargets) {
+    `$cleanupProcess = @(Get-CimInstance Win32_Process -Filter "ProcessId=`$([int]`$cleanupTarget.id)" -ErrorAction Stop)
+    if (`$cleanupProcess.Count -eq 0) { continue }
+    if (`$cleanupProcess.Count -ne 1 -or
+        ([datetime]`$cleanupProcess[0].CreationDate).ToUniversalTime().Ticks -ne [long]`$cleanupTarget.startTicks) {
+        throw "Agentic Windows node cleanup process identity changed."
+    }
+    Stop-Process -Id ([int]`$cleanupTarget.id) -Force -ErrorAction Stop
+}
+[IO.File]::WriteAllText($markerLiteral, "ok", [Text.UTF8Encoding]::new(`$false))
+# hey-gpt-s4u-cleanup:${Nonce}:end
+"@
 }
 
 function ConvertTo-CanonicalScheduledTaskXml {
