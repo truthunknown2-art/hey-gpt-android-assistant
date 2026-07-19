@@ -29,7 +29,251 @@ Describe "Windows file provisioner task recovery" {
     }
 }
 
+Describe "Windows provisioner transaction restore" {
+    BeforeEach {
+        $script:priorTaskXml = '<?xml version="1.0"?><Task><Settings><Enabled>true</Enabled></Settings></Task>'
+        $script:changedTaskXml = '<?xml version="1.0"?><Task><Settings><Enabled>false</Enabled></Settings></Task>'
+        $script:taskXmlBackup = Join-Path $TestDrive "prior-task.xml"
+        [IO.File]::WriteAllText($script:taskXmlBackup, $script:priorTaskXml)
+    }
+
+    It "fails when task unregistration fails" {
+        $script:rollbackTask = [pscustomobject]@{ Name = "changed" }
+
+        {
+            Restore-AgenticWindowsNodeTaskDefinition `
+                -TaskExisted $true `
+                -TaskXmlBackupPath $script:taskXmlBackup `
+                -GetTask { $script:rollbackTask } `
+                -UnregisterTask { throw "injected unregister failure" } `
+                -RegisterTaskXml { param($Xml) } `
+                -ExportTaskXml { $script:priorTaskXml }
+        } | Should Throw
+    }
+
+    It "fails when prior task XML registration fails" {
+        $script:rollbackTask = [pscustomobject]@{ Name = "changed" }
+
+        {
+            Restore-AgenticWindowsNodeTaskDefinition `
+                -TaskExisted $true `
+                -TaskXmlBackupPath $script:taskXmlBackup `
+                -GetTask { $script:rollbackTask } `
+                -UnregisterTask { $script:rollbackTask = $null } `
+                -RegisterTaskXml { param($Xml) throw "injected XML registration failure" } `
+                -ExportTaskXml { $script:priorTaskXml }
+        } | Should Throw
+    }
+
+    It "fails when restored task XML differs from the persisted definition" {
+        $script:rollbackTask = [pscustomobject]@{ Name = "changed" }
+
+        {
+            Restore-AgenticWindowsNodeTaskDefinition `
+                -TaskExisted $true `
+                -TaskXmlBackupPath $script:taskXmlBackup `
+                -GetTask { $script:rollbackTask } `
+                -UnregisterTask { $script:rollbackTask = $null } `
+                -RegisterTaskXml { param($Xml) $script:rollbackTask = [pscustomobject]@{ Name = "restored" } } `
+                -ExportTaskXml { $script:changedTaskXml }
+        } | Should Throw
+    }
+
+    It "removes and confirms absence of a newly created task after a later failure" {
+        $script:rollbackTask = [pscustomobject]@{ Name = "new" }
+        $script:unregisterCalls = 0
+
+        Restore-AgenticWindowsNodeTaskDefinition `
+            -TaskExisted $false `
+            -TaskXmlBackupPath (Join-Path $TestDrive "not-required.xml") `
+            -GetTask { $script:rollbackTask } `
+            -UnregisterTask { $script:unregisterCalls += 1; $script:rollbackTask = $null } `
+            -RegisterTaskXml { param($Xml) throw "registration must not run" } `
+            -ExportTaskXml { throw "export must not run" }
+
+        $script:rollbackTask | Should BeNullOrEmpty
+        $script:unregisterCalls | Should Be 1
+    }
+
+    It "fails closed when launcher restoration fails or produces different bytes" {
+        $backup = Join-Path $TestDrive "node.vbs.backup"
+        $target = Join-Path $TestDrive "node.vbs"
+        [IO.File]::WriteAllText($backup, "expected")
+        [IO.File]::WriteAllText($target, "changed")
+
+        {
+            Restore-AgenticWindowsNodeFileBackup `
+                -TargetPath $target `
+                -BackupPath $backup `
+                -OriginallyExisted $true `
+                -CopyFile { param($Source, $Destination) throw "injected launcher restore failure" }
+        } | Should Throw
+        {
+            Restore-AgenticWindowsNodeFileBackup `
+                -TargetPath $target `
+                -BackupPath $backup `
+                -OriginallyExisted $true `
+                -CopyFile { param($Source, $Destination) [IO.File]::WriteAllText($Destination, "corrupt") }
+        } | Should Throw
+    }
+}
+
 Describe "Windows node launcher rendering" {
+    function New-TestAgenticTask {
+        param(
+            [string]$Arguments = (New-AgenticWindowsNodeSupervisorActionArguments `
+                -SupervisorPath "C:\State\supervisor.ps1" `
+                -StateDir "C:\State"),
+            [object[]]$Triggers = @([pscustomobject]@{
+                CimClass = [pscustomobject]@{ CimClassName = "MSFT_TaskBootTrigger" }
+                Delay = "PT45S"
+                Enabled = $true
+            }),
+            [string]$MultipleInstances = "IgnoreNew",
+            [int]$RestartCount = 999,
+            [string]$RestartInterval = "PT1M",
+            [string]$ExecutionTimeLimit = "PT0S",
+            [bool]$StartWhenAvailable = $true
+        )
+
+        return [pscustomobject]@{
+            Actions = @([pscustomobject]@{
+                Execute = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+                Arguments = $Arguments
+                WorkingDirectory = ""
+            })
+            Triggers = $Triggers
+            Principal = [pscustomobject]@{
+                UserId = "S-1-5-21-1-2-3-1001"
+                LogonType = "S4U"
+                RunLevel = "Limited"
+                ProcessTokenSidType = "Default"
+                RequiredPrivilege = @()
+            }
+            Settings = [pscustomobject]@{
+                MultipleInstances = $MultipleInstances
+                RestartCount = $RestartCount
+                RestartInterval = $RestartInterval
+                ExecutionTimeLimit = $ExecutionTimeLimit
+                StartWhenAvailable = $StartWhenAvailable
+                DisallowStartIfOnBatteries = $false
+                StopIfGoingOnBatteries = $false
+                Enabled = $true
+                AllowDemandStart = $true
+                AllowHardTerminate = $true
+                Compatibility = "Win7"
+                Hidden = $false
+                Priority = 7
+                RunOnlyIfIdle = $false
+                RunOnlyIfNetworkAvailable = $false
+                WakeToRun = $false
+                UseUnifiedSchedulingEngine = $true
+                IdleSettings = [pscustomobject]@{
+                    StopOnIdleEnd = $true
+                    RestartOnIdle = $false
+                    IdleDuration = "PT10M"
+                    WaitTimeout = "PT1H"
+                }
+            }
+        }
+    }
+
+    It "accepts an exact owned S4U boot task without requiring repair" {
+        $assessment = Get-AgenticWindowsNodeSupervisorTaskAssessment `
+            -Task (New-TestAgenticTask) `
+            -ExpectedUserSid "S-1-5-21-1-2-3-1001" `
+            -PowerShellPath "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" `
+            -SupervisorPath "C:\State\supervisor.ps1" `
+            -StateDir "C:\State"
+
+        $assessment.IsOwned | Should Be $true
+        $assessment.NeedsUpdate | Should Be $false
+    }
+
+    It "rejects altered action arguments and additional triggers" {
+        $extraTrigger = [pscustomobject]@{ CimClass = [pscustomobject]@{ CimClassName = "MSFT_TaskTimeTrigger" } }
+        $alteredAction = Get-AgenticWindowsNodeSupervisorTaskAssessment `
+            -Task (New-TestAgenticTask -Arguments "-NoProfile -Command whoami") `
+            -ExpectedUserSid "S-1-5-21-1-2-3-1001" `
+            -PowerShellPath "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" `
+            -SupervisorPath "C:\State\supervisor.ps1" `
+            -StateDir "C:\State"
+        $additionalTrigger = Get-AgenticWindowsNodeSupervisorTaskAssessment `
+            -Task (New-TestAgenticTask -Triggers @(
+                [pscustomobject]@{ CimClass = [pscustomobject]@{ CimClassName = "MSFT_TaskBootTrigger" }; Delay = "PT45S"; Enabled = $true },
+                $extraTrigger
+            )) `
+            -ExpectedUserSid "S-1-5-21-1-2-3-1001" `
+            -PowerShellPath "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" `
+            -SupervisorPath "C:\State\supervisor.ps1" `
+            -StateDir "C:\State"
+
+        $alteredAction.IsOwned | Should Be $false
+        $additionalTrigger.IsOwned | Should Be $false
+    }
+
+    It "compares task ownership by SID" {
+        $assessment = Get-AgenticWindowsNodeSupervisorTaskAssessment `
+            -Task (New-TestAgenticTask) `
+            -ExpectedUserSid "S-1-5-21-9-9-9-1001" `
+            -PowerShellPath "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" `
+            -SupervisorPath "C:\State\supervisor.ps1" `
+            -StateDir "C:\State"
+
+        $assessment.IsOwned | Should Be $false
+    }
+
+    It "repairs drift in boot-critical settings" {
+        $restartDrift = Get-AgenticWindowsNodeSupervisorTaskAssessment `
+            -Task (New-TestAgenticTask -RestartCount 0) `
+            -ExpectedUserSid "S-1-5-21-1-2-3-1001" `
+            -PowerShellPath "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" `
+            -SupervisorPath "C:\State\supervisor.ps1" `
+            -StateDir "C:\State"
+        $executionDrift = Get-AgenticWindowsNodeSupervisorTaskAssessment `
+            -Task (New-TestAgenticTask -ExecutionTimeLimit "PT1H") `
+            -ExpectedUserSid "S-1-5-21-1-2-3-1001" `
+            -PowerShellPath "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" `
+            -SupervisorPath "C:\State\supervisor.ps1" `
+            -StateDir "C:\State"
+
+        $restartDrift.IsOwned | Should Be $true
+        $restartDrift.NeedsUpdate | Should Be $true
+        $executionDrift.IsOwned | Should Be $true
+        $executionDrift.NeedsUpdate | Should Be $true
+    }
+
+    It "repairs every explicitly reviewed boot-task drift" {
+        $disabledBoot = [pscustomobject]@{
+            CimClass = [pscustomobject]@{ CimClassName = "MSFT_TaskBootTrigger" }
+            Delay = "PT45S"
+            Enabled = $false
+        }
+        $wrongDelay = [pscustomobject]@{
+            CimClass = [pscustomobject]@{ CimClassName = "MSFT_TaskBootTrigger" }
+            Delay = "PT5M"
+            Enabled = $true
+        }
+        $driftedTasks = @(
+            (New-TestAgenticTask -Triggers @($disabledBoot)),
+            (New-TestAgenticTask -Triggers @($wrongDelay)),
+            (New-TestAgenticTask -MultipleInstances "Parallel"),
+            (New-TestAgenticTask -RestartCount 0 -RestartInterval ""),
+            (New-TestAgenticTask -ExecutionTimeLimit "PT1H")
+        )
+
+        foreach ($task in $driftedTasks) {
+            $assessment = Get-AgenticWindowsNodeSupervisorTaskAssessment `
+                -Task $task `
+                -ExpectedUserSid "S-1-5-21-1-2-3-1001" `
+                -PowerShellPath "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" `
+                -SupervisorPath "C:\State\supervisor.ps1" `
+                -StateDir "C:\State"
+            $assessment.IsOwned | Should Be $true
+            $assessment.NeedsUpdate | Should Be $true
+        }
+    }
+
     It "renders the logon fallback as a request to the owned scheduled task" {
         $content = New-AgenticWindowsNodeVbsContent `
             -TaskPath "\OpenClaw\" `

@@ -253,6 +253,10 @@ boot trigger, restart policy, and no interactive-logon dependency. The existing
 node logon launcher uses Task Scheduler COM only to start that same task when it
 is not already running. The persistent node supervisor retries the node after
 failure and holds an exclusive state lock; Windows autologon is not required.
+Provisioning rejects altered task identity, action arguments, and extra
+triggers. It repairs drift in the boot delay, restart policy, execution limit,
+battery policy, enabled state, and other boot-critical settings before
+validating the exclusive lock and connected node command.
 Provisioning terminates only process trees
 rooted in that dedicated `node.cmd`, stages and tests the plugin before atomic
 replacement, pins the Windows node to the Android session key's 32-character
@@ -260,8 +264,10 @@ device suffix and the broker public key, preserves only the `documents`
 read-root alias by default, restarts both sides, and fails unless the connected
 node advertises exactly the fixed command. Before mutation it snapshots the
 Windows launchers, owned-task XML, supervisor, Windows node config, Gateway
-config, and broker stage. Any later failure restores them before the node is
-restarted.
+config, and broker stage. Local task and launcher snapshots are persisted in a
+transaction-scoped directory rather than held only in process memory. Any later
+failure restores them before the node is restarted, then verifies restored file
+hashes, scheduled-task XML, and task absence when no prior task existed.
 If rollback itself fails, every available snapshot is preserved and the Windows
 node remains stopped until manual recovery.
 

@@ -28,6 +28,202 @@ function ConvertTo-PowerShellSingleQuotedLiteral {
     return "'" + $Value.Replace("'", "''") + "'"
 }
 
+function New-AgenticWindowsNodeSupervisorActionArguments {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$SupervisorPath,
+        [Parameter(Mandatory = $true)][string]$StateDir
+    )
+
+    return @(
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy", "Bypass",
+        "-File", ('"' + $SupervisorPath + '"'),
+        "-StateDir", ('"' + $StateDir + '"')
+    ) -join " "
+}
+
+function Resolve-WindowsAccountSid {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$AccountId)
+
+    if ($AccountId -match '^S-\d(?:-\d+)+$') {
+        return ([Security.Principal.SecurityIdentifier]::new($AccountId)).Value
+    }
+    return ([Security.Principal.NTAccount]::new($AccountId)).Translate(
+        [Security.Principal.SecurityIdentifier]
+    ).Value
+}
+
+function Get-OptionalScheduledTaskExact {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$TaskPath,
+        [Parameter(Mandatory = $true)][string]$TaskName
+    )
+
+    try {
+        return Get-ScheduledTask -TaskPath $TaskPath -TaskName $TaskName -ErrorAction Stop
+    } catch {
+        if ($_.CategoryInfo.Category -eq [Management.Automation.ErrorCategory]::ObjectNotFound -and
+            $_.FullyQualifiedErrorId -like "CmdletizationQuery_NotFound*") {
+            return $null
+        }
+        throw
+    }
+}
+
+function Get-AgenticWindowsNodeSupervisorTaskAssessment {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object]$Task,
+        [Parameter(Mandatory = $true)][string]$ExpectedUserSid,
+        [Parameter(Mandatory = $true)][string]$PowerShellPath,
+        [Parameter(Mandatory = $true)][string]$SupervisorPath,
+        [Parameter(Mandatory = $true)][string]$StateDir
+    )
+
+    $actions = @($Task.Actions)
+    $triggers = @($Task.Triggers)
+    $bootTriggers = @($triggers | Where-Object { $_.CimClass.CimClassName -eq "MSFT_TaskBootTrigger" })
+    $expectedArguments = New-AgenticWindowsNodeSupervisorActionArguments `
+        -SupervisorPath $SupervisorPath `
+        -StateDir $StateDir
+    $executeMatches = $false
+    if ($actions.Count -eq 1 -and [string]$actions[0].Execute) {
+        try {
+            $executeMatches = [IO.Path]::GetFullPath([string]$actions[0].Execute) -ieq `
+                [IO.Path]::GetFullPath($PowerShellPath)
+        } catch {
+            $executeMatches = $false
+        }
+    }
+    $principalSid = try {
+        Resolve-WindowsAccountSid -AccountId ([string]$Task.Principal.UserId)
+    } catch {
+        $null
+    }
+
+    $isOwned = $actions.Count -eq 1 -and
+        $executeMatches -and
+        [string]$actions[0].Arguments -ceq $expectedArguments -and
+        -not [string]$actions[0].WorkingDirectory -and
+        $principalSid -eq $ExpectedUserSid -and
+        [string]$Task.Principal.LogonType -eq "S4U" -and
+        $triggers.Count -eq 1 -and
+        $bootTriggers.Count -eq 1
+    if (-not $isOwned) {
+        return [pscustomobject]@{ IsOwned = $false; NeedsUpdate = $false }
+    }
+
+    $settings = $Task.Settings
+    $needsUpdate = [string]$Task.Principal.RunLevel -ne "Limited" -or
+        [string]$bootTriggers[0].Delay -ne "PT45S" -or
+        [bool]$bootTriggers[0].Enabled -ne $true -or
+        [string]$settings.MultipleInstances -ne "IgnoreNew" -or
+        [int]$settings.RestartCount -ne 999 -or
+        [string]$settings.RestartInterval -ne "PT1M" -or
+        [string]$settings.ExecutionTimeLimit -ne "PT0S" -or
+        [bool]$settings.StartWhenAvailable -ne $true -or
+        [bool]$settings.DisallowStartIfOnBatteries -ne $false -or
+        [bool]$settings.StopIfGoingOnBatteries -ne $false -or
+        [bool]$settings.Enabled -ne $true -or
+        [bool]$settings.AllowDemandStart -ne $true -or
+        [bool]$settings.AllowHardTerminate -ne $true -or
+        [string]$settings.Compatibility -ne "Win7" -or
+        [bool]$settings.Hidden -ne $false -or
+        [int]$settings.Priority -ne 7 -or
+        [bool]$settings.RunOnlyIfIdle -ne $false -or
+        [bool]$settings.RunOnlyIfNetworkAvailable -ne $false -or
+        [bool]$settings.WakeToRun -ne $false -or
+        [bool]$settings.UseUnifiedSchedulingEngine -ne $true -or
+        [bool]$settings.IdleSettings.StopOnIdleEnd -ne $true -or
+        [bool]$settings.IdleSettings.RestartOnIdle -ne $false -or
+        [string]$settings.IdleSettings.IdleDuration -ne "PT10M" -or
+        [string]$settings.IdleSettings.WaitTimeout -ne "PT1H" -or
+        [string]$Task.Principal.ProcessTokenSidType -ne "Default" -or
+        @($Task.Principal.RequiredPrivilege | Where-Object { $_ }).Count -ne 0
+
+    return [pscustomobject]@{ IsOwned = $true; NeedsUpdate = $needsUpdate }
+}
+
+function ConvertTo-CanonicalScheduledTaskXml {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$Xml)
+
+    $document = [Xml.XmlDocument]::new()
+    $document.PreserveWhitespace = $false
+    $document.LoadXml($Xml)
+    return $document.DocumentElement.OuterXml
+}
+
+function Restore-AgenticWindowsNodeTaskDefinition {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][bool]$TaskExisted,
+        [Parameter(Mandatory = $true)][string]$TaskXmlBackupPath,
+        [Parameter(Mandatory = $true)][scriptblock]$GetTask,
+        [Parameter(Mandatory = $true)][scriptblock]$UnregisterTask,
+        [Parameter(Mandatory = $true)][scriptblock]$RegisterTaskXml,
+        [Parameter(Mandatory = $true)][scriptblock]$ExportTaskXml
+    )
+
+    if ($null -ne (& $GetTask)) {
+        & $UnregisterTask
+    }
+    if ($null -ne (& $GetTask)) {
+        throw "The changed scheduled task is still registered after rollback removal."
+    }
+    if (-not $TaskExisted) { return }
+    if (-not (Test-Path -LiteralPath $TaskXmlBackupPath -PathType Leaf)) {
+        throw "The prior scheduled-task XML backup is missing."
+    }
+
+    $expectedXml = [IO.File]::ReadAllText($TaskXmlBackupPath)
+    & $RegisterTaskXml $expectedXml
+    if ($null -eq (& $GetTask)) {
+        throw "The prior scheduled task was not registered during rollback."
+    }
+    $actualXml = [string](& $ExportTaskXml)
+    if ((ConvertTo-CanonicalScheduledTaskXml -Xml $actualXml) -cne
+        (ConvertTo-CanonicalScheduledTaskXml -Xml $expectedXml)) {
+        throw "The restored scheduled task does not match its saved XML definition."
+    }
+}
+
+function Restore-AgenticWindowsNodeFileBackup {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$TargetPath,
+        [Parameter(Mandatory = $true)][string]$BackupPath,
+        [Parameter(Mandatory = $true)][bool]$OriginallyExisted,
+        [scriptblock]$CopyFile = { param($Source, $Destination) Copy-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop },
+        [scriptblock]$RemoveFile = { param($Path) Remove-Item -LiteralPath $Path -Force -ErrorAction Stop }
+    )
+
+    if ($OriginallyExisted) {
+        if (-not (Test-Path -LiteralPath $BackupPath -PathType Leaf)) {
+            throw "File rollback backup '$BackupPath' is missing."
+        }
+        & $CopyFile $BackupPath $TargetPath
+        if (-not (Test-Path -LiteralPath $TargetPath -PathType Leaf) -or
+            (Get-FileHash -LiteralPath $TargetPath -Algorithm SHA256).Hash -cne
+            (Get-FileHash -LiteralPath $BackupPath -Algorithm SHA256).Hash) {
+            throw "Restored file '$TargetPath' does not match its rollback backup."
+        }
+        return
+    }
+
+    if (Test-Path -LiteralPath $TargetPath) {
+        & $RemoveFile $TargetPath
+    }
+    if (Test-Path -LiteralPath $TargetPath) {
+        throw "File '$TargetPath' still exists after rollback removal."
+    }
+}
+
 function New-AgenticWindowsNodeVbsContent {
     [CmdletBinding()]
     param(

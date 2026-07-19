@@ -36,14 +36,9 @@ function Register-AgenticWindowsNodeSupervisorTask {
         [Parameter(Mandatory = $true)][string]$DedicatedStateDir
     )
 
-    $arguments = @(
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy", "Bypass",
-        "-File", ('"' + $SupervisorPath + '"'),
-        "-StateDir", ('"' + $DedicatedStateDir + '"')
-    ) -join " "
+    $arguments = New-AgenticWindowsNodeSupervisorActionArguments `
+        -SupervisorPath $SupervisorPath `
+        -StateDir $DedicatedStateDir
     $action = New-ScheduledTaskAction -Execute $PowerShellPath -Argument $arguments
     $bootTrigger = New-ScheduledTaskTrigger -AtStartup
     $bootTrigger.Delay = "PT45S"
@@ -142,9 +137,9 @@ if ($taskActions.Count -ne 1 -or
     throw "Scheduled task '$TaskName' does not belong to the dedicated state directory."
 }
 $currentWindowsUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-$currentShortUser = $currentWindowsUser.Split('\')[-1]
+$currentWindowsUserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $taskUser = [string]$task.Principal.UserId
-if ($taskUser -notin @($currentWindowsUser, $currentShortUser)) {
+if ((Resolve-WindowsAccountSid -AccountId $taskUser) -ne $currentWindowsUserSid) {
     throw "Scheduled task '$TaskName' belongs to a different Windows user."
 }
 if (-not (Test-Path -LiteralPath $nodeCommandPath -PathType Leaf)) {
@@ -159,23 +154,18 @@ if (-not $powerShellPath) {
 }
 $agenticTaskPath = "\OpenClaw\"
 $agenticTaskName = "Agentic Windows Node Supervisor"
-$agenticTask = Get-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName -ErrorAction SilentlyContinue
+$agenticTask = Get-OptionalScheduledTaskExact -TaskPath $agenticTaskPath -TaskName $agenticTaskName
 if ($agenticTask) {
-    $agenticTaskActions = @($agenticTask.Actions)
-    $agenticTaskUser = [string]$agenticTask.Principal.UserId
-    $agenticBootTriggers = @($agenticTask.Triggers | Where-Object { $_.CimClass.CimClassName -eq "MSFT_TaskBootTrigger" })
-    $agenticLogonTriggers = @($agenticTask.Triggers | Where-Object { $_.CimClass.CimClassName -eq "MSFT_TaskLogonTrigger" })
-    $agenticTaskNeedsUpdate = $agenticLogonTriggers.Count -ne 0 -or
-        [string]$agenticTask.Principal.RunLevel -ne "Limited"
-    if ($agenticTaskActions.Count -ne 1 -or
-        [IO.Path]::GetFullPath([string]$agenticTaskActions[0].Execute) -ine [IO.Path]::GetFullPath($powerShellPath) -or
-        ([string]$agenticTaskActions[0].Arguments).IndexOf($supervisorPath, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
-        ([string]$agenticTaskActions[0].Arguments).IndexOf($resolvedStateDir, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
-        $agenticTaskUser -notin @($currentWindowsUser, $currentShortUser) -or
-        [string]$agenticTask.Principal.LogonType -ne "S4U" -or
-        $agenticBootTriggers.Count -ne 1 -or $agenticLogonTriggers.Count -gt 1) {
+    $agenticTaskAssessment = Get-AgenticWindowsNodeSupervisorTaskAssessment `
+        -Task $agenticTask `
+        -ExpectedUserSid $currentWindowsUserSid `
+        -PowerShellPath $powerShellPath `
+        -SupervisorPath $supervisorPath `
+        -StateDir $resolvedStateDir
+    if (-not $agenticTaskAssessment.IsOwned) {
         throw "Scheduled task '$agenticTaskPath$agenticTaskName' is not the expected owned task."
     }
+    $agenticTaskNeedsUpdate = $agenticTaskAssessment.NeedsUpdate
 } else {
     $agenticTaskNeedsUpdate = $false
 }
@@ -191,7 +181,7 @@ if ($gatewayTaskActions.Count -ne 1 -or
     throw "The OpenClaw Gateway boot supervisor task is not the expected owned task."
 }
 $gatewayTaskUser = [string]$gatewayTask.Principal.UserId
-if ($gatewayTaskUser -notin @($currentWindowsUser, $currentShortUser)) {
+if ((Resolve-WindowsAccountSid -AccountId $gatewayTaskUser) -ne $currentWindowsUserSid) {
     throw "The OpenClaw Gateway boot supervisor belongs to a different Windows user."
 }
 
@@ -201,18 +191,28 @@ $pluginStage = Assert-ChildPath -Path (Join-Path $pluginParent $PluginId) -Paren
 $pluginNext = Assert-ChildPath -Path "$pluginStage.next" -Parent $resolvedStateDir -Label "Plugin next stage"
 $pluginPrevious = Assert-ChildPath -Path "$pluginStage.previous" -Parent $resolvedStateDir -Label "Plugin previous stage"
 $transactionId = [Guid]::NewGuid().ToString("N")
-$nodeVbsBackup = [IO.File]::ReadAllBytes($nodeVbsPath)
-$gatewayBootstrapBackup = [IO.File]::ReadAllBytes($gatewayBootstrapPath)
+$transactionBackupDir = Assert-ChildPath `
+    -Path (Join-Path $resolvedStateDir "provisioning-backups\$transactionId") `
+    -Parent $resolvedStateDir `
+    -Label "Transaction backup directory"
+New-Item -ItemType Directory -Path $transactionBackupDir -Force | Out-Null
+$nodeVbsBackupPath = Join-Path $transactionBackupDir "node.vbs"
+$gatewayBootstrapBackupPath = Join-Path $transactionBackupDir "Start-OpenClawGateway.ps1"
+$supervisorBackupPath = Join-Path $transactionBackupDir "agentic-windows-node-supervisor.ps1"
+$agenticTaskBackupPath = Join-Path $transactionBackupDir "agentic-windows-node-supervisor.xml"
+Copy-Item -LiteralPath $nodeVbsPath -Destination $nodeVbsBackupPath -ErrorAction Stop
+Copy-Item -LiteralPath $gatewayBootstrapPath -Destination $gatewayBootstrapBackupPath -ErrorAction Stop
 $agenticTaskExisted = $null -ne $agenticTask
-$agenticTaskBackup = if ($agenticTaskExisted) {
-    Export-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName
-} else {
-    $null
+if ($agenticTaskExisted) {
+    $agenticTaskBackupXml = Export-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName
+    [IO.File]::WriteAllText($agenticTaskBackupPath, $agenticTaskBackupXml, [Text.UTF8Encoding]::new($false))
 }
 $supervisorExisted = Test-Path -LiteralPath $supervisorPath -PathType Leaf
-$supervisorBackup = if ($supervisorExisted) { [IO.File]::ReadAllBytes($supervisorPath) } else { $null }
+if ($supervisorExisted) {
+    Copy-Item -LiteralPath $supervisorPath -Destination $supervisorBackupPath -ErrorAction Stop
+}
 $localConfigPath = Assert-ChildPath -Path (Join-Path $resolvedStateDir "openclaw.json") -Parent $resolvedStateDir -Label "Local config"
-$localConfigBackup = Assert-ChildPath -Path "$localConfigPath.rollback.$transactionId" -Parent $resolvedStateDir -Label "Local config backup"
+$localConfigBackup = Join-Path $transactionBackupDir "openclaw.json"
 $gatewayConfigPath = "/home/openclaw/.openclaw/openclaw.json"
 $gatewayConfigBackup = "$gatewayConfigPath.rollback.$transactionId"
 $gatewayPluginStage = "/home/openclaw/.openclaw/plugin-dev/$PluginId"
@@ -260,6 +260,8 @@ try {
         -CurrentContent ([IO.File]::ReadAllText($gatewayBootstrapPath))
     [IO.File]::WriteAllText($gatewayBootstrapPath, $gatewayBootstrapContent, [Text.UTF8Encoding]::new($false))
     if (-not $agenticTaskExisted -or $agenticTaskNeedsUpdate) {
+        # Register-ScheduledTask can change task state before surfacing an error.
+        $agenticTaskChanged = $true
         Register-AgenticWindowsNodeSupervisorTask `
             -Path $agenticTaskPath `
             -Name $agenticTaskName `
@@ -267,7 +269,19 @@ try {
             -PowerShellPath $powerShellPath `
             -SupervisorPath $supervisorPath `
             -DedicatedStateDir $resolvedStateDir
-        $agenticTaskChanged = $true
+    }
+    $registeredAgenticTask = Get-ScheduledTask `
+        -TaskPath $agenticTaskPath `
+        -TaskName $agenticTaskName `
+        -ErrorAction Stop
+    $registeredTaskAssessment = Get-AgenticWindowsNodeSupervisorTaskAssessment `
+        -Task $registeredAgenticTask `
+        -ExpectedUserSid $currentWindowsUserSid `
+        -PowerShellPath $powerShellPath `
+        -SupervisorPath $supervisorPath `
+        -StateDir $resolvedStateDir
+    if (-not $registeredTaskAssessment.IsOwned -or $registeredTaskAssessment.NeedsUpdate) {
+        throw "The registered S4U Windows node task does not match its canonical definition."
     }
     if ($localConfigExisted) {
         Copy-Item -LiteralPath $localConfigPath -Destination $localConfigBackup -Force
@@ -426,14 +440,10 @@ fi
         }
 
         if ($localSnapshotReady) {
-            if ($localConfigExisted) {
-                if (-not (Test-Path -LiteralPath $localConfigBackup -PathType Leaf)) {
-                    throw "Local config rollback snapshot is missing."
-                }
-                Copy-Item -LiteralPath $localConfigBackup -Destination $localConfigPath -Force
-            } elseif (Test-Path -LiteralPath $localConfigPath) {
-                Remove-Item -LiteralPath $localConfigPath -Force
-            }
+            Restore-AgenticWindowsNodeFileBackup `
+                -TargetPath $localConfigPath `
+                -BackupPath $localConfigBackup `
+                -OriginallyExisted $localConfigExisted
         }
 
         if ($gatewaySnapshotReady) {
@@ -453,18 +463,46 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
         }
 
         if ($launchersChanged) {
-            [IO.File]::WriteAllBytes($nodeVbsPath, $nodeVbsBackup)
-            [IO.File]::WriteAllBytes($gatewayBootstrapPath, $gatewayBootstrapBackup)
-            if ($supervisorExisted) {
-                [IO.File]::WriteAllBytes($supervisorPath, $supervisorBackup)
-            } elseif (Test-Path -LiteralPath $supervisorPath) {
-                Remove-Item -LiteralPath $supervisorPath -Force
-            }
+            Restore-AgenticWindowsNodeFileBackup `
+                -TargetPath $nodeVbsPath `
+                -BackupPath $nodeVbsBackupPath `
+                -OriginallyExisted $true
+            Restore-AgenticWindowsNodeFileBackup `
+                -TargetPath $gatewayBootstrapPath `
+                -BackupPath $gatewayBootstrapBackupPath `
+                -OriginallyExisted $true
+            Restore-AgenticWindowsNodeFileBackup `
+                -TargetPath $supervisorPath `
+                -BackupPath $supervisorBackupPath `
+                -OriginallyExisted $supervisorExisted
         }
         if ($agenticTaskChanged) {
-            Unregister-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName -Confirm:$false -ErrorAction SilentlyContinue
+            Restore-AgenticWindowsNodeTaskDefinition `
+                -TaskExisted $agenticTaskExisted `
+                -TaskXmlBackupPath $agenticTaskBackupPath `
+                -GetTask {
+                    Get-OptionalScheduledTaskExact -TaskPath $agenticTaskPath -TaskName $agenticTaskName
+                } `
+                -UnregisterTask {
+                    Unregister-ScheduledTask `
+                        -TaskPath $agenticTaskPath `
+                        -TaskName $agenticTaskName `
+                        -Confirm:$false `
+                        -ErrorAction Stop
+                } `
+                -RegisterTaskXml {
+                    param($Xml)
+                    Register-ScheduledTask `
+                        -TaskPath $agenticTaskPath `
+                        -TaskName $agenticTaskName `
+                        -Xml $Xml `
+                        -Force `
+                        -ErrorAction Stop | Out-Null
+                } `
+                -ExportTaskXml {
+                    Export-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName -ErrorAction Stop
+                }
             if ($agenticTaskExisted) {
-                Register-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName -Xml $agenticTaskBackup -Force | Out-Null
                 Start-ScheduledTask -TaskPath $agenticTaskPath -TaskName $agenticTaskName
                 $agenticTaskStopped = $false
             } else {
@@ -480,7 +518,8 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
     if ($rollbackError) {
         $rollbackFailed = $true
         Write-Warning "Rollback failed. Scheduled task '$TaskName' and the owned S4U node task will remain stopped."
-        Write-Warning "Preserved local config snapshot: $localConfigBackup"
+        Write-Warning "Preserved local transaction backups: $transactionBackupDir"
+        Write-Warning "Preserved local plugin rollback stage: $pluginPrevious"
         Write-Warning "Preserved Gateway config snapshot: ${Distro}:$gatewayConfigBackup"
         Write-Warning "Preserved Gateway plugin snapshot: ${Distro}:$gatewayPluginBackup"
         Write-Warning "After manual restoration, validate and restart the Gateway, then run '$agenticTaskPath$agenticTaskName'."
@@ -488,8 +527,8 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
     }
     throw $provisioningError
 } finally {
-    if (-not $rollbackFailed -and (Test-Path -LiteralPath $localConfigBackup)) {
-        Remove-Item -LiteralPath $localConfigBackup -Force -ErrorAction SilentlyContinue
+    if (-not $rollbackFailed -and (Test-Path -LiteralPath $transactionBackupDir)) {
+        Remove-Item -LiteralPath $transactionBackupDir -Recurse -Force -ErrorAction SilentlyContinue
     }
     if ($gatewaySnapshotReady -and -not $rollbackFailed) {
         try {
