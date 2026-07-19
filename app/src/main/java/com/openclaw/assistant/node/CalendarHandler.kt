@@ -2,11 +2,17 @@ package com.openclaw.assistant.node
 
 import android.Manifest
 import android.content.ContentValues
+import android.content.ContentUris
 import android.content.Context
 import android.content.pm.PackageManager
 import android.provider.CalendarContract
 import androidx.core.content.ContextCompat
 import com.openclaw.assistant.PermissionRequester
+import com.openclaw.assistant.broker.AndroidCalendarCreateResolutionV1
+import com.openclaw.assistant.broker.AndroidCalendarCreateTargetV1
+import com.openclaw.assistant.broker.AndroidCalendarCreateWriteV1
+import com.openclaw.assistant.broker.AndroidCalendarEventV1
+import com.openclaw.assistant.broker.AndroidCalendarNextReadV1
 import com.openclaw.assistant.gateway.GatewaySession
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -15,6 +21,8 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import java.util.TimeZone
+import java.time.Instant
+import java.time.ZoneOffset
 
 class CalendarHandler(private val appContext: Context) {
 
@@ -52,6 +60,155 @@ class CalendarHandler(private val appContext: Context) {
         )
         return cursor?.use {
             if (it.moveToFirst()) it.getLong(0) else null
+        }
+    }
+
+    internal fun readAssistantCalendarNext(
+        afterEpochMs: Long,
+        limit: Int,
+    ): AndroidCalendarNextReadV1 {
+        if (!hasReadPermission()) return AndroidCalendarNextReadV1.PermissionRequired
+        if (afterEpochMs < 0 || limit !in 1..10) return AndroidCalendarNextReadV1.Success(emptyList(), false)
+        val rangeEnd = (afterEpochMs + ASSISTANT_CALENDAR_WINDOW_MS)
+            .coerceAtMost(MAX_SAFE_INTEGER)
+        val uri = CalendarContract.Instances.CONTENT_URI.buildUpon().also { builder ->
+            ContentUris.appendId(builder, afterEpochMs)
+            ContentUris.appendId(builder, rangeEnd)
+        }.build()
+        val projection = arrayOf(
+            CalendarContract.Instances.TITLE,
+            CalendarContract.Instances.BEGIN,
+            CalendarContract.Instances.END,
+            CalendarContract.Instances.ALL_DAY,
+        )
+        val cursor = try {
+            appContext.contentResolver.query(
+                uri,
+                projection,
+                "${CalendarContract.Instances.VISIBLE} = 1",
+                null,
+                "${CalendarContract.Instances.BEGIN} ASC",
+            )
+        } catch (_: SecurityException) {
+            return AndroidCalendarNextReadV1.PermissionRequired
+        }
+        val events = mutableListOf<AndroidCalendarEventV1>()
+        cursor?.use {
+            val titleIndex = it.getColumnIndexOrThrow(CalendarContract.Instances.TITLE)
+            val startIndex = it.getColumnIndexOrThrow(CalendarContract.Instances.BEGIN)
+            val endIndex = it.getColumnIndexOrThrow(CalendarContract.Instances.END)
+            val allDayIndex = it.getColumnIndexOrThrow(CalendarContract.Instances.ALL_DAY)
+            while (events.size <= limit && it.moveToNext()) {
+                val start = it.getLong(startIndex)
+                val end = it.getLong(endIndex)
+                if (start >= afterEpochMs && end > start) {
+                    events += AndroidCalendarEventV1(
+                        title = it.getString(titleIndex).orEmpty(),
+                        startEpochMs = start,
+                        endEpochMs = end,
+                        allDay = it.getInt(allDayIndex) == 1,
+                    )
+                }
+            }
+        }
+        return AndroidCalendarNextReadV1.Success(
+            events = events.take(limit),
+            truncated = events.size > limit,
+        )
+    }
+
+    internal fun resolveAssistantCalendarCreate(): AndroidCalendarCreateResolutionV1 {
+        if (!hasReadPermission() || !hasWritePermission()) {
+            return AndroidCalendarCreateResolutionV1.PermissionRequired
+        }
+        val projection = arrayOf(
+            CalendarContract.Calendars._ID,
+            CalendarContract.Calendars.CALENDAR_DISPLAY_NAME,
+            CalendarContract.Calendars.IS_PRIMARY,
+        )
+        val selection =
+            "${CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL} >= ? AND ${CalendarContract.Calendars.VISIBLE} = 1"
+        val selectionArgs = arrayOf(CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR.toString())
+        val cursor = try {
+            appContext.contentResolver.query(
+                CalendarContract.Calendars.CONTENT_URI,
+                projection,
+                selection,
+                selectionArgs,
+                "${CalendarContract.Calendars.IS_PRIMARY} DESC, ${CalendarContract.Calendars._ID} ASC",
+            )
+        } catch (_: SecurityException) {
+            return AndroidCalendarCreateResolutionV1.PermissionRequired
+        } catch (_: Throwable) {
+            return AndroidCalendarCreateResolutionV1.Failed
+        }
+        return cursor?.use {
+            if (!it.moveToFirst()) return@use AndroidCalendarCreateResolutionV1.NotFound
+            val calendarId = it.getLong(it.getColumnIndexOrThrow(CalendarContract.Calendars._ID))
+            val displayName = it.getString(
+                it.getColumnIndexOrThrow(CalendarContract.Calendars.CALENDAR_DISPLAY_NAME),
+            ).orEmpty()
+            if (calendarId <= 0) {
+                AndroidCalendarCreateResolutionV1.Failed
+            } else {
+                AndroidCalendarCreateResolutionV1.Ready(
+                    AndroidCalendarCreateTargetV1(calendarId, displayName),
+                )
+            }
+        } ?: AndroidCalendarCreateResolutionV1.NotFound
+    }
+
+    internal fun createAssistantCalendarEvent(
+        calendarId: Long,
+        title: String,
+        startEpochMs: Long,
+        endEpochMs: Long,
+        allDay: Boolean,
+    ): AndroidCalendarCreateWriteV1 {
+        if (!hasReadPermission() || !hasWritePermission()) {
+            return AndroidCalendarCreateWriteV1.PermissionRequired
+        }
+        val normalizedTitle = title.trim()
+        if (
+            calendarId <= 0 ||
+            normalizedTitle.isEmpty() ||
+            normalizedTitle.length > 200 ||
+            startEpochMs < 0 ||
+            endEpochMs <= startEpochMs ||
+            endEpochMs - startEpochMs > MAX_CALENDAR_DURATION_MS
+        ) {
+            return AndroidCalendarCreateWriteV1.Invalid
+        }
+        val (storedStart, storedEnd, timeZone) = if (allDay) {
+            val startDate = Instant.ofEpochMilli(startEpochMs).atZone(TimeZone.getDefault().toZoneId()).toLocalDate()
+            val endDate = Instant.ofEpochMilli(endEpochMs).atZone(TimeZone.getDefault().toZoneId()).toLocalDate()
+            if (!endDate.isAfter(startDate)) return AndroidCalendarCreateWriteV1.Invalid
+            Triple(
+                startDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli(),
+                endDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli(),
+                "UTC",
+            )
+        } else {
+            Triple(startEpochMs, endEpochMs, TimeZone.getDefault().id)
+        }
+        val values = ContentValues().apply {
+            put(CalendarContract.Events.CALENDAR_ID, calendarId)
+            put(CalendarContract.Events.TITLE, normalizedTitle)
+            put(CalendarContract.Events.DTSTART, storedStart)
+            put(CalendarContract.Events.DTEND, storedEnd)
+            put(CalendarContract.Events.EVENT_TIMEZONE, timeZone)
+            put(CalendarContract.Events.ALL_DAY, if (allDay) 1 else 0)
+        }
+        return try {
+            if (appContext.contentResolver.insert(CalendarContract.Events.CONTENT_URI, values) != null) {
+                AndroidCalendarCreateWriteV1.Created
+            } else {
+                AndroidCalendarCreateWriteV1.Failed
+            }
+        } catch (_: SecurityException) {
+            AndroidCalendarCreateWriteV1.PermissionRequired
+        } catch (_: Throwable) {
+            AndroidCalendarCreateWriteV1.Failed
         }
     }
 
@@ -271,5 +428,11 @@ class CalendarHandler(private val appContext: Context) {
         } catch (e: Exception) {
             GatewaySession.InvokeResult.error("CALENDAR_DELETE_FAILED", "CALENDAR_DELETE_FAILED: ${e.message}")
         }
+    }
+
+    private companion object {
+        const val ASSISTANT_CALENDAR_WINDOW_MS = 31L * 24L * 60L * 60L * 1_000L
+        const val MAX_CALENDAR_DURATION_MS = 31L * 24L * 60L * 60L * 1_000L
+        const val MAX_SAFE_INTEGER = 9_007_199_254_740_991L
     }
 }

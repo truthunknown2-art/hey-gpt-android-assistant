@@ -7,12 +7,16 @@ import { describe, it } from "node:test";
 import { verifySignedProposal } from "../dist/contract-v1.js";
 import { BrokerLedger } from "../dist/ledger.js";
 import {
+  CALENDAR_CREATE_TOOL_NAME,
+  CALENDAR_NEXT_TOOL_NAME,
   CONTACT_CALL_TOOL_NAME,
   CONTACT_SMS_TOOL_NAME,
   CONTACTS_TOOL_NAME,
   EXECUTE_COMMAND,
   PRESENCE_COMMAND,
   callContactWithApproval,
+  createCalendarEventWithApproval,
+  readCalendarPrivately,
   registerPrivateReadTools,
   searchContactsPrivately,
   sendContactSmsWithApproval,
@@ -43,7 +47,13 @@ function receiptFor(proposal, overrides = {}) {
   };
 }
 
-function fixture({ executeResponse, phoneCallsEnabled = false, smsSendEnabled = false } = {}) {
+function fixture({
+  executeResponse,
+  phoneCallsEnabled = false,
+  smsSendEnabled = false,
+  calendarReadsEnabled = false,
+  calendarWritesEnabled = false,
+} = {}) {
   const stateDir = mkdtempSync(path.join(tmpdir(), "assistant-private-read-"));
   const ledger = new BrokerLedger(stateDir);
   const signingIdentity = new BrokerSigningIdentityV1(stateDir);
@@ -53,6 +63,8 @@ function fixture({ executeResponse, phoneCallsEnabled = false, smsSendEnabled = 
       privateReadsEnabled: true,
       phoneCallsEnabled,
       smsSendEnabled,
+      calendarReadsEnabled,
+      calendarWritesEnabled,
       privateReadAgentId: "voice-main",
       androidNodeId: NODE_ID,
     },
@@ -379,6 +391,124 @@ describe("signed private-read tools", () => {
         status: "UNKNOWN",
         errorCode: "RECEIPT_INVALID",
       });
+    } finally {
+      subject.close();
+    }
+  });
+
+  it("reads upcoming calendar events privately through a medium-risk proposal", async () => {
+    const subject = fixture({
+      executeResponse: (proposal) => ({
+        ok: true,
+        payload: receiptFor(proposal, {
+          resultSummary: { eventCount: 2, truncated: false },
+        }),
+      }),
+    });
+    try {
+      const result = await readCalendarPrivately({
+        api: subject.api,
+        ledger: subject.ledger,
+        signingIdentity: subject.signingIdentity,
+        nodeId: NODE_ID,
+        voiceSessionKey: SESSION,
+        request: { afterEpochMs: 1_700_000_000_000, limit: 5 },
+      });
+
+      assert.deepEqual(result.details, {
+        status: "COMPLETED",
+        privateDelivery: "spoken_on_phone",
+        eventCount: 2,
+        truncated: false,
+      });
+      const proposal = subject.calls[1].params.proposal;
+      assert.equal(proposal.capability, "android.calendar.next");
+      assert.equal(proposal.risk, "MEDIUM");
+      assert.deepEqual(proposal.arguments, { afterEpochMs: 1_700_000_000_000, limit: 5 });
+      assert.equal(JSON.stringify(result).includes("Dentist"), false);
+    } finally {
+      subject.close();
+    }
+  });
+
+  it("creates one calendar event through a high-risk proposal without leaking its title", async () => {
+    const subject = fixture({
+      executeResponse: (proposal) => ({
+        ok: true,
+        payload: receiptFor(proposal, { resultSummary: { created: true } }),
+      }),
+    });
+    try {
+      const startEpochMs = Date.now() + 60_000;
+      const result = await createCalendarEventWithApproval({
+        api: subject.api,
+        ledger: subject.ledger,
+        signingIdentity: subject.signingIdentity,
+        nodeId: NODE_ID,
+        voiceSessionKey: SESSION,
+        request: {
+          title: "Dentist",
+          startEpochMs,
+          endEpochMs: startEpochMs + 3_600_000,
+          allDay: false,
+        },
+      });
+
+      assert.deepEqual(result.details, { status: "COMPLETED", created: true });
+      const proposal = subject.calls[1].params.proposal;
+      assert.equal(proposal.capability, "android.calendar.create");
+      assert.equal(proposal.risk, "HIGH");
+      assert.equal(proposal.arguments.title, "Dentist");
+      assert.equal(JSON.stringify(result).includes("Dentist"), false);
+    } finally {
+      subject.close();
+    }
+  });
+
+  it("registers calendar tools only behind their explicit flags", () => {
+    const subject = fixture({ calendarReadsEnabled: true, calendarWritesEnabled: true });
+    const names = [];
+    subject.api.registerTool = (tool) => names.push(tool.name);
+    try {
+      assert.equal(registerPrivateReadTools(subject.api, {
+        ledger: () => subject.ledger,
+        signingIdentity: () => subject.signingIdentity,
+      }), 3);
+      assert.deepEqual(names.sort(), [
+        CONTACTS_TOOL_NAME,
+        CALENDAR_NEXT_TOOL_NAME,
+        CALENDAR_CREATE_TOOL_NAME,
+      ].sort());
+    } finally {
+      subject.close();
+    }
+  });
+
+  it("rejects a calendar receipt that tries to smuggle event details", async () => {
+    const subject = fixture({
+      executeResponse: (proposal) => ({
+        ok: true,
+        payload: receiptFor(proposal, {
+          resultSummary: { eventCount: 1, truncated: false, title: "Private appointment" },
+        }),
+      }),
+    });
+    try {
+      const result = await readCalendarPrivately({
+        api: subject.api,
+        ledger: subject.ledger,
+        signingIdentity: subject.signingIdentity,
+        nodeId: NODE_ID,
+        voiceSessionKey: SESSION,
+        request: {},
+      });
+
+      assert.deepEqual(result.details, {
+        status: "UNKNOWN",
+        privateDelivery: "not_delivered",
+        errorCode: "RECEIPT_INVALID",
+      });
+      assert.equal(JSON.stringify(result).includes("Private appointment"), false);
     } finally {
       subject.close();
     }

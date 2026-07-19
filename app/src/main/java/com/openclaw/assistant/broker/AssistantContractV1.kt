@@ -33,7 +33,8 @@ internal enum class AssistantCapabilityV1(
     val risk: AssistantRiskV1,
 ) {
     ANDROID_DEVICE_STATUS("android.device.status", AssistantRiskV1.LOW),
-    ANDROID_CALENDAR_NEXT("android.calendar.next", AssistantRiskV1.LOW),
+    ANDROID_CALENDAR_NEXT("android.calendar.next", AssistantRiskV1.MEDIUM),
+    ANDROID_CALENDAR_CREATE("android.calendar.create", AssistantRiskV1.HIGH),
     ANDROID_CONTACTS_SEARCH("android.contacts.search", AssistantRiskV1.MEDIUM),
     ANDROID_PHONE_CALL_CONTACT("android.phone.call_contact", AssistantRiskV1.HIGH),
     ANDROID_SMS_SEND_CONTACT("android.sms.send_contact", AssistantRiskV1.HIGH),
@@ -279,6 +280,14 @@ private object AssistantArgumentsV1 {
             arguments.hasOnly("afterEpochMs", "limit") &&
                 arguments.optionalLong("afterEpochMs", 0L..AssistantContractV1.MAX_SAFE_INTEGER) &&
                 arguments.optionalLong("limit", 1L..10L)
+        AssistantCapabilityV1.ANDROID_CALENDAR_CREATE ->
+            arguments.hasOnly("title", "startEpochMs", "endEpochMs", "allDay") &&
+                arguments.requiredString("title", 1..200) &&
+                arguments.rawStringLength("title") in 1..200 &&
+                arguments.requiredLong("startEpochMs", 0L..AssistantContractV1.MAX_SAFE_INTEGER) &&
+                arguments.requiredLong("endEpochMs", 1L..AssistantContractV1.MAX_SAFE_INTEGER) &&
+                arguments.optionalBoolean("allDay") &&
+                arguments.validCalendarRange()
         AssistantCapabilityV1.ANDROID_CONTACTS_SEARCH ->
             arguments.hasOnly("query", "limit") &&
                 arguments.requiredString("query", 1..100) &&
@@ -314,8 +323,27 @@ private object AssistantArgumentsV1 {
         return !primitive.isString && primitive.booleanOrNull == null && primitive.longOrNull in range
     }
 
+    private fun JsonObject.requiredLong(name: String, range: LongRange): Boolean {
+        val value = this[name] as? JsonPrimitive ?: return false
+        return !value.isString && value.booleanOrNull == null && value.longOrNull in range
+    }
+
+    private fun JsonObject.optionalBoolean(name: String): Boolean {
+        val value = this[name] ?: return true
+        val primitive = value as? JsonPrimitive ?: return false
+        return !primitive.isString && primitive.booleanOrNull != null
+    }
+
+    private fun JsonObject.validCalendarRange(): Boolean {
+        val start = (this["startEpochMs"] as? JsonPrimitive)?.longOrNull ?: return false
+        val end = (this["endEpochMs"] as? JsonPrimitive)?.longOrNull ?: return false
+        return end > start && end - start <= MAX_CALENDAR_DURATION_MS
+    }
+
     private fun JsonObject.rawStringLength(name: String): Int {
         val value = this[name] as? JsonPrimitive ?: return -1
         return if (value.isString) value.content.length else -1
     }
+
+    private const val MAX_CALENDAR_DURATION_MS = 31L * 24L * 60L * 60L * 1_000L
 }

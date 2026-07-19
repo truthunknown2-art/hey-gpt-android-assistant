@@ -222,6 +222,14 @@
             android:launchMode="singleTask"
             android:showWhenLocked="false"
             android:theme="@style/Theme.OpenClawAssistant" />
+        <activity
+            android:name="com.openclaw.assistant.broker.AssistantCalendarCreateApprovalActivityV1"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:label="@string/assistant_calendar_create_title"
+            android:launchMode="singleTask"
+            android:showWhenLocked="false"
+            android:theme="@style/Theme.OpenClawAssistant" />
         <receiver
             android:name="com.openclaw.assistant.node.AssistantSmsSentReceiverV1"
             android:exported="false" />

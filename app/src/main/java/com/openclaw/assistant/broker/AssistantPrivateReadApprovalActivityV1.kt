@@ -43,6 +43,10 @@ internal class AssistantPrivateReadApprovalActivityV1 : ComponentActivity() {
 
     private fun showProposal(intent: Intent?) {
         dialog?.dismiss()
+        if (proposalId.isNotBlank() && !responded) {
+            AssistantPrivateReadApprovals.registry.respond(proposalId, false)
+            AssistantPrivateReadApprovalPromptV1.cancel(this, proposalId)
+        }
         proposalId = intent?.getStringExtra(EXTRA_PROPOSAL_ID).orEmpty()
         responded = false
         if (proposalId.isBlank() || keyguardManager.isDeviceLocked) {
@@ -59,6 +63,10 @@ internal class AssistantPrivateReadApprovalActivityV1 : ComponentActivity() {
                 val query = pending.arguments["query"]?.jsonPrimitive?.content.orEmpty()
                 val limit = pending.arguments["limit"]?.jsonPrimitive?.intOrNull ?: 5
                 getString(R.string.assistant_private_read_contacts_message, query, limit)
+            }
+            AssistantCapabilityV1.ANDROID_CALENDAR_NEXT -> {
+                val limit = pending.arguments["limit"]?.jsonPrimitive?.intOrNull ?: 5
+                getString(R.string.assistant_private_read_calendar_message, limit)
             }
             else -> getString(R.string.assistant_private_read_generic_message, pending.capability.wireName)
         }

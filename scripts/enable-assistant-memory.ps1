@@ -137,6 +137,12 @@ if ($brokerConfig.phoneCallsEnabled -eq $true) {
 if ($brokerConfig.smsSendEnabled -eq $true) {
     $expected += "assistant_sms_send"
 }
+if ($brokerConfig.calendarReadsEnabled -eq $true) {
+    $expected += "assistant_calendar_next"
+}
+if ($brokerConfig.calendarWritesEnabled -eq $true) {
+    $expected += "assistant_calendar_create"
+}
 $expected = @($expected | Sort-Object -Unique)
 $registrationMismatch =
     $registered.Count -ne $expected.Count -or

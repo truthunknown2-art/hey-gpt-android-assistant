@@ -50,7 +50,7 @@ describe("assistant contract v1", () => {
       expectedVoiceSessionKey: SESSION_KEY,
     });
 
-    assert.equal(verified.risk, "LOW");
+    assert.equal(verified.risk, "MEDIUM");
     assert.match(verified.argumentsHash, /^sha256:[0-9a-f]{64}$/);
   });
 
@@ -100,6 +100,39 @@ describe("assistant contract v1", () => {
       () => createProposal({
         capability: "android.sms.send_contact",
         arguments: { query: "Jen", message: "x".repeat(1_001) },
+        targetDeviceId: DEVICE_ID,
+        voiceSessionKey: SESSION_KEY,
+        presenceLeaseId: "lease-1",
+        nowMs: NOW,
+      }),
+      (error) => error instanceof ContractError && error.code === "ARGUMENT_SCHEMA",
+    );
+  });
+
+  it("types calendar creation as high risk and bounds its schedule", () => {
+    const event = createProposal({
+      capability: "android.calendar.create",
+      arguments: {
+        title: "Dentist",
+        startEpochMs: NOW + 60_000,
+        endEpochMs: NOW + 3_660_000,
+        allDay: false,
+      },
+      targetDeviceId: DEVICE_ID,
+      voiceSessionKey: SESSION_KEY,
+      presenceLeaseId: "lease-1",
+      nowMs: NOW,
+    });
+
+    assert.equal(event.risk, "HIGH");
+    assert.throws(
+      () => createProposal({
+        capability: "android.calendar.create",
+        arguments: {
+          title: "Too long",
+          startEpochMs: NOW + 60_000,
+          endEpochMs: NOW + 32 * 24 * 60 * 60 * 1_000,
+        },
         targetDeviceId: DEVICE_ID,
         voiceSessionKey: SESSION_KEY,
         presenceLeaseId: "lease-1",

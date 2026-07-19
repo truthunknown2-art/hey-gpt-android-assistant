@@ -26,12 +26,16 @@ import com.openclaw.assistant.broker.AssistantBrokerPinResultV1
 import com.openclaw.assistant.broker.AssistantBrokerPublicKeyV1
 import com.openclaw.assistant.broker.AssistantBrokerTrustStoreV1
 import com.openclaw.assistant.broker.AssistantCapabilityExecutorV1
+import com.openclaw.assistant.broker.AndroidCalendarCreateResolverV1
+import com.openclaw.assistant.broker.AndroidCalendarCreateWriterV1
+import com.openclaw.assistant.broker.AndroidCalendarNextReaderV1
 import com.openclaw.assistant.broker.AndroidContactCallLauncherV1
 import com.openclaw.assistant.broker.AndroidContactCallResolverV1
 import com.openclaw.assistant.broker.AndroidContactSmsResolverV1
 import com.openclaw.assistant.broker.AndroidContactSmsSenderV1
 import com.openclaw.assistant.broker.AssistantContactCallApprovalsV1
 import com.openclaw.assistant.broker.AssistantContactSmsApprovalsV1
+import com.openclaw.assistant.broker.AssistantCalendarCreateApprovalsV1
 import com.openclaw.assistant.broker.AssistantPresenceLeases
 import com.openclaw.assistant.broker.AssistantPrivateReadApprovals
 import com.openclaw.assistant.broker.AssistantPrivateReadGrants
@@ -1086,17 +1090,21 @@ class NodeRuntime(context: Context) {
       executor = AssistantCapabilityExecutorV1(
         validator = AssistantProposalValidatorV1(leases, verifier),
         deviceStatusReader = deviceHandler::readAssistantStatus,
+        calendarNextReader = AndroidCalendarNextReaderV1(calendarHandler::readAssistantCalendarNext),
         contactsSearchReader = contactsHandler::readAssistantContacts,
         privateReadAuthorizer = grants,
         contactCallResolver = AndroidContactCallResolverV1(contactsHandler::resolveAssistantContactCall),
         contactCallLauncher = AndroidContactCallLauncherV1(phoneHandler::launchAssistantContactCall),
         contactSmsResolver = AndroidContactSmsResolverV1(contactsHandler::resolveAssistantContactSms),
         contactSmsSender = AndroidContactSmsSenderV1(sms::sendAssistantContactSms),
+        calendarCreateResolver = AndroidCalendarCreateResolverV1(calendarHandler::resolveAssistantCalendarCreate),
+        calendarCreateWriter = AndroidCalendarCreateWriterV1(calendarHandler::createAssistantCalendarEvent),
       ),
       privateReadGrants = grants,
       privateReadApprovalGate = AndroidAssistantPrivateReadApprovalGateV1(appContext),
       contactCallApprovalGate = AndroidAssistantContactCallApprovalGateV1(appContext),
       contactSmsApprovalGate = AndroidAssistantContactSmsApprovalGateV1(appContext),
+      calendarCreateApprovalGate = AndroidAssistantCalendarCreateApprovalGateV1(appContext),
       securityGate = ::assistantSecurityGate,
       privateResultSink = AssistantPrivateResultSinkV1(AssistantPrivateResultsV1.router::deliver),
     )
@@ -1113,6 +1121,7 @@ class NodeRuntime(context: Context) {
     AssistantPrivateReadApprovals.registry.revokeAll()
     AssistantContactCallApprovalsV1.registry.revokeAll()
     AssistantContactSmsApprovalsV1.registry.revokeAll()
+    AssistantCalendarCreateApprovalsV1.registry.revokeAll()
     AssistantSmsSentStatusesV1.registry.revokeAll()
     AssistantPrivateReadGrants.manager.revokeAll()
     AssistantPrivateResultsV1.router.revokeAll()

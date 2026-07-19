@@ -9,11 +9,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $PluginId = "assistant-capability-broker"
-$ToolName = "assistant_contacts_search"
-$CallToolName = "assistant_phone_call"
-$SmsToolName = "assistant_sms_send"
-$CalendarReadToolName = "assistant_calendar_next"
-$CalendarCreateToolName = "assistant_calendar_create"
+$CalendarReadTool = "assistant_calendar_next"
+$CalendarCreateTool = "assistant_calendar_create"
 $PresenceCommand = "assistant.presence.v1"
 $ExecuteCommand = "assistant.execute.v1"
 $BaseVoiceTools = @(
@@ -21,6 +18,15 @@ $BaseVoiceTools = @(
     "messenger_notifications_read",
     "web_fetch",
     "web_search"
+)
+$BrokerTools = @(
+    "assistant_contacts_search",
+    "assistant_phone_call",
+    "assistant_sms_send",
+    $CalendarReadTool,
+    $CalendarCreateTool,
+    "assistant_memory_remember",
+    "assistant_memory_forget"
 )
 $GenericToolDeny = @(
     "agents_list", "browser", "canvas", "codex_threads", "cron", "gateway",
@@ -80,18 +86,18 @@ function Resolve-AssistantNodeId {
     return [string]$eligible[0].nodeId
 }
 
-function Set-ContactPolicy {
+function Set-CalendarPolicy {
     param([string]$Workspace, [bool]$Enabled)
 
     $agentsPath = "$Workspace/AGENTS.md"
     $current = (& wsl.exe -d $Distro -- cat $agentsPath) -join "`n"
     if ($LASTEXITCODE -ne 0) { throw "Could not read $agentsPath" }
-    $startMarker = "<!-- signed-private-contacts-policy:start -->"
-    $endMarker = "<!-- signed-private-contacts-policy:end -->"
+    $startMarker = "<!-- signed-private-calendar-policy:start -->"
+    $endMarker = "<!-- signed-private-calendar-policy:end -->"
     $startIndex = $current.IndexOf($startMarker, [StringComparison]::Ordinal)
     $endIndex = $current.IndexOf($endMarker, [StringComparison]::Ordinal)
     if (($startIndex -ge 0) -ne ($endIndex -ge 0) -or ($startIndex -ge 0 -and $endIndex -lt $startIndex)) {
-        throw "Existing signed contact policy markers are malformed."
+        throw "Existing signed calendar policy markers are malformed."
     }
     if ($startIndex -ge 0) {
         $before = $current.Substring(0, $startIndex).TrimEnd()
@@ -100,16 +106,13 @@ function Set-ContactPolicy {
     }
     if ($Enabled) {
         $policy = @'
-## Signed Private Contact Reads
+## Signed Private Calendar
 
-- Use `assistant_contacts_search` when the user asks to find a contact or phone number.
-- Matching names and phone numbers are spoken privately by the unlocked phone and never returned to this model. Do not ask for or invent those private fields after the tool runs.
-- The first private read in a voice session requires approval on the phone. A `COMPLETED` receipt with `privateDelivery=spoken_on_phone` proves local speech finished; any other status means it was not delivered.
-- Use `assistant_phone_call` only when the user explicitly asks to call a named contact. The phone resolves the name privately and shows the real recipient and number in a fresh one-shot approval. Never ask for or invent the number.
-- A completed call receipt reports only whether the call was placed or the dialer requires a tap. It never reveals the contact or number.
-- Use `assistant_sms_send` only when the user explicitly asks to send a text to a named contact. Pass the exact intended message. The phone resolves the recipient privately and shows the real name, number, and complete message in a fresh one-shot approval.
-- An SMS receipt with `sent=true` confirms that Android reported successful carrier submission; it does not prove delivery. The recipient, number, and message are never returned in the receipt.
-- Never use generic node, contacts, filesystem, browser-control, or shell tools as a workaround.
+- Use `assistant_calendar_next` for upcoming calendar questions. Event titles and times are spoken only by the unlocked phone and never returned to this model. Do not ask for or invent those details after the tool runs.
+- The first calendar read in a voice session requires a phone approval. Only `COMPLETED` with `privateDelivery=spoken_on_phone` proves local speech finished.
+- Use `assistant_calendar_create` only when the user explicitly asks to add an event. Resolve the intended local date and time before calling it; use an exclusive end date for all-day events.
+- The phone chooses the writable calendar locally and shows the real calendar, title, and local schedule in a fresh one-shot approval. Only `created=true` proves insertion.
+- Never use raw `calendar.add`, generic node, filesystem, browser-control, or shell tools as a workaround.
 '@
         $current = $current.TrimEnd() + "`n`n$startMarker`n$($policy.Trim())`n$endMarker"
     }
@@ -130,15 +133,15 @@ for ($index = 0; $index -lt $configuredAgents.Count; $index++) {
 if ($agentIndex -lt 0) { throw "Agent '$AgentId' is missing from agents.list." }
 
 if ($Disable) {
-    Invoke-OpenClaw config set "plugins.entries.$PluginId.config.privateReadsEnabled" false --strict-json | Out-Null
-    Invoke-OpenClaw config set "plugins.entries.$PluginId.config.phoneCallsEnabled" false --strict-json | Out-Null
-    Invoke-OpenClaw config set "plugins.entries.$PluginId.config.smsSendEnabled" false --strict-json | Out-Null
-    $nodeConfig = ((Invoke-OpenClaw config get gateway.nodes) -join "`n") | ConvertFrom-Json
+    Invoke-OpenClaw config set "plugins.entries.$PluginId.config.calendarReadsEnabled" false --strict-json | Out-Null
+    Invoke-OpenClaw config set "plugins.entries.$PluginId.config.calendarWritesEnabled" false --strict-json | Out-Null
     $remainingConfig = ((Invoke-OpenClaw config get "plugins.entries.$PluginId.config") -join "`n") | ConvertFrom-Json
-    $calendarStillEnabled =
-        $remainingConfig.calendarReadsEnabled -eq $true -or
-        $remainingConfig.calendarWritesEnabled -eq $true
-    $allowCommands = if ($calendarStillEnabled) {
+    $otherAssistantCapabilitiesEnabled =
+        $remainingConfig.privateReadsEnabled -eq $true -or
+        $remainingConfig.phoneCallsEnabled -eq $true -or
+        $remainingConfig.smsSendEnabled -eq $true
+    $nodeConfig = ((Invoke-OpenClaw config get gateway.nodes) -join "`n") | ConvertFrom-Json
+    $allowCommands = if ($otherAssistantCapabilitiesEnabled) {
         @(@($nodeConfig.allowCommands) + $PresenceCommand + $ExecuteCommand) | Sort-Object -Unique
     } else {
         @($nodeConfig.allowCommands | Where-Object { $_ -notin @($PresenceCommand, $ExecuteCommand) }) | Sort-Object -Unique
@@ -146,14 +149,16 @@ if ($Disable) {
     Invoke-OpenClaw config set gateway.nodes.allowCommands ($allowCommands | ConvertTo-Json -Compress) --strict-json | Out-Null
     $existingAllow = @($configuredAgents[$agentIndex].tools.alsoAllow | ForEach-Object { [string]$_ })
     $existingDeny = @($configuredAgents[$agentIndex].tools.deny | ForEach-Object { [string]$_ })
-    $nextAllow = @($existingAllow | Where-Object { $_ -notin @($ToolName, $CallToolName, $SmsToolName) }) | Sort-Object -Unique
-    $nextDeny = @($existingDeny + $ToolName + $CallToolName + $SmsToolName) | Sort-Object -Unique
+    $nextAllow = @($existingAllow | Where-Object { $_ -notin @($CalendarReadTool, $CalendarCreateTool) }) | Sort-Object -Unique
+    $nextDeny = @($existingDeny + $CalendarReadTool + $CalendarCreateTool) | Sort-Object -Unique
     Invoke-OpenClaw config set "agents.list[$agentIndex].tools.alsoAllow" ($nextAllow | ConvertTo-Json -Compress) --strict-json | Out-Null
     Invoke-OpenClaw config set "agents.list[$agentIndex].tools.deny" ($nextDeny | ConvertTo-Json -Compress) --strict-json | Out-Null
 } else {
     $nodeConfig = ((Invoke-OpenClaw config get gateway.nodes) -join "`n") | ConvertFrom-Json
     $allowCommands = @(@($nodeConfig.allowCommands) + $PresenceCommand + $ExecuteCommand) | Sort-Object -Unique
-    $denyCommands = @($nodeConfig.denyCommands | Where-Object { $_ -notin @($PresenceCommand, $ExecuteCommand) }) | Sort-Object -Unique
+    $denyCommands = @(@($nodeConfig.denyCommands) + "calendar.add") |
+        Where-Object { $_ -notin @($PresenceCommand, $ExecuteCommand) } |
+        Sort-Object -Unique
     Invoke-OpenClaw config set gateway.nodes.allowCommands ($allowCommands | ConvertTo-Json -Compress) --strict-json | Out-Null
     Invoke-OpenClaw config set gateway.nodes.denyCommands ($denyCommands | ConvertTo-Json -Compress) --strict-json | Out-Null
     Invoke-OpenClaw config validate | Out-Null
@@ -161,9 +166,8 @@ if ($Disable) {
     $resolvedNodeId = Resolve-AssistantNodeId -RequestedNodeId $NodeId
     Invoke-OpenClaw config set "plugins.entries.$PluginId.config.androidNodeId" ('"' + $resolvedNodeId + '"') --strict-json | Out-Null
     Invoke-OpenClaw config set "plugins.entries.$PluginId.config.privateReadAgentId" ('"' + $AgentId + '"') --strict-json | Out-Null
-    Invoke-OpenClaw config set "plugins.entries.$PluginId.config.privateReadsEnabled" true --strict-json | Out-Null
-    Invoke-OpenClaw config set "plugins.entries.$PluginId.config.phoneCallsEnabled" true --strict-json | Out-Null
-    Invoke-OpenClaw config set "plugins.entries.$PluginId.config.smsSendEnabled" true --strict-json | Out-Null
+    Invoke-OpenClaw config set "plugins.entries.$PluginId.config.calendarReadsEnabled" true --strict-json | Out-Null
+    Invoke-OpenClaw config set "plugins.entries.$PluginId.config.calendarWritesEnabled" true --strict-json | Out-Null
 }
 
 $agents = @((((Invoke-OpenClaw agents list --json) -join "`n") | ConvertFrom-Json) | ForEach-Object { $_ })
@@ -171,43 +175,27 @@ $agent = @($agents | Where-Object id -eq $AgentId)
 if ($agent.Count -ne 1 -or -not [string]$agent[0].workspace) {
     throw "Expected one runtime agent named '$AgentId' with a trusted workspace."
 }
-Set-ContactPolicy -Workspace ([string]$agent[0].workspace) -Enabled (-not $Disable)
+Set-CalendarPolicy -Workspace ([string]$agent[0].workspace) -Enabled (-not $Disable)
 
 Invoke-OpenClaw config validate | Out-Null
 Invoke-OpenClaw gateway restart | Out-Null
 
 $runtime = ((Invoke-OpenClaw plugins inspect $PluginId --runtime --json) -join "`n") | ConvertFrom-Json
 $registered = @($runtime.plugin.toolNames | ForEach-Object { [string]$_ }) | Sort-Object -Unique
-if (-not $Disable -and $ToolName -notin $registered) { throw "Broker did not register '$ToolName'." }
-if (-not $Disable -and $CallToolName -notin $registered) { throw "Broker did not register '$CallToolName'." }
-if (-not $Disable -and $SmsToolName -notin $registered) { throw "Broker did not register '$SmsToolName'." }
-if ($Disable -and $ToolName -in $registered) { throw "Broker still registered '$ToolName' after disable." }
-if ($Disable -and $CallToolName -in $registered) { throw "Broker still registered '$CallToolName' after disable." }
-if ($Disable -and $SmsToolName -in $registered) { throw "Broker still registered '$SmsToolName' after disable." }
+if (-not $Disable -and $CalendarReadTool -notin $registered) { throw "Broker did not register '$CalendarReadTool'." }
+if (-not $Disable -and $CalendarCreateTool -notin $registered) { throw "Broker did not register '$CalendarCreateTool'." }
+if ($Disable -and $CalendarReadTool -in $registered) { throw "Broker still registered '$CalendarReadTool' after disable." }
+if ($Disable -and $CalendarCreateTool -in $registered) { throw "Broker still registered '$CalendarCreateTool' after disable." }
 
 if (-not $Disable) {
-    $brokerVoiceTools = @($registered | Where-Object {
-        $_ -in @(
-            $ToolName,
-            $CallToolName,
-            $SmsToolName,
-            $CalendarReadToolName,
-            $CalendarCreateToolName,
-            "assistant_memory_remember",
-            "assistant_memory_forget"
-        )
-    })
+    $brokerVoiceTools = @($registered | Where-Object { $_ -in $BrokerTools })
     $registeredMemoryTools = @($brokerVoiceTools | Where-Object {
         $_ -in @("assistant_memory_remember", "assistant_memory_forget")
     })
     if ($registeredMemoryTools.Count -notin @(0, 2)) {
         throw "Broker registered an incomplete explicit-memory tool pair."
     }
-    $memoryTools = if ($registeredMemoryTools.Count -eq 2) {
-        @("memory_get", "memory_search")
-    } else {
-        @()
-    }
+    $memoryTools = if ($registeredMemoryTools.Count -eq 2) { @("memory_get", "memory_search") } else { @() }
     $expectedTools = @($BaseVoiceTools + $brokerVoiceTools + $memoryTools) | Sort-Object -Unique
     $deny = @($GenericToolDeny | Where-Object {
         $_ -notin $expectedTools -and
@@ -220,9 +208,9 @@ if (-not $Disable) {
     Invoke-OpenClaw config validate | Out-Null
     Invoke-OpenClaw gateway restart | Out-Null
 
-    $policyCheckKey = "agent:${AgentId}:contact-policy-$([guid]::NewGuid().ToString('N'))"
+    $policyCheckKey = "agent:${AgentId}:calendar-policy-$([guid]::NewGuid().ToString('N'))"
     $smoke = ((Invoke-OpenClaw agent --agent $AgentId --session-key $policyCheckKey --timeout 60 `
-        --message "Reply with exactly: signed contacts policy ready" --json) -join "`n") | ConvertFrom-Json
+        --message "Reply with exactly: signed calendar policy ready" --json) -join "`n") | ConvertFrom-Json
     $effectiveModel = "$($smoke.result.meta.agentMeta.provider)/$($smoke.result.meta.agentMeta.model)"
     $effectiveTools = @($smoke.result.meta.systemPromptReport.tools.entries | ForEach-Object name) | Sort-Object -Unique
     if ($effectiveModel -ne $Model) { throw "Voice smoke used '$effectiveModel' instead of '$Model'." }
@@ -239,5 +227,5 @@ if ($status.modelToolsRegistered -ne $registered.Count) {
     throw "Broker status tool count does not match runtime registration."
 }
 $state = if ($Disable) { "disabled" } else { "enabled" }
-Write-Host "Signed private contact search, one-shot calling, and confirmed SMS are $state for '$AgentId'."
+Write-Host "Signed private calendar reads and one-shot approved calendar creation are $state for '$AgentId'."
 Write-Host "Broker tools: $($registered -join ', ')."

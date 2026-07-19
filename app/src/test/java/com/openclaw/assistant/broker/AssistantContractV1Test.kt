@@ -115,6 +115,44 @@ class AssistantContractV1Test {
     }
 
     @Test
+    fun `calendar create is high risk with a bounded exact schedule`() {
+        val fixture = Fixture()
+        val arguments = buildJsonObject {
+            put("title", "Dentist")
+            put("startEpochMs", fixture.epochNow + 60_000L)
+            put("endEpochMs", fixture.epochNow + 3_660_000L)
+            put("allDay", false)
+        }
+        val base = fixture.signedProposal()
+        val valid = base.copy(
+            proposal = base.proposal.copy(
+                capability = AssistantCapabilityV1.ANDROID_CALENDAR_CREATE,
+                arguments = arguments,
+                argumentsHash = CanonicalJsonV1.sha256(arguments),
+                risk = AssistantRiskV1.HIGH,
+            ),
+        )
+
+        assertTrue(fixture.validator.validate(valid, DEVICE_ID, SESSION_KEY) is ProposalValidationV1.Accepted)
+
+        val oversized = buildJsonObject {
+            put("title", "Trip")
+            put("startEpochMs", fixture.epochNow + 60_000L)
+            put("endEpochMs", fixture.epochNow + 32L * 24L * 60L * 60L * 1_000L)
+        }
+        assertRejected(
+            fixture,
+            valid.copy(
+                proposal = valid.proposal.copy(
+                    arguments = oversized,
+                    argumentsHash = CanonicalJsonV1.sha256(oversized),
+                ),
+            ),
+            ProposalRejectionV1.ARGUMENT_SCHEMA,
+        )
+    }
+
+    @Test
     fun `pinned Ed25519 verifier accepts only exact canonical signature and key`() {
         val privateKey = Ed25519PrivateKeyParameters(ByteArray(32) { (it + 1).toByte() }, 0)
         val publicKey = privateKey.generatePublicKey().encoded
@@ -184,7 +222,7 @@ class AssistantContractV1Test {
                 issuedAtMs = epochNow - 1_000L,
                 expiresAtMs = epochNow + 30_000L,
                 idempotencyKey = "44444444-4444-4444-8444-444444444444",
-                risk = AssistantRiskV1.LOW,
+                risk = AssistantRiskV1.MEDIUM,
             )
             return SignedAssistantProposalV1(
                 proposal = proposal,

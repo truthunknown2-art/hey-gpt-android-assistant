@@ -46,8 +46,8 @@ class AssistantCapabilityExecutorV1Test {
         val fixture = Fixture()
         val receipt = fixture.executor.execute(
             fixture.signed(
-                capability = AssistantCapabilityV1.ANDROID_CALENDAR_NEXT,
-                arguments = buildJsonObject {},
+                capability = AssistantCapabilityV1.WINDOWS_FILES_SEARCH,
+                arguments = buildJsonObject { put("query", JsonPrimitive("report")) },
             ),
             DEVICE_ID,
             SESSION_KEY,
@@ -119,15 +119,101 @@ class AssistantCapabilityExecutorV1Test {
         assertNull(outcome.privateResult)
     }
 
+    @Test
+    fun `authorized calendar read keeps event details out of durable receipt`() {
+        val fixture = Fixture(calendarReadGranted = true)
+        val outcome = fixture.executor.execute(
+            fixture.signedCalendarNext(limit = 1),
+            DEVICE_ID,
+            SESSION_KEY,
+        )
+
+        assertEquals(AssistantReceiptStatusV1.COMPLETED, outcome.receipt.status)
+        assertEquals("1", outcome.receipt.resultSummary?.get("eventCount")?.toString())
+        assertEquals("true", outcome.receipt.resultSummary?.get("truncated")?.toString())
+        assertEquals(1, fixture.calendarReadCount)
+        assertTrue(outcome.privateResult.toString().contains("Dentist"))
+        assertFalse(outcome.receipt.toString().contains("Dentist"))
+    }
+
+    @Test
+    fun `calendar read requires grant and permission before returning private data`() {
+        val withoutGrant = Fixture()
+        val denied = withoutGrant.executor.execute(
+            withoutGrant.signedCalendarNext(),
+            DEVICE_ID,
+            SESSION_KEY,
+        )
+        assertEquals("PRIVATE_READ_GRANT_REQUIRED", denied.receipt.errorCode)
+        assertEquals(0, withoutGrant.calendarReadCount)
+
+        val withoutPermission = Fixture(calendarReadGranted = true, calendarReadPermission = false)
+        val permission = withoutPermission.executor.execute(
+            withoutPermission.signedCalendarNext(),
+            DEVICE_ID,
+            SESSION_KEY,
+        )
+        assertEquals("CALENDAR_READ_PERMISSION_REQUIRED", permission.receipt.errorCode)
+        assertEquals(1, withoutPermission.calendarReadCount)
+        assertNull(permission.privateResult)
+    }
+
+    @Test
+    fun `prepared calendar creation writes only after approval path and returns no title`() {
+        val fixture = Fixture()
+        val signed = fixture.signedCalendarCreate()
+        val prepared = fixture.executor.prepareCalendarCreate(signed, DEVICE_ID, SESSION_KEY)
+            as AssistantCalendarCreatePreparationV1.Ready
+
+        assertEquals(42L, prepared.target.calendarId)
+        assertEquals("Personal", prepared.target.displayName)
+        assertEquals("Dentist", prepared.title)
+        assertEquals(1, fixture.calendarResolutionCount)
+        assertEquals(0, fixture.calendarWriteCount)
+
+        val outcome = fixture.executor.executePreparedCalendarCreate(
+            prepared,
+            signed,
+            DEVICE_ID,
+            SESSION_KEY,
+        )
+        assertEquals(AssistantReceiptStatusV1.COMPLETED, outcome.receipt.status)
+        assertEquals("true", outcome.receipt.resultSummary?.get("created")?.toString())
+        assertFalse(outcome.receipt.toString().contains("Dentist"))
+        assertEquals(1, fixture.calendarWriteCount)
+    }
+
+    @Test
+    fun `invalid all-day range fails before calendar resolution or approval`() {
+        val fixture = Fixture()
+        val prepared = fixture.executor.prepareCalendarCreate(
+            fixture.signedCalendarCreate(allDay = true, endEpochMs = fixture.epochNow + 3_600_000L),
+            DEVICE_ID,
+            SESSION_KEY,
+        ) as AssistantCalendarCreatePreparationV1.Terminal
+
+        assertEquals("CALENDAR_ARGUMENTS_INVALID", prepared.outcome.receipt.errorCode)
+        assertEquals(0, fixture.calendarResolutionCount)
+        assertEquals(0, fixture.calendarWriteCount)
+    }
+
     private class Fixture(
         private val failRead: Boolean = false,
         private val privateReadGranted: Boolean = false,
         private val contactsPermission: Boolean = true,
+        private val calendarReadGranted: Boolean = false,
+        private val calendarReadPermission: Boolean = true,
+        private val calendarCreateResolution: AndroidCalendarCreateResolutionV1 =
+            AndroidCalendarCreateResolutionV1.Ready(AndroidCalendarCreateTargetV1(42L, "Personal")),
+        private val calendarWriteResult: AndroidCalendarCreateWriteV1 = AndroidCalendarCreateWriteV1.Created,
     ) {
         var elapsedNow = 1_000L
         var epochNow = 1_700_000_000_000L
         var readCount = 0
         var contactsReadCount = 0
+        var calendarReadCount = 0
+        var calendarResolutionCount = 0
+        var calendarWriteCount = 0
         val leases = PresenceLeaseManager(
             nowElapsedMs = { elapsedNow },
             newLeaseId = { LEASE_ID },
@@ -153,6 +239,20 @@ class AssistantCapabilityExecutorV1Test {
                     screenInteractive = true,
                 )
             },
+            calendarNextReader = AndroidCalendarNextReaderV1 { _, _ ->
+                calendarReadCount += 1
+                if (!calendarReadPermission) {
+                    AndroidCalendarNextReadV1.PermissionRequired
+                } else {
+                    AndroidCalendarNextReadV1.Success(
+                        events = listOf(
+                            AndroidCalendarEventV1("Dentist", epochNow + 60_000L, epochNow + 3_660_000L, false),
+                            AndroidCalendarEventV1("Lunch", epochNow + 7_200_000L, epochNow + 10_800_000L, false),
+                        ),
+                        truncated = false,
+                    )
+                }
+            },
             contactsSearchReader = AndroidContactsSearchReaderV1 { query, limit ->
                 contactsReadCount += 1
                 if (!contactsPermission) {
@@ -170,10 +270,22 @@ class AssistantCapabilityExecutorV1Test {
                 }
             },
             privateReadAuthorizer = AssistantPrivateReadAuthorizerV1 { capability, sessionKey, deviceId ->
-                privateReadGranted &&
-                    capability == AssistantCapabilityV1.ANDROID_CONTACTS_SEARCH &&
+                ((privateReadGranted && capability == AssistantCapabilityV1.ANDROID_CONTACTS_SEARCH) ||
+                    (calendarReadGranted && capability == AssistantCapabilityV1.ANDROID_CALENDAR_NEXT)) &&
                     sessionKey == SESSION_KEY &&
                     deviceId == DEVICE_ID
+            },
+            calendarCreateResolver = AndroidCalendarCreateResolverV1 {
+                calendarResolutionCount += 1
+                calendarCreateResolution
+            },
+            calendarCreateWriter = AndroidCalendarCreateWriterV1 { calendarId, title, start, end, allDay ->
+                calendarWriteCount += 1
+                assertEquals(42L, calendarId)
+                assertEquals("Dentist", title)
+                assertTrue(end > start)
+                assertFalse(allDay)
+                calendarWriteResult
             },
             nowEpochMs = { epochNow++ },
             newReceiptId = { RECEIPT_ID },
@@ -189,6 +301,27 @@ class AssistantCapabilityExecutorV1Test {
             arguments = buildJsonObject {
                 put("query", JsonPrimitive(query))
                 limit?.let { put("limit", JsonPrimitive(it)) }
+            },
+        )
+
+        fun signedCalendarNext(limit: Int? = null): SignedAssistantProposalV1 = signed(
+            capability = AssistantCapabilityV1.ANDROID_CALENDAR_NEXT,
+            arguments = buildJsonObject {
+                put("afterEpochMs", JsonPrimitive(epochNow))
+                limit?.let { put("limit", JsonPrimitive(it)) }
+            },
+        )
+
+        fun signedCalendarCreate(
+            allDay: Boolean = false,
+            endEpochMs: Long = epochNow + 3_660_000L,
+        ): SignedAssistantProposalV1 = signed(
+            capability = AssistantCapabilityV1.ANDROID_CALENDAR_CREATE,
+            arguments = buildJsonObject {
+                put("title", JsonPrimitive("Dentist"))
+                put("startEpochMs", JsonPrimitive(epochNow + 60_000L))
+                put("endEpochMs", JsonPrimitive(endEpochMs))
+                put("allDay", JsonPrimitive(allDay))
             },
         )
 

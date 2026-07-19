@@ -53,6 +53,19 @@ status, and a terminal receipt. Recipient, number, and message are never stored
 in the durable ledger or returned in the receipt. A missing callback becomes
 `UNKNOWN` and is never retried automatically.
 
+When `calendarReadsEnabled` is explicitly set, the broker registers
+`assistant_calendar_next`. The phone expands recurring events inside a bounded
+31-day window and speaks at most ten upcoming event titles and local times only
+on the unlocked phone. A voice-session-scoped private-read grant is required;
+OpenClaw receives only the event count, truncation flag, status, and receipt.
+
+When `calendarWritesEnabled` is explicitly set, the broker registers
+`assistant_calendar_create`. The model supplies a bounded title and exact start
+and end epoch milliseconds. The phone chooses its primary visible writable
+calendar locally, then displays the real calendar, title, and local schedule in
+a secure one-shot approval. Only `created`, status, and a terminal receipt return
+to OpenClaw. A timeout or lost response becomes `UNKNOWN` and is never retried.
+
 The broker creates one Ed25519 identity in its private state directory and
 reuses it across restarts. `assistant.broker.publicKey` returns only the raw
 public key, stable key ID, and SHA-256 fingerprint to an authenticated

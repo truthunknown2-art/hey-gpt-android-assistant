@@ -518,6 +518,17 @@
     <string name="assistant_contact_sms_notification">Unlock the phone to review the recipient and message.</string>
     <string name="assistant_contact_sms_approve">Send</string>
     <string name="assistant_contact_sms_deny">Cancel</string>
+    <string name="assistant_private_read_calendar">upcoming calendar events</string>
+    <string name="assistant_private_read_calendar_message">Allow the assistant to read and speak up to %1$d upcoming calendar events on this unlocked phone for 10 minutes?</string>
+    <string name="assistant_calendar_create_channel">Assistant calendar approvals</string>
+    <string name="assistant_calendar_create_title">Create calendar event?</string>
+    <string name="assistant_calendar_create_message">Event: %1$s\nCalendar: %2$s\nWhen: %3$s</string>
+    <string name="assistant_calendar_create_notification">Unlock the phone to review the calendar event.</string>
+    <string name="assistant_calendar_create_approve">Create</string>
+    <string name="assistant_calendar_create_deny">Cancel</string>
+    <string name="assistant_calendar_create_all_day">All day on %1$s</string>
+    <string name="assistant_calendar_create_all_day_range">All day from %1$s through %2$s</string>
+    <string name="assistant_calendar_create_timed">%1$s to %2$s</string>
     <string name="local_command_channel">Local voice commands</string>
     <string name="local_command_needs_attention">Voice command needs attention</string>
     <string name="wake_word_phrase_label">Wake Word</string>

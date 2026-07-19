@@ -5,9 +5,13 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
+import java.time.Instant
+import java.time.ZoneId
 import java.util.UUID
 
 internal data class AndroidDeviceStatusSummaryV1(
@@ -18,6 +22,59 @@ internal data class AndroidDeviceStatusSummaryV1(
 
 internal fun interface AndroidDeviceStatusReaderV1 {
     fun read(): AndroidDeviceStatusSummaryV1
+}
+
+internal data class AndroidCalendarEventV1(
+    val title: String,
+    val startEpochMs: Long,
+    val endEpochMs: Long,
+    val allDay: Boolean,
+)
+
+internal sealed interface AndroidCalendarNextReadV1 {
+    data class Success(
+        val events: List<AndroidCalendarEventV1>,
+        val truncated: Boolean,
+    ) : AndroidCalendarNextReadV1
+
+    data object PermissionRequired : AndroidCalendarNextReadV1
+}
+
+internal fun interface AndroidCalendarNextReaderV1 {
+    fun read(afterEpochMs: Long, limit: Int): AndroidCalendarNextReadV1
+}
+
+internal data class AndroidCalendarCreateTargetV1(
+    val calendarId: Long,
+    val displayName: String,
+)
+
+internal sealed interface AndroidCalendarCreateResolutionV1 {
+    data class Ready(val target: AndroidCalendarCreateTargetV1) : AndroidCalendarCreateResolutionV1
+    data object PermissionRequired : AndroidCalendarCreateResolutionV1
+    data object NotFound : AndroidCalendarCreateResolutionV1
+    data object Failed : AndroidCalendarCreateResolutionV1
+}
+
+internal fun interface AndroidCalendarCreateResolverV1 {
+    fun resolve(): AndroidCalendarCreateResolutionV1
+}
+
+internal sealed interface AndroidCalendarCreateWriteV1 {
+    data object Created : AndroidCalendarCreateWriteV1
+    data object PermissionRequired : AndroidCalendarCreateWriteV1
+    data object Invalid : AndroidCalendarCreateWriteV1
+    data object Failed : AndroidCalendarCreateWriteV1
+}
+
+internal fun interface AndroidCalendarCreateWriterV1 {
+    fun create(
+        calendarId: Long,
+        title: String,
+        startEpochMs: Long,
+        endEpochMs: Long,
+        allDay: Boolean,
+    ): AndroidCalendarCreateWriteV1
 }
 
 internal data class AndroidContactMatchV1(
@@ -130,10 +187,26 @@ internal sealed interface AssistantContactSmsPreparationV1 {
     data class Terminal(val outcome: AssistantExecutionOutcomeV1) : AssistantContactSmsPreparationV1
 }
 
+internal sealed interface AssistantCalendarCreatePreparationV1 {
+    data class Ready(
+        val proposal: AssistantProposalV1,
+        val target: AndroidCalendarCreateTargetV1,
+        val title: String,
+        val startEpochMs: Long,
+        val endEpochMs: Long,
+        val allDay: Boolean,
+    ) : AssistantCalendarCreatePreparationV1
+
+    data class Terminal(val outcome: AssistantExecutionOutcomeV1) : AssistantCalendarCreatePreparationV1
+}
+
 /** Executes already typed proposals through fixed native capability handlers. */
 internal class AssistantCapabilityExecutorV1(
     private val validator: AssistantProposalValidatorV1,
     private val deviceStatusReader: AndroidDeviceStatusReaderV1,
+    private val calendarNextReader: AndroidCalendarNextReaderV1 = AndroidCalendarNextReaderV1 { _, _ ->
+        AndroidCalendarNextReadV1.PermissionRequired
+    },
     private val contactsSearchReader: AndroidContactsSearchReaderV1,
     private val privateReadAuthorizer: AssistantPrivateReadAuthorizerV1,
     private val contactCallResolver: AndroidContactCallResolverV1 = AndroidContactCallResolverV1 {
@@ -148,6 +221,11 @@ internal class AssistantCapabilityExecutorV1(
     private val contactSmsSender: AndroidContactSmsSenderV1 = AndroidContactSmsSenderV1 { _, _ ->
         AndroidContactSmsSendV1.Failed
     },
+    private val calendarCreateResolver: AndroidCalendarCreateResolverV1 = AndroidCalendarCreateResolverV1 {
+        AndroidCalendarCreateResolutionV1.PermissionRequired
+    },
+    private val calendarCreateWriter: AndroidCalendarCreateWriterV1 =
+        AndroidCalendarCreateWriterV1 { _, _, _, _, _ -> AndroidCalendarCreateWriteV1.Failed },
     private val nowEpochMs: () -> Long = System::currentTimeMillis,
     private val newReceiptId: () -> String = { UUID.randomUUID().toString() },
 ) {
@@ -211,6 +289,15 @@ internal class AssistantCapabilityExecutorV1(
                     ),
                 )
             },
+        )
+        AssistantCapabilityV1.ANDROID_CALENDAR_NEXT -> executeCalendarNext(proposal, startedAtMs)
+        AssistantCapabilityV1.ANDROID_CALENDAR_CREATE -> AssistantExecutionOutcomeV1(
+            receipt = receipt(
+                proposal = proposal,
+                status = AssistantReceiptStatusV1.DENIED,
+                startedAtMs = startedAtMs,
+                errorCode = "CALENDAR_APPROVAL_REQUIRED",
+            ),
         )
         AssistantCapabilityV1.ANDROID_CONTACTS_SEARCH -> executeContactsSearch(proposal, startedAtMs)
         AssistantCapabilityV1.ANDROID_PHONE_CALL_CONTACT -> AssistantExecutionOutcomeV1(
@@ -578,6 +665,247 @@ internal class AssistantCapabilityExecutorV1(
         ),
     )
 
+    fun prepareCalendarCreate(
+        signed: SignedAssistantProposalV1,
+        expectedDeviceId: String,
+        expectedVoiceSessionKey: String,
+    ): AssistantCalendarCreatePreparationV1 {
+        val startedAtMs = safeNow()
+        val proposal = when (val validation = validate(signed, expectedDeviceId, expectedVoiceSessionKey)) {
+            is ProposalValidationV1.Accepted -> validation.proposal
+            is ProposalValidationV1.Rejected -> return AssistantCalendarCreatePreparationV1.Terminal(
+                AssistantExecutionOutcomeV1(
+                    receipt = receipt(
+                        proposal = signed.proposal,
+                        status = AssistantReceiptStatusV1.DENIED,
+                        startedAtMs = startedAtMs,
+                        errorCode = "PROPOSAL_${validation.reason.name}",
+                    ),
+                ),
+            )
+        }
+        if (proposal.capability != AssistantCapabilityV1.ANDROID_CALENDAR_CREATE) {
+            return calendarCreateTerminal(proposal, startedAtMs, "CAPABILITY_NOT_IMPLEMENTED")
+        }
+        val title = proposal.arguments.getValue("title").jsonPrimitive.content.trim()
+        val startEpochMs = proposal.arguments.getValue("startEpochMs").jsonPrimitive.longOrNull
+            ?: return calendarCreateTerminal(proposal, startedAtMs, "CALENDAR_ARGUMENTS_INVALID")
+        val endEpochMs = proposal.arguments.getValue("endEpochMs").jsonPrimitive.longOrNull
+            ?: return calendarCreateTerminal(proposal, startedAtMs, "CALENDAR_ARGUMENTS_INVALID")
+        val allDay = proposal.arguments["allDay"]?.jsonPrimitive?.booleanOrNull ?: false
+        if (allDay && !validAllDayRange(startEpochMs, endEpochMs)) {
+            return calendarCreateTerminal(proposal, startedAtMs, "CALENDAR_ARGUMENTS_INVALID")
+        }
+        val resolution = runCatching { calendarCreateResolver.resolve() }.getOrElse {
+            return calendarCreateTerminal(proposal, startedAtMs, "CALENDAR_RESOLUTION_FAILED")
+        }
+        return when (resolution) {
+            AndroidCalendarCreateResolutionV1.PermissionRequired ->
+                calendarCreateTerminal(proposal, startedAtMs, "CALENDAR_PERMISSION_REQUIRED")
+            AndroidCalendarCreateResolutionV1.NotFound ->
+                calendarCreateTerminal(proposal, startedAtMs, "CALENDAR_NOT_FOUND")
+            AndroidCalendarCreateResolutionV1.Failed ->
+                calendarCreateTerminal(proposal, startedAtMs, "CALENDAR_RESOLUTION_FAILED")
+            is AndroidCalendarCreateResolutionV1.Ready -> runCatching {
+                AssistantCalendarCreatePreparationV1.Ready(
+                    proposal = proposal,
+                    target = resolution.target.normalized(),
+                    title = title,
+                    startEpochMs = startEpochMs,
+                    endEpochMs = endEpochMs,
+                    allDay = allDay,
+                )
+            }.getOrElse {
+                calendarCreateTerminal(proposal, startedAtMs, "CALENDAR_RESULT_INVALID")
+            }
+        }
+    }
+
+    fun cancelPreparedCalendarCreate(
+        prepared: AssistantCalendarCreatePreparationV1.Ready,
+        errorCode: String,
+    ): AssistantExecutionOutcomeV1 {
+        require(errorCode.matches(Regex("[A-Z0-9_]{1,64}")))
+        return calendarCreateOutcome(
+            prepared.proposal,
+            safeNow(),
+            AssistantReceiptStatusV1.DENIED,
+            errorCode,
+        )
+    }
+
+    fun executePreparedCalendarCreate(
+        prepared: AssistantCalendarCreatePreparationV1.Ready,
+        signed: SignedAssistantProposalV1,
+        expectedDeviceId: String,
+        expectedVoiceSessionKey: String,
+    ): AssistantExecutionOutcomeV1 {
+        val startedAtMs = safeNow()
+        val validation = validate(signed, expectedDeviceId, expectedVoiceSessionKey)
+        if (validation is ProposalValidationV1.Rejected) {
+            return calendarCreateOutcome(
+                signed.proposal,
+                startedAtMs,
+                AssistantReceiptStatusV1.DENIED,
+                "PROPOSAL_${validation.reason.name}",
+            )
+        }
+        val proposal = (validation as ProposalValidationV1.Accepted).proposal
+        val args = proposal.arguments
+        if (
+            proposal.capability != AssistantCapabilityV1.ANDROID_CALENDAR_CREATE ||
+            proposal.proposalId != prepared.proposal.proposalId ||
+            proposal.argumentsHash != prepared.proposal.argumentsHash ||
+            proposal.targetDeviceId != prepared.proposal.targetDeviceId ||
+            proposal.voiceSessionKey != prepared.proposal.voiceSessionKey ||
+            args["title"]?.jsonPrimitive?.content?.trim() != prepared.title ||
+            args["startEpochMs"]?.jsonPrimitive?.longOrNull != prepared.startEpochMs ||
+            args["endEpochMs"]?.jsonPrimitive?.longOrNull != prepared.endEpochMs ||
+            (args["allDay"]?.jsonPrimitive?.booleanOrNull ?: false) != prepared.allDay
+        ) {
+            return calendarCreateOutcome(
+                proposal,
+                startedAtMs,
+                AssistantReceiptStatusV1.DENIED,
+                "PREPARED_CALENDAR_MISMATCH",
+            )
+        }
+        return runCatching {
+            calendarCreateWriter.create(
+                prepared.target.calendarId,
+                prepared.title,
+                prepared.startEpochMs,
+                prepared.endEpochMs,
+                prepared.allDay,
+            )
+        }.fold(
+            onSuccess = { result ->
+                when (result) {
+                    AndroidCalendarCreateWriteV1.Created -> AssistantExecutionOutcomeV1(
+                        receipt = receipt(
+                            proposal = proposal,
+                            status = AssistantReceiptStatusV1.COMPLETED,
+                            startedAtMs = startedAtMs,
+                            resultSummary = buildJsonObject { put("created", JsonPrimitive(true)) },
+                        ),
+                    )
+                    AndroidCalendarCreateWriteV1.PermissionRequired -> calendarCreateOutcome(
+                        proposal, startedAtMs, AssistantReceiptStatusV1.DENIED, "CALENDAR_PERMISSION_REQUIRED",
+                    )
+                    AndroidCalendarCreateWriteV1.Invalid -> calendarCreateOutcome(
+                        proposal, startedAtMs, AssistantReceiptStatusV1.DENIED, "CALENDAR_ARGUMENTS_INVALID",
+                    )
+                    AndroidCalendarCreateWriteV1.Failed -> calendarCreateOutcome(
+                        proposal, startedAtMs, AssistantReceiptStatusV1.FAILED, "CALENDAR_CREATE_FAILED",
+                    )
+                }
+            },
+            onFailure = {
+                calendarCreateOutcome(
+                    proposal, startedAtMs, AssistantReceiptStatusV1.FAILED, "CALENDAR_CREATE_FAILED",
+                )
+            },
+        )
+    }
+
+    private fun calendarCreateTerminal(
+        proposal: AssistantProposalV1,
+        startedAtMs: Long,
+        errorCode: String,
+    ): AssistantCalendarCreatePreparationV1.Terminal = AssistantCalendarCreatePreparationV1.Terminal(
+        calendarCreateOutcome(proposal, startedAtMs, AssistantReceiptStatusV1.DENIED, errorCode),
+    )
+
+    private fun calendarCreateOutcome(
+        proposal: AssistantProposalV1,
+        startedAtMs: Long,
+        status: AssistantReceiptStatusV1,
+        errorCode: String,
+    ): AssistantExecutionOutcomeV1 = AssistantExecutionOutcomeV1(
+        receipt = receipt(
+            proposal = proposal,
+            status = status,
+            startedAtMs = startedAtMs,
+            errorCode = errorCode,
+        ),
+    )
+
+    private fun executeCalendarNext(
+        proposal: AssistantProposalV1,
+        startedAtMs: Long,
+    ): AssistantExecutionOutcomeV1 {
+        val authorized = runCatching {
+            privateReadAuthorizer.isAuthorized(
+                capability = proposal.capability,
+                voiceSessionKey = proposal.voiceSessionKey,
+                targetDeviceId = proposal.targetDeviceId,
+            )
+        }.getOrDefault(false)
+        if (!authorized) {
+            return AssistantExecutionOutcomeV1(
+                receipt = receipt(
+                    proposal = proposal,
+                    status = AssistantReceiptStatusV1.DENIED,
+                    startedAtMs = startedAtMs,
+                    errorCode = "PRIVATE_READ_GRANT_REQUIRED",
+                ),
+            )
+        }
+        val afterEpochMs = proposal.arguments["afterEpochMs"]?.jsonPrimitive?.longOrNull ?: startedAtMs
+        val limit = proposal.arguments["limit"]?.jsonPrimitive?.intOrNull ?: DEFAULT_CALENDAR_LIMIT
+        return runCatching { calendarNextReader.read(afterEpochMs, limit) }.fold(
+            onSuccess = { result ->
+                when (result) {
+                    AndroidCalendarNextReadV1.PermissionRequired -> AssistantExecutionOutcomeV1(
+                        receipt = receipt(
+                            proposal = proposal,
+                            status = AssistantReceiptStatusV1.DENIED,
+                            startedAtMs = startedAtMs,
+                            errorCode = "CALENDAR_READ_PERMISSION_REQUIRED",
+                        ),
+                    )
+                    is AndroidCalendarNextReadV1.Success -> {
+                        val normalized = result.events.take(limit).map(AndroidCalendarEventV1::normalized)
+                        val truncated = result.truncated || result.events.size > limit
+                        AssistantExecutionOutcomeV1(
+                            receipt = receipt(
+                                proposal = proposal,
+                                status = AssistantReceiptStatusV1.COMPLETED,
+                                startedAtMs = startedAtMs,
+                                resultSummary = buildJsonObject {
+                                    put("eventCount", JsonPrimitive(normalized.size))
+                                    put("truncated", JsonPrimitive(truncated))
+                                },
+                            ),
+                            privateResult = buildJsonObject {
+                                put("events", buildJsonArray {
+                                    normalized.forEach { event ->
+                                        add(buildJsonObject {
+                                            put("title", JsonPrimitive(event.title))
+                                            put("startEpochMs", JsonPrimitive(event.startEpochMs))
+                                            put("endEpochMs", JsonPrimitive(event.endEpochMs))
+                                            put("allDay", JsonPrimitive(event.allDay))
+                                        })
+                                    }
+                                })
+                            },
+                        )
+                    }
+                }
+            },
+            onFailure = {
+                AssistantExecutionOutcomeV1(
+                    receipt = receipt(
+                        proposal = proposal,
+                        status = AssistantReceiptStatusV1.FAILED,
+                        startedAtMs = startedAtMs,
+                        errorCode = "CALENDAR_READ_FAILED",
+                    ),
+                )
+            },
+        )
+    }
+
     private fun executeContactsSearch(
         proposal: AssistantProposalV1,
         startedAtMs: Long,
@@ -683,6 +1011,7 @@ internal class AssistantCapabilityExecutorV1(
 
     private companion object {
         const val DEFAULT_CONTACT_LIMIT = 5
+        const val DEFAULT_CALENDAR_LIMIT = 5
     }
 }
 
@@ -724,3 +1053,26 @@ private fun AndroidContactSmsTargetV1.normalized(): AndroidContactSmsTargetV1 {
     require(normalizedNumber.length in 1..100)
     return copy(displayName = normalizedName, phoneNumber = normalizedNumber)
 }
+
+private fun AndroidCalendarEventV1.normalized(): AndroidCalendarEventV1 {
+    val normalizedTitle = title.trim().ifEmpty { "Untitled event" }
+    require(normalizedTitle.length <= 200)
+    require(startEpochMs in 0..AssistantContractV1.MAX_SAFE_INTEGER)
+    require(endEpochMs in 1..AssistantContractV1.MAX_SAFE_INTEGER)
+    require(endEpochMs > startEpochMs)
+    return copy(title = normalizedTitle)
+}
+
+private fun AndroidCalendarCreateTargetV1.normalized(): AndroidCalendarCreateTargetV1 {
+    val normalizedName = displayName.trim().ifEmpty { "Calendar" }
+    require(calendarId > 0)
+    require(normalizedName.length <= 200)
+    return copy(displayName = normalizedName)
+}
+
+private fun validAllDayRange(startEpochMs: Long, endEpochMs: Long): Boolean = runCatching {
+    val zone = ZoneId.systemDefault()
+    Instant.ofEpochMilli(endEpochMs).atZone(zone).toLocalDate().isAfter(
+        Instant.ofEpochMilli(startEpochMs).atZone(zone).toLocalDate(),
+    )
+}.getOrDefault(false)

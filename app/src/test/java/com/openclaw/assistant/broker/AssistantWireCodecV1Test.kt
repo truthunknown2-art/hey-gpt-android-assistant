@@ -128,6 +128,38 @@ class AssistantWireCodecV1Test {
         assertFails { AssistantWireCodecV1.encodeReceipt(private) }
     }
 
+    @Test
+    fun `calendar receipts accept bounded summaries but reject event details`() {
+        val read = AssistantWireCodecV1.encodeReceipt(
+            receipt(
+                AssistantCapabilityV1.ANDROID_CALENDAR_NEXT,
+                buildJsonObject {
+                    put("eventCount", 2)
+                    put("truncated", false)
+                },
+            ),
+        )
+        val create = AssistantWireCodecV1.encodeReceipt(
+            receipt(
+                AssistantCapabilityV1.ANDROID_CALENDAR_CREATE,
+                buildJsonObject { put("created", true) },
+            ),
+        )
+        val private = receipt(
+            AssistantCapabilityV1.ANDROID_CALENDAR_NEXT,
+            buildJsonObject {
+                put("eventCount", 1)
+                put("truncated", false)
+                put("title", "Dentist")
+            },
+        )
+
+        assertTrue(read.contains("\"eventCount\":2"))
+        assertTrue(create.contains("\"created\":true"))
+        assertTrue(!read.contains("Dentist"))
+        assertFails { AssistantWireCodecV1.encodeReceipt(private) }
+    }
+
     private fun signed(): SignedAssistantProposalV1 {
         val arguments = buildJsonObject {}
         return SignedAssistantProposalV1(

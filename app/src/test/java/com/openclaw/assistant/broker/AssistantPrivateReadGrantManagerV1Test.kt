@@ -62,6 +62,16 @@ class AssistantPrivateReadGrantManagerV1Test {
         assertEquals(1, manager.activeCount())
     }
 
+    @Test
+    fun `calendar read receives its own independent grant`() {
+        val manager = AssistantPrivateReadGrantManagerV1(nowElapsedMs = { 1_000L })
+
+        manager.grant(AssistantCapabilityV1.ANDROID_CALENDAR_NEXT, SESSION, DEVICE)
+
+        assertTrue(manager.isAuthorized(AssistantCapabilityV1.ANDROID_CALENDAR_NEXT, SESSION, DEVICE))
+        assertFalse(manager.isAuthorized(CONTACTS, SESSION, DEVICE))
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun `non private capability cannot receive a grant`() {
         AssistantPrivateReadGrantManagerV1(nowElapsedMs = { 1_000L })

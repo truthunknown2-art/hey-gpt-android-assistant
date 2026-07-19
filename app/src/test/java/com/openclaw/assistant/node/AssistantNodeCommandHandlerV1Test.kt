@@ -1,6 +1,14 @@
 package com.openclaw.assistant.node
 
 import com.openclaw.assistant.broker.AndroidContactMatchV1
+import com.openclaw.assistant.broker.AndroidCalendarCreateResolutionV1
+import com.openclaw.assistant.broker.AndroidCalendarCreateResolverV1
+import com.openclaw.assistant.broker.AndroidCalendarCreateTargetV1
+import com.openclaw.assistant.broker.AndroidCalendarCreateWriteV1
+import com.openclaw.assistant.broker.AndroidCalendarCreateWriterV1
+import com.openclaw.assistant.broker.AndroidCalendarEventV1
+import com.openclaw.assistant.broker.AndroidCalendarNextReadV1
+import com.openclaw.assistant.broker.AndroidCalendarNextReaderV1
 import com.openclaw.assistant.broker.AndroidContactCallLaunchV1
 import com.openclaw.assistant.broker.AndroidContactCallResolutionV1
 import com.openclaw.assistant.broker.AndroidContactCallResolverV1
@@ -79,6 +87,22 @@ class AssistantNodeCommandHandlerV1Test {
         assertFalse(result.ok)
         assertEquals("SIGNED_PROPOSAL_SCHEMA", result.error?.code)
         assertEquals(0, fixture.statusReads)
+    }
+
+    @Test
+    fun `unsupported private capability is denied without prompting`() = runTest {
+        val fixture = Fixture(approvalAllowed = true)
+
+        val result = fixture.handler.handleExecute(
+            fixture.signedJson(AssistantCapabilityV1.WINDOWS_FILES_READ),
+        )
+
+        assertTrue(result.ok)
+        assertEquals(0, fixture.approvalRequests)
+        assertEquals(
+            "CAPABILITY_NOT_IMPLEMENTED",
+            Json.parseToJsonElement(result.payloadJson!!).jsonObject["errorCode"]?.jsonPrimitive?.content,
+        )
     }
 
     @Test
@@ -369,8 +393,92 @@ class AssistantNodeCommandHandlerV1Test {
         assertNull(payload["resultSummary"])
     }
 
+    @Test
+    fun `calendar details are delivered locally and never serialized`() = runTest {
+        val fixture = Fixture(grantCalendar = true, sinkAccepts = true)
+
+        val result = fixture.handler.handleExecute(
+            fixture.signedJson(AssistantCapabilityV1.ANDROID_CALENDAR_NEXT),
+        )
+
+        assertTrue(result.ok)
+        assertEquals(1, fixture.calendarReads)
+        assertEquals(1, fixture.privateDeliveries)
+        assertFalse(result.payloadJson!!.contains("Dentist"))
+        val payload = Json.parseToJsonElement(result.payloadJson!!).jsonObject
+        assertEquals("COMPLETED", payload["status"]?.jsonPrimitive?.content)
+        assertEquals("1", payload["resultSummary"]?.jsonObject?.get("eventCount")?.toString())
+    }
+
+    @Test
+    fun `denied calendar read approval never reaches provider`() = runTest {
+        val fixture = Fixture(approvalAllowed = false)
+
+        val result = fixture.handler.handleExecute(
+            fixture.signedJson(AssistantCapabilityV1.ANDROID_CALENDAR_NEXT),
+        )
+
+        assertEquals(1, fixture.approvalRequests)
+        assertEquals(0, fixture.calendarReads)
+        assertEquals(
+            "PRIVATE_READ_APPROVAL_DENIED",
+            Json.parseToJsonElement(result.payloadJson!!).jsonObject["errorCode"]?.jsonPrimitive?.content,
+        )
+    }
+
+    @Test
+    fun `approved calendar create writes once without serializing event details`() = runTest {
+        val fixture = Fixture(calendarApprovalAllowed = true)
+
+        val result = fixture.handler.handleExecute(
+            fixture.signedJson(AssistantCapabilityV1.ANDROID_CALENDAR_CREATE),
+        )
+
+        assertTrue(result.ok)
+        assertEquals(1, fixture.calendarResolutions)
+        assertEquals(1, fixture.calendarApprovalRequests)
+        assertEquals(1, fixture.calendarWrites)
+        assertFalse(result.payloadJson!!.contains("Dentist"))
+        assertFalse(result.payloadJson!!.contains("Personal"))
+        val payload = Json.parseToJsonElement(result.payloadJson!!).jsonObject
+        assertEquals("COMPLETED", payload["status"]?.jsonPrimitive?.content)
+        assertEquals("true", payload["resultSummary"]?.jsonObject?.get("created")?.toString())
+    }
+
+    @Test
+    fun `denied calendar create never writes`() = runTest {
+        val fixture = Fixture(calendarApprovalAllowed = false)
+
+        val result = fixture.handler.handleExecute(
+            fixture.signedJson(AssistantCapabilityV1.ANDROID_CALENDAR_CREATE),
+        )
+
+        assertEquals(1, fixture.calendarApprovalRequests)
+        assertEquals(0, fixture.calendarWrites)
+        assertEquals(
+            "CALENDAR_APPROVAL_DENIED",
+            Json.parseToJsonElement(result.payloadJson!!).jsonObject["errorCode"]?.jsonPrimitive?.content,
+        )
+    }
+
+    @Test
+    fun `lock during calendar approval fails closed before write`() = runTest {
+        val fixture = Fixture(calendarApprovalAllowed = true, lockDuringCalendarApproval = true)
+
+        val result = fixture.handler.handleExecute(
+            fixture.signedJson(AssistantCapabilityV1.ANDROID_CALENDAR_CREATE),
+        )
+
+        assertEquals(0, fixture.calendarWrites)
+        assertEquals(
+            "UNLOCKED_PRESENCE_REQUIRED",
+            Json.parseToJsonElement(result.payloadJson!!).jsonObject["errorCode"]?.jsonPrimitive?.content,
+        )
+    }
+
     private class Fixture(
         grantContacts: Boolean = false,
+        grantCalendar: Boolean = false,
         private val sinkAccepts: Boolean = false,
         private val approvalAllowed: Boolean = false,
         private val lockDuringApproval: Boolean = false,
@@ -382,6 +490,8 @@ class AssistantNodeCommandHandlerV1Test {
         private val lockDuringSmsApproval: Boolean = false,
         private val ambiguousSms: Boolean = false,
         private val smsResult: AndroidContactSmsSendV1 = AndroidContactSmsSendV1.Sent,
+        private val calendarApprovalAllowed: Boolean = false,
+        private val lockDuringCalendarApproval: Boolean = false,
     ) {
         var unlocked = true
         var statusReads = 0
@@ -396,6 +506,10 @@ class AssistantNodeCommandHandlerV1Test {
         var smsResolutions = 0
         var smsApprovalRequests = 0
         var smsSends = 0
+        var calendarReads = 0
+        var calendarResolutions = 0
+        var calendarApprovalRequests = 0
+        var calendarWrites = 0
         private var epochNow = NOW
         private var elapsedNow = 1_000L
         val leases = PresenceLeaseManager(
@@ -417,6 +531,13 @@ class AssistantNodeCommandHandlerV1Test {
             deviceStatusReader = AndroidDeviceStatusReaderV1 {
                 statusReads += 1
                 AndroidDeviceStatusSummaryV1(82, true, true)
+            },
+            calendarNextReader = AndroidCalendarNextReaderV1 { _, _ ->
+                calendarReads += 1
+                AndroidCalendarNextReadV1.Success(
+                    events = listOf(AndroidCalendarEventV1("Dentist", NOW + 60_000L, NOW + 3_660_000L, false)),
+                    truncated = false,
+                )
             },
             contactsSearchReader = AndroidContactsSearchReaderV1 { _, _ ->
                 contactsReads += 1
@@ -455,6 +576,18 @@ class AssistantNodeCommandHandlerV1Test {
                 smsSends += 1
                 smsResult
             },
+            calendarCreateResolver = AndroidCalendarCreateResolverV1 {
+                calendarResolutions += 1
+                AndroidCalendarCreateResolutionV1.Ready(AndroidCalendarCreateTargetV1(42L, "Personal"))
+            },
+            calendarCreateWriter = AndroidCalendarCreateWriterV1 { calendarId, title, start, end, allDay ->
+                calendarWrites += 1
+                assertEquals(42L, calendarId)
+                assertEquals("Dentist", title)
+                assertTrue(end > start)
+                assertFalse(allDay)
+                AndroidCalendarCreateWriteV1.Created
+            },
             nowEpochMs = { epochNow },
             newReceiptId = { RECEIPT },
         )
@@ -477,6 +610,11 @@ class AssistantNodeCommandHandlerV1Test {
                 if (lockDuringSmsApproval) unlocked = false
                 smsApprovalAllowed
             },
+            calendarCreateApprovalGate = AssistantCalendarCreateApprovalGateV1 {
+                calendarApprovalRequests += 1
+                if (lockDuringCalendarApproval) unlocked = false
+                calendarApprovalAllowed
+            },
             securityGate = { unlocked },
             privateResultSink = AssistantPrivateResultSinkV1 { delivery ->
                 privateDeliveries += 1
@@ -489,6 +627,9 @@ class AssistantNodeCommandHandlerV1Test {
         init {
             if (grantContacts) {
                 grantManager.grant(AssistantCapabilityV1.ANDROID_CONTACTS_SEARCH, SESSION, DEVICE)
+            }
+            if (grantCalendar) {
+                grantManager.grant(AssistantCapabilityV1.ANDROID_CALENDAR_NEXT, SESSION, DEVICE)
             }
         }
 
@@ -504,6 +645,20 @@ class AssistantNodeCommandHandlerV1Test {
                 AssistantCapabilityV1.ANDROID_SMS_SEND_CONTACT -> buildJsonObject {
                     put("query", "Jen")
                     put("message", "I will be there at six.")
+                }
+                AssistantCapabilityV1.ANDROID_CALENDAR_NEXT -> buildJsonObject {
+                    put("afterEpochMs", NOW)
+                    put("limit", 5)
+                }
+                AssistantCapabilityV1.ANDROID_CALENDAR_CREATE -> buildJsonObject {
+                    put("title", "Dentist")
+                    put("startEpochMs", NOW + 60_000L)
+                    put("endEpochMs", NOW + 3_660_000L)
+                    put("allDay", false)
+                }
+                AssistantCapabilityV1.WINDOWS_FILES_READ -> buildJsonObject {
+                    put("path", "C:/private.txt")
+                    put("maxBytes", 1_024)
                 }
                 else -> buildJsonObject {}
             }

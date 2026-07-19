@@ -69,6 +69,8 @@ $knownTools = @(
     "assistant_contacts_search",
     "assistant_phone_call",
     "assistant_sms_send",
+    "assistant_calendar_next",
+    "assistant_calendar_create",
     "assistant_memory_forget",
     "assistant_memory_remember"
 ) | Sort-Object

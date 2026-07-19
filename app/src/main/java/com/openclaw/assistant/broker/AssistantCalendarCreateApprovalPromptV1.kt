@@ -14,21 +14,17 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.openclaw.assistant.R
 
-internal object AssistantPrivateReadApprovalPromptV1 {
-    private const val CHANNEL_ID = "assistant_private_read_approvals"
+internal object AssistantCalendarCreateApprovalPromptV1 {
+    private const val CHANNEL_ID = "assistant_calendar_create_approvals"
 
-    fun present(
-        context: Context,
-        proposalId: String,
-        capability: AssistantCapabilityV1,
-    ): Boolean {
+    fun present(context: Context, proposalId: String): Boolean {
         val appContext = context.applicationContext
-        val intent = Intent(appContext, AssistantPrivateReadApprovalActivityV1::class.java)
-            .setData(Uri.parse("openclaw-assistant://private-read/$proposalId"))
-            .putExtra(AssistantPrivateReadApprovalActivityV1.EXTRA_PROPOSAL_ID, proposalId)
+        val intent = Intent(appContext, AssistantCalendarCreateApprovalActivityV1::class.java)
+            .setData(Uri.parse("openclaw-assistant://calendar-create/$proposalId"))
+            .putExtra(AssistantCalendarCreateApprovalActivityV1.EXTRA_PROPOSAL_ID, proposalId)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         val launched = runCatching { appContext.startActivity(intent) }.isSuccess
-        val notified = postNotification(appContext, intent, proposalId, capability)
+        val notified = postNotification(appContext, intent, proposalId)
         return launched || notified
     }
 
@@ -36,12 +32,7 @@ internal object AssistantPrivateReadApprovalPromptV1 {
         NotificationManagerCompat.from(context).cancel(notificationId(proposalId))
     }
 
-    private fun postNotification(
-        context: Context,
-        intent: Intent,
-        proposalId: String,
-        capability: AssistantCapabilityV1,
-    ): Boolean {
+    private fun postNotification(context: Context, intent: Intent, proposalId: String): Boolean {
         if (
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
@@ -55,7 +46,7 @@ internal object AssistantPrivateReadApprovalPromptV1 {
             context.getSystemService(NotificationManager::class.java).createNotificationChannel(
                 NotificationChannel(
                     CHANNEL_ID,
-                    context.getString(R.string.assistant_private_read_channel),
+                    context.getString(R.string.assistant_calendar_create_channel),
                     NotificationManager.IMPORTANCE_HIGH,
                 ),
             )
@@ -66,19 +57,13 @@ internal object AssistantPrivateReadApprovalPromptV1 {
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val capabilityLabel = when (capability) {
-            AssistantCapabilityV1.ANDROID_CONTACTS_SEARCH ->
-                context.getString(R.string.assistant_private_read_contacts)
-            AssistantCapabilityV1.ANDROID_CALENDAR_NEXT ->
-                context.getString(R.string.assistant_private_read_calendar)
-            else -> capability.wireName
-        }
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(context.applicationInfo.icon)
-            .setContentTitle(context.getString(R.string.assistant_private_read_title))
-            .setContentText(context.getString(R.string.assistant_private_read_notification, capabilityLabel))
+            .setContentTitle(context.getString(R.string.assistant_calendar_create_title))
+            .setContentText(context.getString(R.string.assistant_calendar_create_notification))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)
+            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
             .build()
@@ -88,5 +73,5 @@ internal object AssistantPrivateReadApprovalPromptV1 {
         }.getOrDefault(false)
     }
 
-    private fun notificationId(proposalId: String): Int = proposalId.hashCode()
+    private fun notificationId(proposalId: String): Int = proposalId.hashCode() xor CHANNEL_ID.hashCode()
 }

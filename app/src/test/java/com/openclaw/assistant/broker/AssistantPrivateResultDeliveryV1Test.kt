@@ -100,6 +100,78 @@ class AssistantPrivateResultDeliveryV1Test {
         assertFalse(rendered.contains('\u202e'))
     }
 
+    @Test
+    fun `calendar renderer speaks local event details without internal metadata`() {
+        val result = calendarResult(
+            buildJsonObject {
+                put("title", "Dentist")
+                put("startEpochMs", 1_774_210_400_000L)
+                put("endEpochMs", 1_774_214_000_000L)
+                put("allDay", false)
+            },
+        )
+
+        val rendered = AssistantPrivateResultSpeechRendererV1.render(
+            delivery(result = result, capability = AssistantCapabilityV1.ANDROID_CALENDAR_NEXT),
+        )
+
+        assertTrue(rendered!!.contains("Dentist"))
+        assertTrue(rendered.contains("Your next calendar event"))
+        assertFalse(rendered.contains("1774210400000"))
+    }
+
+    @Test
+    fun `calendar renderer rejects unknown fields and sanitizes title controls`() {
+        val invalid = calendarResult(
+            buildJsonObject {
+                put("title", "Private")
+                put("startEpochMs", 1_774_210_400_000L)
+                put("endEpochMs", 1_774_214_000_000L)
+                put("allDay", false)
+                put("location", "Secret")
+            },
+        )
+        val sanitized = calendarResult(
+            buildJsonObject {
+                put("title", "Dentist\u0000\u202e visit")
+                put("startEpochMs", 1_774_210_400_000L)
+                put("endEpochMs", 1_774_214_000_000L)
+                put("allDay", false)
+            },
+        )
+
+        assertNull(
+            AssistantPrivateResultSpeechRendererV1.render(
+                delivery(result = invalid, capability = AssistantCapabilityV1.ANDROID_CALENDAR_NEXT),
+            ),
+        )
+        val rendered = AssistantPrivateResultSpeechRendererV1.render(
+            delivery(result = sanitized, capability = AssistantCapabilityV1.ANDROID_CALENDAR_NEXT),
+        )
+        assertTrue(rendered!!.contains("Dentist visit"))
+        assertFalse(rendered.contains('\u0000'))
+        assertFalse(rendered.contains('\u202e'))
+    }
+
+    @Test
+    fun `all-day calendar renderer keeps the UTC provider date`() {
+        val result = calendarResult(
+            buildJsonObject {
+                put("title", "Trip")
+                put("startEpochMs", java.time.Instant.parse("2026-07-20T00:00:00Z").toEpochMilli())
+                put("endEpochMs", java.time.Instant.parse("2026-07-21T00:00:00Z").toEpochMilli())
+                put("allDay", true)
+            },
+        )
+
+        val rendered = AssistantPrivateResultSpeechRendererV1.render(
+            delivery(result = result, capability = AssistantCapabilityV1.ANDROID_CALENDAR_NEXT),
+        )
+
+        assertTrue(rendered!!.contains("July 20"))
+        assertFalse(rendered.contains("July 19"))
+    }
+
     private fun delivery(
         session: String = SESSION,
         device: String = DEVICE,
@@ -110,8 +182,9 @@ class AssistantPrivateResultDeliveryV1Test {
                 put("phoneNumber", "+1 250 555 0100")
             },
         ),
+        capability: AssistantCapabilityV1 = AssistantCapabilityV1.ANDROID_CONTACTS_SEARCH,
     ) = AssistantPrivateResultDeliveryV1(
-        capability = AssistantCapabilityV1.ANDROID_CONTACTS_SEARCH,
+        capability = capability,
         voiceSessionKey = session,
         targetDeviceId = device,
         result = result,
@@ -119,6 +192,10 @@ class AssistantPrivateResultDeliveryV1Test {
 
     private fun contactsResult(vararg contacts: JsonObject): JsonObject = buildJsonObject {
         put("contacts", JsonArray(contacts.toList()))
+    }
+
+    private fun calendarResult(vararg events: JsonObject): JsonObject = buildJsonObject {
+        put("events", JsonArray(events.toList()))
     }
 
     private companion object {

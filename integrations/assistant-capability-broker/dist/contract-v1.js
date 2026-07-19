@@ -11,7 +11,8 @@ export const MAX_CLOCK_SKEW_MS = 5_000;
 
 export const CAPABILITIES = Object.freeze({
   "android.device.status": Object.freeze({ risk: "LOW" }),
-  "android.calendar.next": Object.freeze({ risk: "LOW" }),
+  "android.calendar.next": Object.freeze({ risk: "MEDIUM" }),
+  "android.calendar.create": Object.freeze({ risk: "HIGH" }),
   "android.contacts.search": Object.freeze({ risk: "MEDIUM" }),
   "android.phone.call_contact": Object.freeze({ risk: "HIGH" }),
   "android.sms.send_contact": Object.freeze({ risk: "HIGH" }),
@@ -47,6 +48,14 @@ function optionalInteger(value, name, minimum, maximum) {
   return Number.isSafeInteger(value[name]) && value[name] >= minimum && value[name] <= maximum;
 }
 
+function requiredInteger(value, name, minimum, maximum) {
+  return Number.isSafeInteger(value[name]) && value[name] >= minimum && value[name] <= maximum;
+}
+
+function optionalBoolean(value, name) {
+  return !(name in value) || typeof value[name] === "boolean";
+}
+
 function requiredString(value, name, minimum, maximum) {
   return typeof value[name] === "string"
     && value[name].trim().length >= minimum
@@ -64,6 +73,16 @@ export function validateArguments(capability, args) {
       valid = exactKeys(args, ["afterEpochMs", "limit"])
         && optionalInteger(args, "afterEpochMs", 0, Number.MAX_SAFE_INTEGER)
         && optionalInteger(args, "limit", 1, 10);
+      break;
+    case "android.calendar.create":
+      valid = exactKeys(args, ["title", "startEpochMs", "endEpochMs", "allDay"])
+        && requiredString(args, "title", 1, 200)
+        && args.title.length <= 200
+        && requiredInteger(args, "startEpochMs", 0, Number.MAX_SAFE_INTEGER)
+        && requiredInteger(args, "endEpochMs", 1, Number.MAX_SAFE_INTEGER)
+        && optionalBoolean(args, "allDay")
+        && args.endEpochMs > args.startEpochMs
+        && args.endEpochMs - args.startEpochMs <= 31 * 24 * 60 * 60 * 1_000;
       break;
     case "android.contacts.search":
       valid = exactKeys(args, ["query", "limit"])

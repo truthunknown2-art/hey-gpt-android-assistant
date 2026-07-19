@@ -152,6 +152,8 @@ internal object AssistantWireCodecV1 {
         val allowed = when (capability) {
             AssistantCapabilityV1.ANDROID_DEVICE_STATUS ->
                 setOf("batteryLevelPercent", "charging", "screenInteractive")
+            AssistantCapabilityV1.ANDROID_CALENDAR_NEXT -> setOf("eventCount", "truncated")
+            AssistantCapabilityV1.ANDROID_CALENDAR_CREATE -> setOf("created")
             AssistantCapabilityV1.ANDROID_CONTACTS_SEARCH -> setOf("matchCount", "truncated")
             AssistantCapabilityV1.ANDROID_PHONE_CALL_CONTACT -> setOf("placedCall", "requiresTap")
             AssistantCapabilityV1.ANDROID_SMS_SEND_CONTACT -> setOf("sent")

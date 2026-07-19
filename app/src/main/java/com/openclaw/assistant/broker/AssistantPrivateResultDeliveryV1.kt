@@ -4,6 +4,13 @@ import java.io.Closeable
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.longOrNull
+import java.time.Instant
+import java.time.ZoneId
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 internal data class AssistantPrivateResultDeliveryV1(
     val capability: AssistantCapabilityV1,
@@ -71,7 +78,46 @@ internal object AssistantPrivateResultsV1 {
 internal object AssistantPrivateResultSpeechRendererV1 {
     fun render(delivery: AssistantPrivateResultDeliveryV1): String? = when (delivery.capability) {
         AssistantCapabilityV1.ANDROID_CONTACTS_SEARCH -> renderContacts(delivery.result)
+        AssistantCapabilityV1.ANDROID_CALENDAR_NEXT -> renderCalendar(delivery.result)
         else -> null
+    }
+
+    private fun renderCalendar(result: JsonObject): String? {
+        if (result.keys != setOf("events")) return null
+        val events = result["events"] as? JsonArray ?: return null
+        if (events.size > MAX_CALENDAR_EVENTS) return null
+        val zone = ZoneId.systemDefault()
+        val rendered = events.map { element ->
+            val event = element as? JsonObject ?: return null
+            if (event.keys != CALENDAR_EVENT_KEYS) return null
+            val rawTitle = event.string("title") ?: return null
+            val startEpochMs = (event["startEpochMs"] as? JsonPrimitive)?.longOrNull ?: return null
+            val endEpochMs = (event["endEpochMs"] as? JsonPrimitive)?.longOrNull ?: return null
+            val allDay = (event["allDay"] as? JsonPrimitive)?.booleanOrNull ?: return null
+            if (rawTitle.length !in 1..MAX_CALENDAR_TITLE_LENGTH || startEpochMs < 0 || endEpochMs <= startEpochMs) {
+                return null
+            }
+            val title = speechSafeCalendarTitle(rawTitle)
+            if (title.isBlank()) return null
+            val startInstant = runCatching { Instant.ofEpochMilli(startEpochMs) }.getOrNull() ?: return null
+            val endInstant = runCatching { Instant.ofEpochMilli(endEpochMs) }.getOrNull() ?: return null
+            if (allDay) {
+                "$title. All day on ${CALENDAR_DATE_FORMAT.format(startInstant.atZone(ZoneOffset.UTC))}."
+            } else {
+                val start = startInstant.atZone(zone)
+                val end = endInstant.atZone(zone)
+                if (start.toLocalDate() == end.toLocalDate()) {
+                    "$title. ${CALENDAR_DATE_TIME_FORMAT.format(start)} to ${CALENDAR_TIME_FORMAT.format(end)}."
+                } else {
+                    "$title. ${CALENDAR_DATE_TIME_FORMAT.format(start)} to ${CALENDAR_DATE_TIME_FORMAT.format(end)}."
+                }
+            }
+        }
+        return when (rendered.size) {
+            0 -> "You have no upcoming calendar events in the next 31 days."
+            1 -> "Your next calendar event is ${rendered.single()}"
+            else -> "Your next ${rendered.size} calendar events are ${rendered.joinToString(" ")}"
+        }
     }
 
     private fun renderContacts(result: JsonObject): String? {
@@ -118,6 +164,19 @@ internal object AssistantPrivateResultSpeechRendererV1 {
         .replace(WHITESPACE_PATTERN, " ")
         .trim()
 
+    private fun speechSafeCalendarTitle(value: String): String = value
+        .map { character ->
+            when {
+                character.isLetterOrDigit() -> character
+                character.isWhitespace() -> ' '
+                character in CALENDAR_TITLE_PUNCTUATION -> character
+                else -> ' '
+            }
+        }
+        .joinToString("")
+        .replace(WHITESPACE_PATTERN, " ")
+        .trim()
+
     private fun spokenPhoneNumber(value: String): String = buildList {
         value.forEach { character ->
             when {
@@ -132,6 +191,12 @@ internal object AssistantPrivateResultSpeechRendererV1 {
     private val CONTACT_ID_PATTERN = Regex("[0-9]{1,32}")
     private val WHITESPACE_PATTERN = Regex("\\s+")
     private val NAME_PUNCTUATION = setOf('\'', '-', '.')
+    private val CALENDAR_TITLE_PUNCTUATION = setOf('\'', '-', '.', ',', '&', '(', ')')
+    private val CALENDAR_EVENT_KEYS = setOf("title", "startEpochMs", "endEpochMs", "allDay")
+    private val CALENDAR_DATE_FORMAT = DateTimeFormatter.ofPattern("EEEE, MMMM d", Locale.getDefault())
+    private val CALENDAR_DATE_TIME_FORMAT =
+        DateTimeFormatter.ofPattern("EEEE, MMMM d 'at' h:mm a", Locale.getDefault())
+    private val CALENDAR_TIME_FORMAT = DateTimeFormatter.ofPattern("h:mm a", Locale.getDefault())
     private val DIGIT_WORDS = mapOf(
         '0' to "zero",
         '1' to "one",
@@ -147,4 +212,6 @@ internal object AssistantPrivateResultSpeechRendererV1 {
     private const val MAX_CONTACTS = 10
     private const val MAX_NAME_LENGTH = 200
     private const val MAX_NUMBER_LENGTH = 100
+    private const val MAX_CALENDAR_EVENTS = 10
+    private const val MAX_CALENDAR_TITLE_LENGTH = 200
 }
