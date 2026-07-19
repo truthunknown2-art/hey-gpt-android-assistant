@@ -4,6 +4,7 @@ import android.app.Application
 import android.app.Notification
 import android.content.Context
 import com.openclaw.assistant.gateway.GatewaySession
+import com.openclaw.assistant.broker.AndroidMessengerNotificationsReadV1
 import io.mockk.every
 import io.mockk.mockk
 import org.junit.Assert.assertEquals
@@ -120,6 +121,37 @@ class NotificationsHandlerTest {
         assertTrue(result.ok)
         assertTrue(payload.contains("Jen Thorndale"))
         assertTrue(payload.contains("See you at seven"))
+    }
+
+    @Test
+    fun `signed Messenger reader filters sender and returns typed private previews`() {
+        Settings.Secure.putString(
+            context.contentResolver,
+            "enabled_notification_listeners",
+            context.packageName,
+        )
+        val now = 2_000_000_000_000L
+        val history = MessengerNotificationHistory(context) { now }
+        history.record("Jen Thorndale", "See you at seven", now - 1_000)
+        history.record("Alex", "Unrelated preview", now - 500)
+        every { notificationManager.getActiveNotifications() } returns emptyList()
+
+        val result = NotificationsHandler(context, notificationManager, history)
+            .readAssistantMessengerNotifications("Jen", 1) as AndroidMessengerNotificationsReadV1.Success
+
+        assertEquals(1, result.notifications.size)
+        assertEquals("Jen Thorndale", result.notifications.single().sender)
+        assertEquals("See you at seven", result.notifications.single().textPreview)
+        assertFalse(result.truncated)
+    }
+
+    @Test
+    fun `signed Messenger reader requires notification access`() {
+        Settings.Secure.putString(context.contentResolver, "enabled_notification_listeners", "")
+
+        val result = handler.readAssistantMessengerNotifications(null, 3)
+
+        assertEquals(AndroidMessengerNotificationsReadV1.PermissionRequired, result)
     }
 
     @Test

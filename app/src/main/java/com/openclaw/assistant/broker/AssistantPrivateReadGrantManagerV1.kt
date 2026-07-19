@@ -116,6 +116,7 @@ internal class AssistantPrivateReadGrantManagerV1(
 internal fun AssistantCapabilityV1.requiresPrivateReadGrantV1(): Boolean = when (this) {
     AssistantCapabilityV1.ANDROID_CONTACTS_SEARCH,
     AssistantCapabilityV1.ANDROID_CALENDAR_NEXT,
+    AssistantCapabilityV1.ANDROID_MESSENGER_NOTIFICATIONS_READ,
     AssistantCapabilityV1.WINDOWS_FILES_READ,
     -> true
     else -> false

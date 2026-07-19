@@ -11,7 +11,6 @@ $ErrorActionPreference = "Stop"
 $PluginId = "voice-assistant-tools"
 $BrokerPluginId = "assistant-capability-broker"
 $MediaCommand = "media.play_search"
-$MessengerCommand = "notifications.list_package"
 $WindowsExecuteCommand = "assistant.windows.execute.v1"
 $RestrictedNodeCommands = @(
     "browser.proxy",
@@ -23,7 +22,6 @@ $RestrictedNodeCommands = @(
 )
 $ExpectedTools = @(
     "android_media_play",
-    "messenger_notifications_read",
     "web_fetch",
     "web_search"
 ) | Sort-Object
@@ -65,8 +63,7 @@ function Resolve-AssistantNodeId {
         $status = ((Invoke-OpenClaw nodes status --json) -join "`n") | ConvertFrom-Json
         $eligible = @($status.nodes | Where-Object {
             $_.connected -eq $true -and
-            @($_.commands) -contains $MediaCommand -and
-            @($_.commands) -contains $MessengerCommand
+            @($_.commands) -contains $MediaCommand
         })
         if ($eligible.Count -gt 0) { break }
         Start-Sleep -Seconds 2
@@ -75,14 +72,14 @@ function Resolve-AssistantNodeId {
     if ($RequestedNodeId) {
         $matches = @($eligible | Where-Object nodeId -eq $RequestedNodeId)
         if ($matches.Count -ne 1) {
-            throw "Configured node '$RequestedNodeId' is not the single connected node declaring both safe voice commands."
+            throw "Configured node '$RequestedNodeId' is not the single connected node declaring the safe media command."
         }
         return $RequestedNodeId
     }
 
     if ($eligible.Count -ne 1) {
         $labels = @($eligible | ForEach-Object { "$($_.displayName) [$($_.nodeId)]" }) -join ", "
-        throw "Expected exactly one connected Android assistant node declaring both safe commands; found $($eligible.Count): $labels"
+        throw "Expected exactly one connected Android assistant node declaring the safe media command; found $($eligible.Count): $labels"
     }
     return [string]$eligible[0].nodeId
 }
@@ -142,7 +139,6 @@ This agent is activated by a nearby wake phrase while the phone is unlocked. Kee
 
 - Use `web_search` and `web_fetch` for read-only web questions.
 - Use `android_media_play` for Spotify playback. For an exact track, first use `web_search` to find its public `open.spotify.com/track/` page, convert only the final 22-character ID to `spotify:track:ID`, and include `spotifyUri`, `title`, and `artist`. The tool owns the phone identity, command, and package selection. A launched request is not proof that playback started, so only say playback is confirmed when `playbackConfirmed` is true.
-- Use `messenger_notifications_read` only when the user asks about Messenger notifications. It returns privacy-minimized, read-only previews captured during the last seven days; it is not full Messenger chat history.
 - When available, use `assistant_contacts_search` for contact lookups. Matching names and numbers are spoken privately on the unlocked phone; do not ask for or invent private fields after the tool returns its sanitized receipt.
 - When available, use `assistant_phone_call` only after the user explicitly asks to call a named contact. The phone resolves the recipient privately and requires a fresh one-shot approval; never ask for or invent the phone number.
 - When available, use `assistant_sms_send` only after the user explicitly asks to send a text to a named contact. Pass the exact intended message, and let the phone privately resolve and display the recipient and full text for a fresh one-shot approval. Never claim delivery; `sent=true` confirms carrier submission only.
@@ -176,7 +172,8 @@ if ($NodeId) {
 
 $nodeConfig = ((Invoke-OpenClaw config get gateway.nodes) -join "`n") | ConvertFrom-Json
 $dangerousCaptureCommands = @("camera.clip", "camera.snap", "screen.record")
-$allowCommands = @(@($nodeConfig.allowCommands) + $MediaCommand + $MessengerCommand) |
+$allowCommands = @(@($nodeConfig.allowCommands) + $MediaCommand) |
+    Where-Object { $_ -ne "notifications.list_package" } |
     Where-Object { $_ -notin $dangerousCaptureCommands -and $_ -notin $RestrictedNodeCommands } |
     Sort-Object -Unique
 $denyCommands = @(@($nodeConfig.denyCommands) + @(
@@ -224,6 +221,9 @@ if ($brokerEntry.Count -eq 1) {
     }
     if ($brokerConfig.calendarWritesEnabled -eq $true -and $privateReadAgentId -eq $AgentId) {
         $ExpectedTools = @($ExpectedTools + "assistant_calendar_create") | Sort-Object -Unique
+    }
+    if ($brokerConfig.messengerReadsEnabled -eq $true -and $privateReadAgentId -eq $AgentId) {
+        $ExpectedTools = @($ExpectedTools + "messenger_notifications_read") | Sort-Object -Unique
     }
     $windowsFileAgentId = if ([string]$brokerConfig.windowsFileAgentId) { [string]$brokerConfig.windowsFileAgentId } else { "voice-main" }
     if ($brokerConfig.windowsFileSearchEnabled -eq $true -and $windowsFileAgentId -eq $AgentId) {
@@ -312,7 +312,7 @@ Invoke-OpenClaw gateway restart | Out-Null
 $runtimePlugin = ((Invoke-OpenClaw plugins inspect $PluginId --runtime --json) -join "`n") | ConvertFrom-Json
 $registeredTools = @($runtimePlugin.plugin.toolNames | ForEach-Object { [string]$_ }) |
     Sort-Object -Unique
-$missingPluginTools = @("android_media_play", "messenger_notifications_read") |
+$missingPluginTools = @("android_media_play") |
     Where-Object { $_ -notin $registeredTools }
 if ($missingPluginTools.Count -gt 0) {
     throw "Voice tools plugin did not register: $($missingPluginTools -join ', ')."

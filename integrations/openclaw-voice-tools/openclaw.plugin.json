@@ -2,7 +2,7 @@
   "id": "voice-assistant-tools",
   "name": "Voice Assistant Tools",
   "description": "Narrow Android tools for the ambient voice agent.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "configSchema": {
     "type": "object",
     "required": [
@@ -21,15 +21,11 @@
   },
   "contracts": {
     "tools": [
-      "android_media_play",
-      "messenger_notifications_read"
+      "android_media_play"
     ]
   },
   "toolMetadata": {
     "android_media_play": {
-      "optional": true
-    },
-    "messenger_notifications_read": {
       "optional": true
     }
   }

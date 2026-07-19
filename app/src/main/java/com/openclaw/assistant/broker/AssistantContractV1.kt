@@ -36,6 +36,10 @@ internal enum class AssistantCapabilityV1(
     ANDROID_CALENDAR_NEXT("android.calendar.next", AssistantRiskV1.MEDIUM),
     ANDROID_CALENDAR_CREATE("android.calendar.create", AssistantRiskV1.HIGH),
     ANDROID_CONTACTS_SEARCH("android.contacts.search", AssistantRiskV1.MEDIUM),
+    ANDROID_MESSENGER_NOTIFICATIONS_READ(
+        "android.messenger.notifications.read",
+        AssistantRiskV1.MEDIUM,
+    ),
     ANDROID_PHONE_CALL_CONTACT("android.phone.call_contact", AssistantRiskV1.HIGH),
     ANDROID_SMS_SEND_CONTACT("android.sms.send_contact", AssistantRiskV1.HIGH),
     WINDOWS_FILES_SEARCH("windows.files.search", AssistantRiskV1.LOW),
@@ -328,6 +332,11 @@ private object AssistantArgumentsV1 {
             arguments.hasOnly("query", "limit") &&
                 arguments.requiredString("query", 1..100) &&
                 arguments.optionalLong("limit", 1L..10L)
+        AssistantCapabilityV1.ANDROID_MESSENGER_NOTIFICATIONS_READ ->
+            arguments.hasOnly("sender", "limit") &&
+                arguments.optionalString("sender", 1..100) &&
+                arguments.optionalRawStringLength("sender", 100) &&
+                arguments.optionalLong("limit", 1L..10L)
         AssistantCapabilityV1.ANDROID_PHONE_CALL_CONTACT ->
             arguments.hasOnly("query") &&
                 arguments.requiredString("query", 1..100)
@@ -352,6 +361,14 @@ private object AssistantArgumentsV1 {
         val value = this[name] as? JsonPrimitive ?: return false
         return value.isString && value.content.trim().length in length
     }
+
+    private fun JsonObject.optionalString(name: String, length: IntRange): Boolean {
+        if (name !in this) return true
+        return requiredString(name, length)
+    }
+
+    private fun JsonObject.optionalRawStringLength(name: String, maximum: Int): Boolean =
+        name !in this || rawStringLength(name) in 1..maximum
 
     private fun JsonObject.requiredWindowsFileReference(name: String): Boolean {
         val value = this[name] as? JsonPrimitive ?: return false

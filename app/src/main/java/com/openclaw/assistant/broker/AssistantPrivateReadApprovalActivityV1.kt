@@ -68,6 +68,12 @@ internal class AssistantPrivateReadApprovalActivityV1 : ComponentActivity() {
                 val limit = pending.arguments["limit"]?.jsonPrimitive?.intOrNull ?: 5
                 getString(R.string.assistant_private_read_calendar_message, limit)
             }
+            AssistantCapabilityV1.ANDROID_MESSENGER_NOTIFICATIONS_READ -> {
+                val sender = pending.arguments["sender"]?.jsonPrimitive?.content.orEmpty()
+                    .ifBlank { getString(R.string.assistant_private_read_messenger_any_sender) }
+                val limit = pending.arguments["limit"]?.jsonPrimitive?.intOrNull ?: 3
+                getString(R.string.assistant_private_read_messenger_message, sender, limit)
+            }
             AssistantCapabilityV1.WINDOWS_FILES_READ -> {
                 val path = pending.arguments["path"]?.jsonPrimitive?.content.orEmpty()
                 val maxBytes = pending.arguments["maxBytes"]?.jsonPrimitive?.intOrNull ?: 16_384

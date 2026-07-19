@@ -66,6 +66,16 @@ calendar locally, then displays the real calendar, title, and local schedule in
 a secure one-shot approval. Only `created`, status, and a terminal receipt return
 to OpenClaw. A timeout or lost response becomes `UNKNOWN` and is never retried.
 
+When `messengerReadsEnabled` is explicitly set, the broker registers
+`messenger_notifications_read`. The model may provide only an optional bounded
+sender filter and result limit. Android reads retained `com.facebook.orca`
+notification previews under the same unlocked presence and 10-minute private-read
+grant used by other private reads, then speaks sender, preview, and time only
+through the bound phone voice session. OpenClaw receives only notification count,
+truncation, local-delivery status, and a terminal receipt. The legacy raw
+`notifications.list_package` command is removed from the advertised and
+dispatchable Android command surface.
+
 The broker creates one Ed25519 identity in its private state directory and
 reuses it across restarts. `assistant.broker.publicKey` returns only the raw
 public key, stable key ID, and SHA-256 fingerprint to an authenticated

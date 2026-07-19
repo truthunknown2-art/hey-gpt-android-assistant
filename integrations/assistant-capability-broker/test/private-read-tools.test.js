@@ -13,10 +13,12 @@ import {
   CONTACT_SMS_TOOL_NAME,
   CONTACTS_TOOL_NAME,
   EXECUTE_COMMAND,
+  MESSENGER_NOTIFICATIONS_TOOL_NAME,
   PRESENCE_COMMAND,
   callContactWithApproval,
   createCalendarEventWithApproval,
   readCalendarPrivately,
+  readMessengerNotificationsPrivately,
   registerPrivateReadTools,
   searchContactsPrivately,
   sendContactSmsWithApproval,
@@ -53,6 +55,7 @@ function fixture({
   smsSendEnabled = false,
   calendarReadsEnabled = false,
   calendarWritesEnabled = false,
+  messengerReadsEnabled = false,
 } = {}) {
   const stateDir = mkdtempSync(path.join(tmpdir(), "assistant-private-read-"));
   const ledger = new BrokerLedger(stateDir);
@@ -65,6 +68,7 @@ function fixture({
       smsSendEnabled,
       calendarReadsEnabled,
       calendarWritesEnabled,
+      messengerReadsEnabled,
       privateReadAgentId: "voice-main",
       androidNodeId: NODE_ID,
     },
@@ -509,6 +513,91 @@ describe("signed private-read tools", () => {
         errorCode: "RECEIPT_INVALID",
       });
       assert.equal(JSON.stringify(result).includes("Private appointment"), false);
+    } finally {
+      subject.close();
+    }
+  });
+
+  it("reads Messenger previews through a medium-risk private-delivery proposal", async () => {
+    const subject = fixture({
+      messengerReadsEnabled: true,
+      executeResponse: (proposal) => ({
+        ok: true,
+        payload: receiptFor(proposal, {
+          resultSummary: { notificationCount: 1, truncated: false },
+        }),
+      }),
+    });
+    try {
+      const result = await readMessengerNotificationsPrivately({
+        api: subject.api,
+        ledger: subject.ledger,
+        signingIdentity: subject.signingIdentity,
+        nodeId: NODE_ID,
+        voiceSessionKey: SESSION,
+        request: { sender: "Jen Thorndale", limit: 1 },
+      });
+
+      assert.deepEqual(result.details, {
+        status: "COMPLETED",
+        privateDelivery: "spoken_on_phone",
+        notificationCount: 1,
+        truncated: false,
+      });
+      const proposal = subject.calls[1].params.proposal;
+      assert.equal(proposal.capability, "android.messenger.notifications.read");
+      assert.equal(proposal.risk, "MEDIUM");
+      assert.deepEqual(proposal.arguments, { sender: "Jen Thorndale", limit: 1 });
+      assert.equal(JSON.stringify(result).includes("See you at seven"), false);
+    } finally {
+      subject.close();
+    }
+  });
+
+  it("registers Messenger private read only behind its explicit broker flag", () => {
+    const subject = fixture({ messengerReadsEnabled: true });
+    const names = [];
+    subject.api.registerTool = (tool) => names.push(tool.name);
+    try {
+      assert.equal(registerPrivateReadTools(subject.api, {
+        ledger: () => subject.ledger,
+        signingIdentity: () => subject.signingIdentity,
+      }), 2);
+      assert.deepEqual(names.sort(), [CONTACTS_TOOL_NAME, MESSENGER_NOTIFICATIONS_TOOL_NAME].sort());
+    } finally {
+      subject.close();
+    }
+  });
+
+  it("rejects Messenger receipts that smuggle preview text", async () => {
+    const subject = fixture({
+      executeResponse: (proposal) => ({
+        ok: true,
+        payload: receiptFor(proposal, {
+          resultSummary: {
+            notificationCount: 1,
+            truncated: false,
+            textPreview: "private preview",
+          },
+        }),
+      }),
+    });
+    try {
+      const result = await readMessengerNotificationsPrivately({
+        api: subject.api,
+        ledger: subject.ledger,
+        signingIdentity: subject.signingIdentity,
+        nodeId: NODE_ID,
+        voiceSessionKey: SESSION,
+        request: {},
+      });
+
+      assert.deepEqual(result.details, {
+        status: "UNKNOWN",
+        privateDelivery: "not_delivered",
+        errorCode: "RECEIPT_INVALID",
+      });
+      assert.equal(JSON.stringify(result).includes("private preview"), false);
     } finally {
       subject.close();
     }

@@ -96,6 +96,25 @@ internal fun interface AndroidContactsSearchReaderV1 {
     fun search(query: String, limit: Int): AndroidContactsSearchReadV1
 }
 
+internal data class AndroidMessengerNotificationV1(
+    val sender: String,
+    val textPreview: String,
+    val timestamp: Long,
+)
+
+internal sealed interface AndroidMessengerNotificationsReadV1 {
+    data class Success(
+        val notifications: List<AndroidMessengerNotificationV1>,
+        val truncated: Boolean,
+    ) : AndroidMessengerNotificationsReadV1
+
+    data object PermissionRequired : AndroidMessengerNotificationsReadV1
+}
+
+internal fun interface AndroidMessengerNotificationsReaderV1 {
+    fun read(sender: String?, limit: Int): AndroidMessengerNotificationsReadV1
+}
+
 internal data class AndroidContactCallTargetV1(
     val displayName: String,
     val phoneNumber: String,
@@ -208,6 +227,10 @@ internal class AssistantCapabilityExecutorV1(
         AndroidCalendarNextReadV1.PermissionRequired
     },
     private val contactsSearchReader: AndroidContactsSearchReaderV1,
+    private val messengerNotificationsReader: AndroidMessengerNotificationsReaderV1 =
+        AndroidMessengerNotificationsReaderV1 { _, _ ->
+            AndroidMessengerNotificationsReadV1.PermissionRequired
+        },
     private val privateReadAuthorizer: AssistantPrivateReadAuthorizerV1,
     private val contactCallResolver: AndroidContactCallResolverV1 = AndroidContactCallResolverV1 {
         AndroidContactCallResolutionV1.PermissionRequired
@@ -310,6 +333,8 @@ internal class AssistantCapabilityExecutorV1(
             ),
         )
         AssistantCapabilityV1.ANDROID_CONTACTS_SEARCH -> executeContactsSearch(proposal, startedAtMs)
+        AssistantCapabilityV1.ANDROID_MESSENGER_NOTIFICATIONS_READ ->
+            executeMessengerNotificationsRead(proposal, startedAtMs)
         AssistantCapabilityV1.ANDROID_PHONE_CALL_CONTACT -> AssistantExecutionOutcomeV1(
             receipt = receipt(
                 proposal = proposal,
@@ -992,6 +1017,88 @@ internal class AssistantCapabilityExecutorV1(
         )
     }
 
+    private fun executeMessengerNotificationsRead(
+        proposal: AssistantProposalV1,
+        startedAtMs: Long,
+    ): AssistantExecutionOutcomeV1 {
+        val authorized = runCatching {
+            privateReadAuthorizer.isAuthorized(
+                capability = proposal.capability,
+                voiceSessionKey = proposal.voiceSessionKey,
+                targetDeviceId = proposal.targetDeviceId,
+            )
+        }.getOrDefault(false)
+        if (!authorized) {
+            return AssistantExecutionOutcomeV1(
+                receipt = receipt(
+                    proposal = proposal,
+                    status = AssistantReceiptStatusV1.DENIED,
+                    startedAtMs = startedAtMs,
+                    errorCode = "PRIVATE_READ_GRANT_REQUIRED",
+                ),
+            )
+        }
+
+        val sender = proposal.arguments["sender"]?.jsonPrimitive?.content?.trim()
+        val limit = proposal.arguments["limit"]?.jsonPrimitive?.intOrNull ?: DEFAULT_MESSENGER_LIMIT
+        return runCatching { messengerNotificationsReader.read(sender, limit) }.fold(
+            onSuccess = { result ->
+                when (result) {
+                    AndroidMessengerNotificationsReadV1.PermissionRequired -> AssistantExecutionOutcomeV1(
+                        receipt = receipt(
+                            proposal = proposal,
+                            status = AssistantReceiptStatusV1.DENIED,
+                            startedAtMs = startedAtMs,
+                            errorCode = "NOTIFICATIONS_PERMISSION_REQUIRED",
+                        ),
+                    )
+                    is AndroidMessengerNotificationsReadV1.Success -> {
+                        val normalized = result.notifications.take(limit).map {
+                            AndroidMessengerNotificationV1(
+                                sender = it.sender.trim().take(MAX_MESSENGER_TEXT_LENGTH),
+                                textPreview = it.textPreview.trim().take(MAX_MESSENGER_TEXT_LENGTH),
+                                timestamp = it.timestamp.coerceAtLeast(0L),
+                            )
+                        }
+                        val truncated = result.truncated || result.notifications.size > limit
+                        AssistantExecutionOutcomeV1(
+                            receipt = receipt(
+                                proposal = proposal,
+                                status = AssistantReceiptStatusV1.COMPLETED,
+                                startedAtMs = startedAtMs,
+                                resultSummary = buildJsonObject {
+                                    put("notificationCount", JsonPrimitive(normalized.size))
+                                    put("truncated", JsonPrimitive(truncated))
+                                },
+                            ),
+                            privateResult = buildJsonObject {
+                                put("notifications", buildJsonArray {
+                                    normalized.forEach { notification ->
+                                        add(buildJsonObject {
+                                            put("sender", JsonPrimitive(notification.sender))
+                                            put("textPreview", JsonPrimitive(notification.textPreview))
+                                            put("timestamp", JsonPrimitive(notification.timestamp))
+                                        })
+                                    }
+                                })
+                            },
+                        )
+                    }
+                }
+            },
+            onFailure = {
+                AssistantExecutionOutcomeV1(
+                    receipt = receipt(
+                        proposal = proposal,
+                        status = AssistantReceiptStatusV1.FAILED,
+                        startedAtMs = startedAtMs,
+                        errorCode = "MESSENGER_NOTIFICATIONS_READ_FAILED",
+                    ),
+                )
+            },
+        )
+    }
+
     private fun receipt(
         proposal: AssistantProposalV1,
         status: AssistantReceiptStatusV1,
@@ -1022,6 +1129,8 @@ internal class AssistantCapabilityExecutorV1(
     private companion object {
         const val DEFAULT_CONTACT_LIMIT = 5
         const val DEFAULT_CALENDAR_LIMIT = 5
+        const val DEFAULT_MESSENGER_LIMIT = 3
+        const val MAX_MESSENGER_TEXT_LENGTH = 500
     }
 }
 

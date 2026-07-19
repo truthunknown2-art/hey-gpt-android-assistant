@@ -159,6 +159,37 @@ class AssistantCapabilityExecutorV1Test {
     }
 
     @Test
+    fun `authorized Messenger read keeps previews out of durable receipt`() {
+        val fixture = Fixture(messengerReadGranted = true)
+        val outcome = fixture.executor.execute(
+            fixture.signedMessenger(sender = "Jen", limit = 1),
+            DEVICE_ID,
+            SESSION_KEY,
+        )
+
+        assertEquals(AssistantReceiptStatusV1.COMPLETED, outcome.receipt.status)
+        assertEquals("1", outcome.receipt.resultSummary?.get("notificationCount")?.toString())
+        assertEquals(1, fixture.messengerReadCount)
+        assertTrue(outcome.privateResult.toString().contains("See you at seven"))
+        assertFalse(outcome.receipt.toString().contains("Jen Thorndale"))
+        assertFalse(outcome.receipt.toString().contains("See you at seven"))
+    }
+
+    @Test
+    fun `Messenger read requires grant before notification history access`() {
+        val fixture = Fixture(messengerReadGranted = false)
+        val outcome = fixture.executor.execute(
+            fixture.signedMessenger(),
+            DEVICE_ID,
+            SESSION_KEY,
+        )
+
+        assertEquals("PRIVATE_READ_GRANT_REQUIRED", outcome.receipt.errorCode)
+        assertEquals(0, fixture.messengerReadCount)
+        assertNull(outcome.privateResult)
+    }
+
+    @Test
     fun `prepared calendar creation writes only after approval path and returns no title`() {
         val fixture = Fixture()
         val signed = fixture.signedCalendarCreate()
@@ -203,6 +234,8 @@ class AssistantCapabilityExecutorV1Test {
         private val contactsPermission: Boolean = true,
         private val calendarReadGranted: Boolean = false,
         private val calendarReadPermission: Boolean = true,
+        private val messengerReadGranted: Boolean = false,
+        private val messengerReadPermission: Boolean = true,
         private val calendarCreateResolution: AndroidCalendarCreateResolutionV1 =
             AndroidCalendarCreateResolutionV1.Ready(AndroidCalendarCreateTargetV1(42L, "Personal")),
         private val calendarWriteResult: AndroidCalendarCreateWriteV1 = AndroidCalendarCreateWriteV1.Created,
@@ -212,6 +245,7 @@ class AssistantCapabilityExecutorV1Test {
         var readCount = 0
         var contactsReadCount = 0
         var calendarReadCount = 0
+        var messengerReadCount = 0
         var calendarResolutionCount = 0
         var calendarWriteCount = 0
         val leases = PresenceLeaseManager(
@@ -269,9 +303,30 @@ class AssistantCapabilityExecutorV1Test {
                     )
                 }
             },
+            messengerNotificationsReader = AndroidMessengerNotificationsReaderV1 { sender, limit ->
+                messengerReadCount += 1
+                if (!messengerReadPermission) {
+                    AndroidMessengerNotificationsReadV1.PermissionRequired
+                } else {
+                    assertTrue(sender == null || sender == "Jen")
+                    assertTrue(limit in 1..10)
+                    AndroidMessengerNotificationsReadV1.Success(
+                        notifications = listOf(
+                            AndroidMessengerNotificationV1(
+                                sender = "Jen Thorndale",
+                                textPreview = "See you at seven",
+                                timestamp = epochNow,
+                            ),
+                        ),
+                        truncated = false,
+                    )
+                }
+            },
             privateReadAuthorizer = AssistantPrivateReadAuthorizerV1 { capability, sessionKey, deviceId ->
                 ((privateReadGranted && capability == AssistantCapabilityV1.ANDROID_CONTACTS_SEARCH) ||
-                    (calendarReadGranted && capability == AssistantCapabilityV1.ANDROID_CALENDAR_NEXT)) &&
+                    (calendarReadGranted && capability == AssistantCapabilityV1.ANDROID_CALENDAR_NEXT) ||
+                    (messengerReadGranted &&
+                        capability == AssistantCapabilityV1.ANDROID_MESSENGER_NOTIFICATIONS_READ)) &&
                     sessionKey == SESSION_KEY &&
                     deviceId == DEVICE_ID
             },
@@ -322,6 +377,17 @@ class AssistantCapabilityExecutorV1Test {
                 put("startEpochMs", JsonPrimitive(epochNow + 60_000L))
                 put("endEpochMs", JsonPrimitive(endEpochMs))
                 put("allDay", JsonPrimitive(allDay))
+            },
+        )
+
+        fun signedMessenger(
+            sender: String? = null,
+            limit: Int? = null,
+        ): SignedAssistantProposalV1 = signed(
+            capability = AssistantCapabilityV1.ANDROID_MESSENGER_NOTIFICATIONS_READ,
+            arguments = buildJsonObject {
+                sender?.let { put("sender", JsonPrimitive(it)) }
+                limit?.let { put("limit", JsonPrimitive(it)) }
             },
         )
 

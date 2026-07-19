@@ -117,15 +117,13 @@ class InvokeDispatcherTest {
   }
 
   @Test
-  fun `Messenger notifications use the filtered read-only handler`() = runTest {
+  fun `legacy raw Messenger notification command is not dispatchable`() = runTest {
     val dispatcher = createDispatcher()
-    coEvery { notificationsHandler.handleMessengerList() } returns
-      GatewaySession.InvokeResult.ok("""{"notifications":[]}""")
 
-    val result = dispatcher.handleInvoke(OpenClawNotificationsCommand.ListMessenger.rawValue, null)
+    val result = dispatcher.handleInvoke("notifications.list_package", null)
 
-    assertEquals(true, result.ok)
-    assertEquals("""{"notifications":[]}""", result.payloadJson)
+    assertEquals(false, result.ok)
+    assertEquals("INVALID_REQUEST", result.error?.code)
   }
 
   @Test

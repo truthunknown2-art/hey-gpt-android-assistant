@@ -154,6 +154,55 @@ class AssistantPrivateResultDeliveryV1Test {
     }
 
     @Test
+    fun `Messenger renderer keeps previews local and strips control characters`() {
+        val result = buildJsonObject {
+            put("notifications", buildJsonArray {
+                add(buildJsonObject {
+                    put("sender", "Jen\u0000 Thorndale")
+                    put("textPreview", "See you at seven\u202e")
+                    put("timestamp", 1_774_210_400_000L)
+                })
+            })
+        }
+
+        val rendered = AssistantPrivateResultSpeechRendererV1.render(
+            delivery(
+                result = result,
+                capability = AssistantCapabilityV1.ANDROID_MESSENGER_NOTIFICATIONS_READ,
+            ),
+        )
+
+        assertTrue(rendered!!.contains("Jen Thorndale"))
+        assertTrue(rendered.contains("See you at seven"))
+        assertFalse(rendered.contains("1774210400000"))
+        assertFalse(rendered.contains('\u0000'))
+        assertFalse(rendered.contains('\u202e'))
+    }
+
+    @Test
+    fun `Messenger renderer rejects unknown fields`() {
+        val result = buildJsonObject {
+            put("notifications", buildJsonArray {
+                add(buildJsonObject {
+                    put("sender", "Jen")
+                    put("textPreview", "Private")
+                    put("timestamp", 1L)
+                    put("notificationKey", "must-not-leak")
+                })
+            })
+        }
+
+        assertNull(
+            AssistantPrivateResultSpeechRendererV1.render(
+                delivery(
+                    result = result,
+                    capability = AssistantCapabilityV1.ANDROID_MESSENGER_NOTIFICATIONS_READ,
+                ),
+            ),
+        )
+    }
+
+    @Test
     fun `all-day calendar renderer keeps the UTC provider date`() {
         val result = calendarResult(
             buildJsonObject {

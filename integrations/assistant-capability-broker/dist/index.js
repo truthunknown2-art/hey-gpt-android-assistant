@@ -141,6 +141,7 @@ export default {
       smsSendEnabled: { type: "boolean", default: false },
       calendarReadsEnabled: { type: "boolean", default: false },
       calendarWritesEnabled: { type: "boolean", default: false },
+      messengerReadsEnabled: { type: "boolean", default: false },
       privateReadAgentId: { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,63}$", default: "voice-main" },
       androidNodeId: { type: "string", pattern: "^[a-f0-9]{64}$" },
       windowsFileSearchEnabled: { type: "boolean", default: false },

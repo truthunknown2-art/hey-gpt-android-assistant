@@ -157,7 +157,6 @@ class ConnectionManager(
       // Notifications
       if (isNotificationListenerEnabled()) {
         add(OpenClawNotificationsCommand.List.rawValue)
-        add(OpenClawNotificationsCommand.ListMessenger.rawValue)
         add(OpenClawNotificationsCommand.Actions.rawValue)
       }
 

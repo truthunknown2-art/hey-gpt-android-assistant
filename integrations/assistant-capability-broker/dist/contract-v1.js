@@ -14,6 +14,7 @@ export const CAPABILITIES = Object.freeze({
   "android.calendar.next": Object.freeze({ risk: "MEDIUM" }),
   "android.calendar.create": Object.freeze({ risk: "HIGH" }),
   "android.contacts.search": Object.freeze({ risk: "MEDIUM" }),
+  "android.messenger.notifications.read": Object.freeze({ risk: "MEDIUM" }),
   "android.phone.call_contact": Object.freeze({ risk: "HIGH" }),
   "android.sms.send_contact": Object.freeze({ risk: "HIGH" }),
   "windows.files.search": Object.freeze({ risk: "LOW" }),
@@ -62,6 +63,10 @@ function requiredString(value, name, minimum, maximum) {
     && value[name].trim().length <= maximum;
 }
 
+function optionalString(value, name, minimum, maximum) {
+  return !(name in value) || requiredString(value, name, minimum, maximum);
+}
+
 function windowsFileReference(value) {
   if (typeof value !== "string" || value.length < 3 || value.length > 1_024) return false;
   const separator = value.indexOf(":");
@@ -101,6 +106,12 @@ export function validateArguments(capability, args) {
     case "android.contacts.search":
       valid = exactKeys(args, ["query", "limit"])
         && requiredString(args, "query", 1, 100)
+        && optionalInteger(args, "limit", 1, 10);
+      break;
+    case "android.messenger.notifications.read":
+      valid = exactKeys(args, ["sender", "limit"])
+        && optionalString(args, "sender", 1, 100)
+        && (!("sender" in args) || args.sender.length <= 100)
         && optionalInteger(args, "limit", 1, 10);
       break;
     case "android.phone.call_contact":

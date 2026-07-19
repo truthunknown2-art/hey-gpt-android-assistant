@@ -14,11 +14,11 @@ $CallToolName = "assistant_phone_call"
 $SmsToolName = "assistant_sms_send"
 $CalendarReadToolName = "assistant_calendar_next"
 $CalendarCreateToolName = "assistant_calendar_create"
+$MessengerReadToolName = "messenger_notifications_read"
 $PresenceCommand = "assistant.presence.v1"
 $ExecuteCommand = "assistant.execute.v1"
 $BaseVoiceTools = @(
     "android_media_play",
-    "messenger_notifications_read",
     "web_fetch",
     "web_search"
 )
@@ -137,7 +137,8 @@ if ($Disable) {
     $remainingConfig = ((Invoke-OpenClaw config get "plugins.entries.$PluginId.config") -join "`n") | ConvertFrom-Json
     $calendarStillEnabled =
         $remainingConfig.calendarReadsEnabled -eq $true -or
-        $remainingConfig.calendarWritesEnabled -eq $true
+        $remainingConfig.calendarWritesEnabled -eq $true -or
+        $remainingConfig.messengerReadsEnabled -eq $true
     $allowCommands = if ($calendarStillEnabled) {
         @(@($nodeConfig.allowCommands) + $PresenceCommand + $ExecuteCommand) | Sort-Object -Unique
     } else {
@@ -193,6 +194,7 @@ if (-not $Disable) {
             $SmsToolName,
             $CalendarReadToolName,
             $CalendarCreateToolName,
+            $MessengerReadToolName,
             "assistant_memory_remember",
             "assistant_memory_forget"
         )

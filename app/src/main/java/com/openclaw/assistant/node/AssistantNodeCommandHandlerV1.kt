@@ -347,6 +347,7 @@ internal class AssistantNodeCommandHandlerV1(
         private val PHONE_PRIVATE_READ_CAPABILITIES = setOf(
             AssistantCapabilityV1.ANDROID_CONTACTS_SEARCH,
             AssistantCapabilityV1.ANDROID_CALENDAR_NEXT,
+            AssistantCapabilityV1.ANDROID_MESSENGER_NOTIFICATIONS_READ,
         )
     }
 }

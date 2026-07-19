@@ -80,6 +80,7 @@ $knownTools = @(
     "assistant_calendar_create",
     "assistant_memory_forget",
     "assistant_memory_remember",
+    "messenger_notifications_read",
     "assistant_windows_files_read",
     "assistant_windows_files_search"
 ) | Sort-Object

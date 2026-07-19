@@ -3,6 +3,8 @@ package com.openclaw.assistant.node
 import android.content.Context
 import android.provider.Settings
 import com.openclaw.assistant.PermissionRequester
+import com.openclaw.assistant.broker.AndroidMessengerNotificationV1
+import com.openclaw.assistant.broker.AndroidMessengerNotificationsReadV1
 import com.openclaw.assistant.gateway.GatewaySession
 import com.openclaw.assistant.service.OpenClawNotificationListenerService
 import kotlinx.serialization.json.Json
@@ -54,25 +56,7 @@ class NotificationsHandler internal constructor(
 
         val payload = buildJsonObject {
             put("notifications", buildJsonArray {
-                val active = notificationManager.getActiveNotifications()
-                    .asSequence()
-                    .filter { it.packageName == MESSENGER_PACKAGE }
-                    .map { sbn ->
-                        MessengerNotificationPreview(
-                            sender = sbn.notification.extras
-                                .getCharSequence("android.title")
-                                ?.toString()
-                                .orEmpty(),
-                            textPreview = sbn.notification.extras
-                                .getCharSequence("android.text")
-                                ?.toString()
-                                .orEmpty(),
-                            timestamp = sbn.postTime,
-                        )
-                    }
-                (active + messengerHistory.recent().asSequence())
-                    .distinct()
-                    .sortedByDescending { it.timestamp }
+                messengerPreviews()
                     .take(MAX_VOICE_NOTIFICATIONS)
                     .forEach { preview ->
                         add(buildJsonObject {
@@ -90,6 +74,55 @@ class NotificationsHandler internal constructor(
             })
         }
         return GatewaySession.InvokeResult.ok(payload.toString())
+    }
+
+    internal fun readAssistantMessengerNotifications(
+        sender: String?,
+        limit: Int,
+    ): AndroidMessengerNotificationsReadV1 {
+        if (!isServiceEnabled()) return AndroidMessengerNotificationsReadV1.PermissionRequired
+        if (limit !in 1..MAX_PRIVATE_NOTIFICATIONS) {
+            return AndroidMessengerNotificationsReadV1.Success(emptyList(), truncated = false)
+        }
+        val senderFilter = sender?.trim()?.takeIf { it.isNotEmpty() }
+        val matching = runCatching {
+            messengerPreviews().filter { preview ->
+                senderFilter == null || preview.sender.contains(senderFilter, ignoreCase = true)
+            }
+        }.getOrElse { return AndroidMessengerNotificationsReadV1.PermissionRequired }
+        return AndroidMessengerNotificationsReadV1.Success(
+            notifications = matching.take(limit).map { preview ->
+                AndroidMessengerNotificationV1(
+                    sender = preview.sender,
+                    textPreview = preview.textPreview,
+                    timestamp = preview.timestamp,
+                )
+            },
+            truncated = matching.size > limit,
+        )
+    }
+
+    private fun messengerPreviews(): List<MessengerNotificationPreview> {
+        val active = notificationManager.getActiveNotifications()
+            .asSequence()
+            .filter { it.packageName == MESSENGER_PACKAGE }
+            .map { sbn ->
+                MessengerNotificationPreview(
+                    sender = sbn.notification.extras
+                        .getCharSequence("android.title")
+                        ?.toString()
+                        .orEmpty(),
+                    textPreview = sbn.notification.extras
+                        .getCharSequence("android.text")
+                        ?.toString()
+                        .orEmpty(),
+                    timestamp = sbn.postTime,
+                )
+            }
+        return (active + messengerHistory.recent().asSequence())
+            .distinct()
+            .sortedByDescending { it.timestamp }
+            .toList()
     }
 
     private suspend fun notificationPermissionError(): GatewaySession.InvokeResult? {
@@ -166,6 +199,7 @@ class NotificationsHandler internal constructor(
     companion object {
         const val MESSENGER_PACKAGE = "com.facebook.orca"
         private const val MAX_VOICE_NOTIFICATIONS = 20
+        private const val MAX_PRIVATE_NOTIFICATIONS = 10
         private const val MAX_NOTIFICATION_TEXT_CHARS = 500
     }
 }

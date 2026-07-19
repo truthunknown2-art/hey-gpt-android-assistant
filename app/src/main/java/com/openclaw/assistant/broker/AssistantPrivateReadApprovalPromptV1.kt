@@ -71,6 +71,8 @@ internal object AssistantPrivateReadApprovalPromptV1 {
                 context.getString(R.string.assistant_private_read_contacts)
             AssistantCapabilityV1.ANDROID_CALENDAR_NEXT ->
                 context.getString(R.string.assistant_private_read_calendar)
+            AssistantCapabilityV1.ANDROID_MESSENGER_NOTIFICATIONS_READ ->
+                context.getString(R.string.assistant_private_read_messenger)
             AssistantCapabilityV1.WINDOWS_FILES_READ ->
                 context.getString(R.string.assistant_private_read_windows_file)
             else -> capability.wireName

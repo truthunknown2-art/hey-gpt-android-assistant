@@ -120,7 +120,6 @@ enum class OpenClawLocationCommand(val rawValue: String) {
 
 enum class OpenClawNotificationsCommand(val rawValue: String) {
     List("notifications.list"),
-    ListMessenger("notifications.list_package"),
     Actions("notifications.actions"),
     ;
 

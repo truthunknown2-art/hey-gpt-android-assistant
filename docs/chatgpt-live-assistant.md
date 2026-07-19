@@ -93,7 +93,7 @@ result with `openclaw security audit --deep`.
 
 Build and install this fork before configuring the voice agents. The custom
 Android node must be connected and advertise the fixed signed commands plus the
-explicit legacy media/notification capabilities; each configuration script
+explicit legacy media capability; each configuration script
 fails closed if its required command surface is unavailable.
 
 Create the curated unlocked voice agent and the secure-lock agent once:
@@ -103,10 +103,10 @@ Create the curated unlocked voice agent and the secure-lock agent once:
 .\scripts\configure-locked-voice-agent.ps1
 ```
 
-The baseline `voice-main` agent has exactly four tools: `web_search`, `web_fetch`,
-`android_media_play`, and `messenger_notifications_read`. The Android wrappers
-are bound to one configured node ID and own the command and package selection;
-the model cannot choose an arbitrary node command, notification action, or app.
+The baseline `voice-main` agent has exactly three tools: `web_search`, `web_fetch`,
+and `android_media_play`. The Android wrapper is bound to one configured node ID
+and owns the command and package selection; the model cannot choose an arbitrary
+node command, notification action, or app.
 The agent cannot access generic browser, node, memory, shell/runtime, filesystem,
 messaging, Gateway administration, scheduling, or cross-session tools.
 
@@ -135,6 +135,17 @@ The script preserves the already enabled memory/contact/call/SMS tools and adds
 are spoken only on the unlocked phone under the scoped private-read approval.
 Every calendar creation shows the locally selected calendar, exact title, and
 local schedule in a fresh one-shot phone approval before insertion.
+
+Enable retained Messenger notification previews through the signed private-read
+broker, never the legacy raw notification command:
+
+```powershell
+.\scripts\enable-assistant-messenger.ps1
+```
+
+The first Messenger read in an unlocked voice session presents a 10-minute
+on-phone approval. Sender and preview text are spoken only on the phone; Luna
+receives only count, truncation, delivery status, and the terminal receipt.
 
 The locked agent must retain an empty effective tool list. It cannot browse,
 execute shell commands, read private stores, send messages, or invoke Android
@@ -178,12 +189,14 @@ Spotify control**. Register the displayed Android package and SHA-1 fingerprint
 in Spotify's Developer Dashboard, allowlist the displayed redirect URI, paste
 the public client ID, and tap **Save and authorize**. The App Remote SDK requests
 only Spotify's built-in remote-control authorization.
-- `messenger_notifications_read` invokes only `notifications.list_package`.
-  Android filters to `com.facebook.orca` before returning sender, a bounded text
-  preview, and timestamp. Up to 100 previews are retained in app-private storage
-  for seven days; at most 20 are returned. Expired previews are deleted on read,
-  notification-listener startup, and a scheduled next-expiry cleanup. Notification
-  keys, package names, and actions never reach the model.
+- `messenger_notifications_read` invokes only the broker-signed presence and
+  execute commands. Android filters retained notification previews to
+  `com.facebook.orca`, requires the scoped private-read grant, and speaks at most
+  ten matching previews through the bound local voice session. Up to 100 previews
+  remain in app-private storage for seven days. Sender, preview text, timestamp,
+  notification keys, package names, and actions never reach the model, Gateway
+  transcript, tool details, or durable receipt. The legacy
+  `notifications.list_package` command is neither advertised nor dispatchable.
 - `assistant_contacts_search` invokes only the broker's signed presence and
   execute commands. The broker fixes the phone identity and live voice session,
   and the Android executor owns approval, provider access, and private speech.

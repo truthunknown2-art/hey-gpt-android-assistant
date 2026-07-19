@@ -2,7 +2,7 @@
   "id": "assistant-capability-broker",
   "name": "Assistant Capability Broker",
   "description": "Durable typed plans and receipts for the agentic assistant.",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "configSchema": {
     "type": "object",
     "properties": {
@@ -32,6 +32,10 @@
         "default": false
       },
       "calendarWritesEnabled": {
+        "type": "boolean",
+        "default": false
+      },
+      "messengerReadsEnabled": {
         "type": "boolean",
         "default": false
       },
@@ -114,6 +118,7 @@
       "assistant_sms_send",
       "assistant_calendar_next",
       "assistant_calendar_create",
+      "messenger_notifications_read",
       "assistant_windows_files_search",
       "assistant_windows_files_read"
     ]
@@ -138,6 +143,9 @@
       "optional": true
     },
     "assistant_calendar_create": {
+      "optional": true
+    },
+    "messenger_notifications_read": {
       "optional": true
     },
     "assistant_windows_files_search": {

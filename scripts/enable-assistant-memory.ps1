@@ -143,6 +143,9 @@ if ($brokerConfig.calendarReadsEnabled -eq $true) {
 if ($brokerConfig.calendarWritesEnabled -eq $true) {
     $expected += "assistant_calendar_create"
 }
+if ($brokerConfig.messengerReadsEnabled -eq $true) {
+    $expected += "messenger_notifications_read"
+}
 $expected = @($expected | Sort-Object -Unique)
 $registrationMismatch =
     $registered.Count -ne $expected.Count -or

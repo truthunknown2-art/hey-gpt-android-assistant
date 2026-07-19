@@ -10,6 +10,7 @@ export const CONTACT_CALL_TOOL_NAME = "assistant_phone_call";
 export const CONTACT_SMS_TOOL_NAME = "assistant_sms_send";
 export const CALENDAR_NEXT_TOOL_NAME = "assistant_calendar_next";
 export const CALENDAR_CREATE_TOOL_NAME = "assistant_calendar_create";
+export const MESSENGER_NOTIFICATIONS_TOOL_NAME = "messenger_notifications_read";
 export const PRESENCE_COMMAND = "assistant.presence.v1";
 export const EXECUTE_COMMAND = "assistant.execute.v1";
 
@@ -18,6 +19,7 @@ const CONTACT_CALL_CAPABILITY = "android.phone.call_contact";
 const CONTACT_SMS_CAPABILITY = "android.sms.send_contact";
 const CALENDAR_NEXT_CAPABILITY = "android.calendar.next";
 const CALENDAR_CREATE_CAPABILITY = "android.calendar.create";
+const MESSENGER_NOTIFICATIONS_CAPABILITY = "android.messenger.notifications.read";
 const NODE_ID_PATTERN = /^[a-f0-9]{64}$/;
 const MAX_NODE_PAYLOAD_BYTES = 16 * 1024;
 const NODE_COMMAND_TIMEOUT_MS = 120_000;
@@ -156,6 +158,22 @@ function parseCalendarCreateSummary(value) {
   return summary;
 }
 
+function parseMessengerNotificationsSummary(value) {
+  const summary = asRecord(value, "RECEIPT_INVALID");
+  if (Object.keys(summary).sort().join("\0") !== ["notificationCount", "truncated"].sort().join("\0")) {
+    throw new PrivateReadToolError("RECEIPT_INVALID");
+  }
+  if (
+    !Number.isSafeInteger(summary.notificationCount) ||
+    summary.notificationCount < 0 ||
+    summary.notificationCount > 10 ||
+    typeof summary.truncated !== "boolean"
+  ) {
+    throw new PrivateReadToolError("RECEIPT_INVALID");
+  }
+  return summary;
+}
+
 function parseReceipt(value, proposal) {
   const receipt = parseNodePayload(value);
   if (!exactKeys(receipt, RECEIPT_REQUIRED_KEYS, RECEIPT_ALLOWED_KEYS)) {
@@ -191,6 +209,8 @@ function parseReceipt(value, proposal) {
       receipt.resultSummary = parseCalendarNextSummary(receipt.resultSummary);
     } else if (proposal.capability === CALENDAR_CREATE_CAPABILITY) {
       receipt.resultSummary = parseCalendarCreateSummary(receipt.resultSummary);
+    } else if (proposal.capability === MESSENGER_NOTIFICATIONS_CAPABILITY) {
+      receipt.resultSummary = parseMessengerNotificationsSummary(receipt.resultSummary);
     } else {
       throw new PrivateReadToolError("RECEIPT_INVALID");
     }
@@ -264,11 +284,22 @@ function resultForModel(receipt) {
           truncated: receipt.resultSummary.truncated,
         };
         break;
+      case MESSENGER_NOTIFICATIONS_CAPABILITY:
+        completedSummary = {
+          privateDelivery: "spoken_on_phone",
+          notificationCount: receipt.resultSummary.notificationCount,
+          truncated: receipt.resultSummary.truncated,
+        };
+        break;
       default:
         throw new PrivateReadToolError("RECEIPT_INVALID");
     }
   }
-  const privateRead = receipt.capability === CONTACTS_CAPABILITY || receipt.capability === CALENDAR_NEXT_CAPABILITY;
+  const privateRead = [
+    CONTACTS_CAPABILITY,
+    CALENDAR_NEXT_CAPABILITY,
+    MESSENGER_NOTIFICATIONS_CAPABILITY,
+  ].includes(receipt.capability);
   const payload = {
     status: receipt.status,
     ...completedSummary,
@@ -531,6 +562,68 @@ export async function readCalendarPrivately({
   return resultForModel(receipt);
 }
 
+export async function readMessengerNotificationsPrivately({
+  api,
+  ledger,
+  signingIdentity,
+  nodeId,
+  voiceSessionKey,
+  request,
+}) {
+  const rawSender = request?.sender;
+  const sender = typeof rawSender === "string" ? rawSender.trim() : undefined;
+  const limit = request?.limit ?? 3;
+  if (rawSender !== undefined && (typeof sender !== "string" || sender.length < 1 || sender.length > 100)) {
+    throw new PrivateReadToolError("ARGUMENT_SCHEMA");
+  }
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10) {
+    throw new PrivateReadToolError("ARGUMENT_SCHEMA");
+  }
+  const { nodes } = await api.runtime.nodes.list({ connected: true });
+  selectNode(nodes, nodeId);
+  const presence = parsePresence(await api.runtime.nodes.invoke({
+    nodeId,
+    command: PRESENCE_COMMAND,
+    params: {},
+    timeoutMs: PRESENCE_TIMEOUT_MS,
+    idempotencyKey: randomUUID(),
+  }));
+  const planId = randomUUID();
+  const capabilitySnapshotHash = canonicalHash({
+    contractVersion: CONTRACT_VERSION,
+    capabilities: [MESSENGER_NOTIFICATIONS_CAPABILITY],
+    targetDeviceId: nodeId,
+  });
+  ledger.createPlan({ planId, voiceSessionKey, capabilitySnapshotHash });
+  const proposal = createProposal({
+    capability: MESSENGER_NOTIFICATIONS_CAPABILITY,
+    arguments: { ...(sender ? { sender } : {}), limit },
+    targetDeviceId: nodeId,
+    voiceSessionKey,
+    presenceLeaseId: presence.presenceLeaseId,
+    planId,
+    lifetimeMs: 60_000,
+  });
+  const signed = signingIdentity.sign(proposal);
+  ledger.recordProposal(signed);
+  const startedAtMs = Date.now();
+  let receipt;
+  try {
+    const response = await api.runtime.nodes.invoke({
+      nodeId,
+      command: EXECUTE_COMMAND,
+      params: signed,
+      timeoutMs: NODE_COMMAND_TIMEOUT_MS,
+      idempotencyKey: proposal.idempotencyKey,
+    });
+    receipt = parseReceipt(response, proposal);
+  } catch (error) {
+    receipt = unknownReceipt(proposal, startedAtMs, controlledUnknownCode(error));
+  }
+  ledger.recordReceipt(receipt);
+  return resultForModel(receipt);
+}
+
 export async function createCalendarEventWithApproval({
   api,
   ledger,
@@ -610,7 +703,15 @@ export function registerPrivateReadTools(api, state) {
   const smsEnabled = api.pluginConfig?.smsSendEnabled === true;
   const calendarReadsEnabled = api.pluginConfig?.calendarReadsEnabled === true;
   const calendarWritesEnabled = api.pluginConfig?.calendarWritesEnabled === true;
-  if (!contactsEnabled && !callsEnabled && !smsEnabled && !calendarReadsEnabled && !calendarWritesEnabled) {
+  const messengerReadsEnabled = api.pluginConfig?.messengerReadsEnabled === true;
+  if (
+    !contactsEnabled &&
+    !callsEnabled &&
+    !smsEnabled &&
+    !calendarReadsEnabled &&
+    !calendarWritesEnabled &&
+    !messengerReadsEnabled
+  ) {
     return 0;
   }
   const agentId = typeof api.pluginConfig?.privateReadAgentId === "string"
@@ -758,6 +859,30 @@ export function registerPrivateReadTools(api, state) {
         });
       },
     }, { names: [CALENDAR_CREATE_TOOL_NAME], optional: true });
+    registered += 1;
+  }
+  if (messengerReadsEnabled) {
+    api.registerTool({
+      name: MESSENGER_NOTIFICATIONS_TOOL_NAME,
+      label: "Read Messenger notifications privately",
+      description: "Read retained Facebook Messenger notification previews from the configured unlocked Android phone. Preview text is spoken only on the phone and never returned to the model. This is bounded seven-day notification history, not full Messenger chat history. The first read in a voice session requires an on-phone 10-minute approval.",
+      parameters: {
+        type: "object",
+        properties: {
+          sender: { type: "string", minLength: 1, maxLength: 100 },
+          limit: { type: "integer", minimum: 1, maximum: 10, default: 3 },
+        },
+        additionalProperties: false,
+      },
+      execute: async (_toolCallId, request) => {
+        const ledger = state.ledger();
+        const signingIdentity = state.signingIdentity();
+        if (!ledger || !signingIdentity) throw new Error("assistant capability broker is unavailable");
+        return readMessengerNotificationsPrivately({
+          api, ledger, signingIdentity, nodeId, voiceSessionKey, request,
+        });
+      },
+    }, { names: [MESSENGER_NOTIFICATIONS_TOOL_NAME], optional: true });
     registered += 1;
   }
   return registered;

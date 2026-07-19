@@ -520,6 +520,9 @@
     <string name="assistant_contact_sms_deny">Cancel</string>
     <string name="assistant_private_read_calendar">upcoming calendar events</string>
     <string name="assistant_private_read_calendar_message">Allow the assistant to read and speak up to %1$d upcoming calendar events on this unlocked phone for 10 minutes?</string>
+    <string name="assistant_private_read_messenger">Messenger notification previews</string>
+    <string name="assistant_private_read_messenger_any_sender">any sender</string>
+    <string name="assistant_private_read_messenger_message">Allow OpenClaw to read and speak up to %2$d retained Messenger notification previews from %1$s? The previews stay on this unlocked phone. The permission expires after 10 minutes and does not provide full Messenger history.</string>
     <string name="assistant_private_read_windows_file">Windows file content</string>
     <string name="assistant_private_read_windows_file_message">Allow OpenClaw to read up to %2$d bytes from &quot;%1$s&quot; now, and other files in the configured Windows folders for 10 minutes during this unlocked voice session?</string>
     <string name="assistant_calendar_create_channel">Assistant calendar approvals</string>

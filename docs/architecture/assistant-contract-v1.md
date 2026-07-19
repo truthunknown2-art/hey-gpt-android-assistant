@@ -54,6 +54,7 @@ read-only foundations:
 - `android.device.status`
 - `android.calendar.next`
 - `android.contacts.search`
+- `android.messenger.notifications.read`
 - `windows.files.search`
 - `windows.files.read`
 
@@ -62,12 +63,13 @@ grant store is process-local, bound to the exact capability, voice session, and
 device, and revoked whenever the unlocked voice session ends. No grant survives
 process death, secure lock, or a new voice session.
 
-The Android executor currently implements `android.device.status` and an
-internal `android.contacts.search` adapter. Both revalidate the exact device,
+The Android executor currently implements `android.device.status`,
+`android.contacts.search`, and `android.messenger.notifications.read`. All
+revalidate the exact device,
 voice session, live unlocked-presence lease, proposal lifetime, argument hash,
 risk, and pinned Ed25519 signature. Contact lookup additionally requires a
 session/device-bound private-read authorization and Android Contacts permission.
-Names and phone numbers exist only in the Android execution outcome and the
+Contact fields and Messenger previews exist only in the Android execution outcome and the
 bound voice session's transient speech call; the durable receipt stores only
 match count and truncation. OpenClaw 2026.7.1 has no private tool-result channel:
 tool `content` is model input and `details` is for logs/UI. Therefore private
@@ -114,6 +116,14 @@ the stable phone voice-session key is derived from those values, and command,
 risk, lease, IDs, and signature come from trusted runtime state. Malformed,
 oversized, or privacy-smuggling node results become terminal `UNKNOWN` receipts
 and are not retried automatically.
+
+With `messengerReadsEnabled=true`, the broker registers the optional
+`messenger_notifications_read` tool under the same signed execution and private
+delivery boundary. An optional sender filter and bounded limit are the only
+model arguments. Sender, preview, and timestamp stay on Android and are spoken
+only by the active unlocked voice session; the receipt contains only count and
+truncation. The former raw `notifications.list_package` route is not advertised
+or dispatchable.
 
 The Android trust store validates that descriptor, stores it only in encrypted
 preferences after an explicit trust action, and treats a changed key as a hard

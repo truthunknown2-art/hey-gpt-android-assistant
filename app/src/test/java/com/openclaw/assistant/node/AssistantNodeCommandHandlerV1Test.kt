@@ -23,6 +23,9 @@ import com.openclaw.assistant.broker.AndroidContactsSearchReadV1
 import com.openclaw.assistant.broker.AndroidContactsSearchReaderV1
 import com.openclaw.assistant.broker.AndroidDeviceStatusReaderV1
 import com.openclaw.assistant.broker.AndroidDeviceStatusSummaryV1
+import com.openclaw.assistant.broker.AndroidMessengerNotificationV1
+import com.openclaw.assistant.broker.AndroidMessengerNotificationsReadV1
+import com.openclaw.assistant.broker.AndroidMessengerNotificationsReaderV1
 import com.openclaw.assistant.broker.AssistantCapabilityExecutorV1
 import com.openclaw.assistant.broker.AssistantCapabilityV1
 import com.openclaw.assistant.broker.AssistantPrivateReadGrantManagerV1
@@ -158,6 +161,24 @@ class AssistantNodeCommandHandlerV1Test {
             "COMPLETED",
             Json.parseToJsonElement(result.payloadJson!!).jsonObject["status"]?.jsonPrimitive?.content,
         )
+    }
+
+    @Test
+    fun `Messenger preview is delivered locally and never serialized`() = runTest {
+        val fixture = Fixture(grantMessenger = true, sinkAccepts = true)
+
+        val result = fixture.handler.handleExecute(
+            fixture.signedJson(AssistantCapabilityV1.ANDROID_MESSENGER_NOTIFICATIONS_READ),
+        )
+
+        assertTrue(result.ok)
+        assertEquals(1, fixture.messengerReads)
+        assertEquals(1, fixture.privateDeliveries)
+        assertFalse(result.payloadJson!!.contains("Jen Thorndale"))
+        assertFalse(result.payloadJson!!.contains("See you at seven"))
+        val payload = Json.parseToJsonElement(result.payloadJson!!).jsonObject
+        assertEquals("COMPLETED", payload["status"]?.jsonPrimitive?.content)
+        assertEquals("1", payload["resultSummary"]?.jsonObject?.get("notificationCount")?.jsonPrimitive?.content)
     }
 
     @Test
@@ -498,6 +519,7 @@ class AssistantNodeCommandHandlerV1Test {
     private class Fixture(
         grantContacts: Boolean = false,
         grantCalendar: Boolean = false,
+        grantMessenger: Boolean = false,
         private val sinkAccepts: Boolean = false,
         private val approvalAllowed: Boolean = false,
         private val lockDuringApproval: Boolean = false,
@@ -515,6 +537,7 @@ class AssistantNodeCommandHandlerV1Test {
         var unlocked = true
         var statusReads = 0
         var contactsReads = 0
+        var messengerReads = 0
         var privateDeliveries = 0
         var deliveredSessionKey: String? = null
         var deliveredDeviceId: String? = null
@@ -563,6 +586,19 @@ class AssistantNodeCommandHandlerV1Test {
                 if (lockOnContactsRead) unlocked = false
                 AndroidContactsSearchReadV1.Success(
                     listOf(AndroidContactMatchV1("101", "Jen Thorndale", "+1 250 555 0100")),
+                    truncated = false,
+                )
+            },
+            messengerNotificationsReader = AndroidMessengerNotificationsReaderV1 { _, _ ->
+                messengerReads += 1
+                AndroidMessengerNotificationsReadV1.Success(
+                    listOf(
+                        AndroidMessengerNotificationV1(
+                            sender = "Jen Thorndale",
+                            textPreview = "See you at seven",
+                            timestamp = NOW,
+                        ),
+                    ),
                     truncated = false,
                 )
             },
@@ -650,6 +686,13 @@ class AssistantNodeCommandHandlerV1Test {
             if (grantCalendar) {
                 grantManager.grant(AssistantCapabilityV1.ANDROID_CALENDAR_NEXT, SESSION, DEVICE)
             }
+            if (grantMessenger) {
+                grantManager.grant(
+                    AssistantCapabilityV1.ANDROID_MESSENGER_NOTIFICATIONS_READ,
+                    SESSION,
+                    DEVICE,
+                )
+            }
         }
 
         fun signedJson(capability: AssistantCapabilityV1): String {
@@ -674,6 +717,10 @@ class AssistantNodeCommandHandlerV1Test {
                     put("startEpochMs", NOW + 60_000L)
                     put("endEpochMs", NOW + 3_660_000L)
                     put("allDay", false)
+                }
+                AssistantCapabilityV1.ANDROID_MESSENGER_NOTIFICATIONS_READ -> buildJsonObject {
+                    put("sender", "Jen")
+                    put("limit", 1)
                 }
                 AssistantCapabilityV1.WINDOWS_FILES_READ -> buildJsonObject {
                     put("path", "documents:private.txt")

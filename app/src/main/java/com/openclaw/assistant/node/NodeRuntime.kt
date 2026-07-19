@@ -29,6 +29,7 @@ import com.openclaw.assistant.broker.AssistantCapabilityExecutorV1
 import com.openclaw.assistant.broker.AndroidCalendarCreateResolverV1
 import com.openclaw.assistant.broker.AndroidCalendarCreateWriterV1
 import com.openclaw.assistant.broker.AndroidCalendarNextReaderV1
+import com.openclaw.assistant.broker.AndroidMessengerNotificationsReaderV1
 import com.openclaw.assistant.broker.AndroidContactCallLauncherV1
 import com.openclaw.assistant.broker.AndroidContactCallResolverV1
 import com.openclaw.assistant.broker.AndroidContactSmsResolverV1
@@ -1092,6 +1093,8 @@ class NodeRuntime(context: Context) {
         deviceStatusReader = deviceHandler::readAssistantStatus,
         calendarNextReader = AndroidCalendarNextReaderV1(calendarHandler::readAssistantCalendarNext),
         contactsSearchReader = contactsHandler::readAssistantContacts,
+        messengerNotificationsReader =
+          AndroidMessengerNotificationsReaderV1(notificationsHandler::readAssistantMessengerNotifications),
         privateReadAuthorizer = grants,
         contactCallResolver = AndroidContactCallResolverV1(contactsHandler::resolveAssistantContactCall),
         contactCallLauncher = AndroidContactCallLauncherV1(phoneHandler::launchAssistantContactCall),

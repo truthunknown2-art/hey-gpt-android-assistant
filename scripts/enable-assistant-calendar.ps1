@@ -11,11 +11,11 @@ $ErrorActionPreference = "Stop"
 $PluginId = "assistant-capability-broker"
 $CalendarReadTool = "assistant_calendar_next"
 $CalendarCreateTool = "assistant_calendar_create"
+$MessengerReadTool = "messenger_notifications_read"
 $PresenceCommand = "assistant.presence.v1"
 $ExecuteCommand = "assistant.execute.v1"
 $BaseVoiceTools = @(
     "android_media_play",
-    "messenger_notifications_read",
     "web_fetch",
     "web_search"
 )
@@ -25,6 +25,7 @@ $BrokerTools = @(
     "assistant_sms_send",
     $CalendarReadTool,
     $CalendarCreateTool,
+    $MessengerReadTool,
     "assistant_memory_remember",
     "assistant_memory_forget"
 )
@@ -139,7 +140,8 @@ if ($Disable) {
     $otherAssistantCapabilitiesEnabled =
         $remainingConfig.privateReadsEnabled -eq $true -or
         $remainingConfig.phoneCallsEnabled -eq $true -or
-        $remainingConfig.smsSendEnabled -eq $true
+        $remainingConfig.smsSendEnabled -eq $true -or
+        $remainingConfig.messengerReadsEnabled -eq $true
     $nodeConfig = ((Invoke-OpenClaw config get gateway.nodes) -join "`n") | ConvertFrom-Json
     $allowCommands = if ($otherAssistantCapabilitiesEnabled) {
         @(@($nodeConfig.allowCommands) + $PresenceCommand + $ExecuteCommand) | Sort-Object -Unique

@@ -1,7 +1,5 @@
 const MEDIA_COMMAND = "media.play_search";
-const MESSENGER_COMMAND = "notifications.list_package";
 const SPOTIFY_PACKAGE = "com.spotify.music";
-const MAX_NOTIFICATIONS = 20;
 const MAX_TEXT_LENGTH = 500;
 
 const NODE_ID_PATTERN = /^[a-f0-9]{64}$/;
@@ -101,27 +99,6 @@ export async function playSpotify(api, nodeId, request) {
   };
 }
 
-function limitedText(value) {
-  return typeof value === "string" ? value.slice(0, MAX_TEXT_LENGTH) : "";
-}
-
-export function sanitizeMessengerNotifications(payload) {
-  const notifications = Array.isArray(payload.notifications) ? payload.notifications : [];
-  return notifications.slice(0, MAX_NOTIFICATIONS).map((item) => {
-    const notification = asRecord(item);
-    return {
-      sender: limitedText(notification.sender),
-      textPreview: limitedText(notification.textPreview),
-      timestamp: typeof notification.timestamp === "number" ? notification.timestamp : 0,
-    };
-  });
-}
-
-export async function readMessengerNotifications(api, nodeId) {
-  const payload = await invokeConfiguredNode(api, nodeId, MESSENGER_COMMAND, {});
-  return { notifications: sanitizeMessengerNotifications(payload) };
-}
-
 function jsonResult(payload) {
   return {
     content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
@@ -161,17 +138,6 @@ export default {
       },
       execute: async (_toolCallId, request) =>
         jsonResult(await playSpotify(api, nodeId, request)),
-    }, { optional: true });
-    api.registerTool({
-      name: "messenger_notifications_read",
-      label: "Read Messenger notifications",
-      description: "Read recent Facebook Messenger notification previews captured on the configured Android phone, including previews dismissed within the seven-day retention window.",
-      parameters: {
-        type: "object",
-        properties: {},
-        additionalProperties: false,
-      },
-      execute: async () => jsonResult(await readMessengerNotifications(api, nodeId)),
     }, { optional: true });
   },
 };
