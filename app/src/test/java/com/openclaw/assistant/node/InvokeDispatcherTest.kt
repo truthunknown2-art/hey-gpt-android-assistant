@@ -240,7 +240,7 @@ class InvokeDispatcherTest {
   fun `media search is dispatched to handler`() = runTest {
     val dispatcher = createDispatcher()
     val params = """{"query":"Miles Davis"}"""
-    every { mediaHandler.handlePlaySearch(params) } returns GatewaySession.InvokeResult.ok("{}")
+    coEvery { mediaHandler.handlePlaySearch(params) } returns GatewaySession.InvokeResult.ok("{}")
 
     val result = dispatcher.handleInvoke(OpenClawMediaCommand.PlaySearch.rawValue, params)
 

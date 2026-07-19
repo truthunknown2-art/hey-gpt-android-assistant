@@ -9,7 +9,7 @@ phrase as identity proof.
 | Private reads | Sender/title/count metadata may be immediate while unlocked. Bodies, PC file contents, full calendar notes, contacts, and durable-memory reads require a user-created 10-minute grant. | Adopted |
 | Memory writes | Only explicit `remember this` requests. No automatic extraction until a review UI exists. | Adopted |
 | Cross-lane memory | Securely locked voice remains separate and cannot access main durable memory. | Adopted |
-| Spotify assurance | Best-effort Android media request. Say `I sent that to Spotify`, never claim confirmed playback without a supported integration. | Adopted |
+| Spotify assurance | Use Android media-session play-from-search and require playing state plus matching metadata before claiming playback. The standard intent is an unconfirmed fallback. | Adopted |
 | High-risk confirmation | Visible on-phone tap for SMS, calls, replies, calendar/contact writes, and PC writes. Biometric is reserved for future account, security, purchase, or destructive-file actions; those remain disabled initially. | Adopted |
 | PC file roots | Default deny. The user selects exact readable roots and one writable Assistant Inbox through a local UI; no entire-drive access. | Adopted |
 | Offline Gateway | Hey GPT fails closed and states that OpenClaw is unavailable. It does not silently become a different local assistant. | Adopted |

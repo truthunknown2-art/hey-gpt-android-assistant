@@ -82,9 +82,16 @@ export async function playSpotify(api, nodeId, request) {
   return {
     launched: true,
     playbackConfirmed: payload.playbackConfirmed === true,
+    route: typeof payload.route === "string" ? payload.route : "unknown",
     query: normalizedQuery,
     ...(normalizedTitle ? { title: normalizedTitle } : {}),
     ...(normalizedArtist ? { artist: normalizedArtist } : {}),
+    ...(typeof payload.confirmedTitle === "string"
+      ? { confirmedTitle: payload.confirmedTitle.slice(0, MAX_TEXT_LENGTH) }
+      : {}),
+    ...(typeof payload.confirmedArtist === "string"
+      ? { confirmedArtist: payload.confirmedArtist.slice(0, MAX_TEXT_LENGTH) }
+      : {}),
   };
 }
 
@@ -134,7 +141,7 @@ export default {
     api.registerTool({
       name: "android_media_play",
       label: "Play Spotify",
-      description: "Request Spotify playback on the configured Android phone. Include title and artist whenever known so Spotify can start the track instead of showing search results.",
+      description: "Play Spotify on the configured Android phone. Include title and artist whenever known. playbackConfirmed is true only when Android reports playing state with matching track metadata.",
       parameters: {
         type: "object",
         required: ["query"],

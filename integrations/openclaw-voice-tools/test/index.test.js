@@ -37,7 +37,10 @@ describe("voice assistant tools", () => {
   it("binds Spotify playback to the configured node and fixed command", async () => {
     const { api, calls } = fakeApi(["media.play_search"], {
       launched: true,
-      playbackConfirmed: false,
+      playbackConfirmed: true,
+      route: "media_session",
+      confirmedTitle: "Kind of Blue",
+      confirmedArtist: "Miles Davis",
     });
 
     assert.deepEqual(await playSpotify(api, CUSTOM_NODE_ID, {
@@ -46,10 +49,13 @@ describe("voice assistant tools", () => {
       artist: "Miles Davis",
     }), {
       launched: true,
-      playbackConfirmed: false,
+      playbackConfirmed: true,
+      route: "media_session",
       query: "Miles Davis Kind of Blue",
       title: "Kind of Blue",
       artist: "Miles Davis",
+      confirmedTitle: "Kind of Blue",
+      confirmedArtist: "Miles Davis",
     });
     assert.equal(calls.length, 1);
     assert.equal(calls[0].nodeId, CUSTOM_NODE_ID);
@@ -68,6 +74,7 @@ describe("voice assistant tools", () => {
     assert.deepEqual(await playSpotify(api, CUSTOM_NODE_ID, { query: "Pearl Jam" }), {
       launched: true,
       playbackConfirmed: false,
+      route: "unknown",
       query: "Pearl Jam",
     });
   });

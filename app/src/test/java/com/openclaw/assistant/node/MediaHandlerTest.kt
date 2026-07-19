@@ -6,11 +6,13 @@ import android.provider.MediaStore
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import kotlinx.coroutines.test.runTest
 
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class)
@@ -19,7 +21,7 @@ class MediaHandlerTest {
   private val handler = MediaHandler(context, Json) { "ERROR" to (it.message ?: "error") }
 
   @Test
-  fun `missing Spotify returns explicit error`() {
+  fun `missing Spotify returns explicit error`() = runTest {
     val result = handler.handlePlaySearch("""{"query":"Daft Punk"}""")
 
     assertFalse(result.ok)
@@ -27,7 +29,7 @@ class MediaHandlerTest {
   }
 
   @Test
-  fun `arbitrary media package is rejected`() {
+  fun `arbitrary media package is rejected`() = runTest {
     val result = handler.handlePlaySearch(
       """{"query":"Daft Punk","packageName":"com.example.other"}""",
     )
@@ -65,5 +67,54 @@ class MediaHandlerTest {
       intent.getStringExtra(MediaStore.EXTRA_MEDIA_FOCUS),
     )
     assertEquals("Pearl Jam", intent.getStringExtra(MediaStore.EXTRA_MEDIA_ARTIST))
+  }
+
+  @Test
+  fun `confirmed media session receipt includes verified track`() = runTest {
+    val confirmedHandler = MediaHandler(
+      context = context,
+      json = Json,
+      invokeErrorFromThrowable = { "ERROR" to (it.message ?: "error") },
+      playbackExecutor = SpotifyPlaybackExecutor {
+        SpotifyPlaybackReceipt(
+          launched = true,
+          playbackConfirmed = true,
+          route = "media_session",
+          confirmedTitle = "Alive",
+          confirmedArtist = "Pearl Jam",
+        )
+      },
+      isPackageAvailable = { true },
+    )
+
+    val result = confirmedHandler.handlePlaySearch(
+      """{"query":"Pearl Jam Alive","title":"Alive","artist":"Pearl Jam"}""",
+    )
+
+    assertTrue(result.ok)
+    assertTrue(result.payloadJson.orEmpty().contains("\"playbackConfirmed\":true"))
+    assertTrue(result.payloadJson.orEmpty().contains("\"route\":\"media_session\""))
+    assertTrue(result.payloadJson.orEmpty().contains("\"confirmedTitle\":\"Alive\""))
+    assertTrue(result.payloadJson.orEmpty().contains("\"confirmedArtist\":\"Pearl Jam\""))
+  }
+
+  @Test
+  fun `metadata confirmation rejects wrong track`() {
+    val request = SpotifyPlaybackRequest("Alive Pearl Jam", "Alive", "Pearl Jam")
+
+    assertTrue(
+      AndroidSpotifyPlaybackExecutor.matchesRequestedMedia(
+        request,
+        actualTitle = "Alive - Remastered",
+        actualArtist = "Pearl Jam",
+      ),
+    )
+    assertFalse(
+      AndroidSpotifyPlaybackExecutor.matchesRequestedMedia(
+        request,
+        actualTitle = "Even Flow",
+        actualArtist = "Pearl Jam",
+      ),
+    )
   }
 }
