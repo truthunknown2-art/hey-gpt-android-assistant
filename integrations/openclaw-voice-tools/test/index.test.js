@@ -35,18 +35,40 @@ function fakeApi(commands, payload) {
 
 describe("voice assistant tools", () => {
   it("binds Spotify playback to the configured node and fixed command", async () => {
-    const { api, calls } = fakeApi(["media.play_search"], { success: true });
+    const { api, calls } = fakeApi(["media.play_search"], {
+      launched: true,
+      playbackConfirmed: false,
+    });
 
-    assert.deepEqual(await playSpotify(api, CUSTOM_NODE_ID, "Kind of Blue"), {
-      success: true,
-      query: "Kind of Blue",
+    assert.deepEqual(await playSpotify(api, CUSTOM_NODE_ID, {
+      query: "Miles Davis Kind of Blue",
+      title: "Kind of Blue",
+      artist: "Miles Davis",
+    }), {
+      launched: true,
+      playbackConfirmed: false,
+      query: "Miles Davis Kind of Blue",
+      title: "Kind of Blue",
+      artist: "Miles Davis",
     });
     assert.equal(calls.length, 1);
     assert.equal(calls[0].nodeId, CUSTOM_NODE_ID);
     assert.equal(calls[0].command, "media.play_search");
     assert.deepEqual(calls[0].params, {
-      query: "Kind of Blue",
+      query: "Miles Davis Kind of Blue",
+      title: "Kind of Blue",
+      artist: "Miles Davis",
       packageName: "com.spotify.music",
+    });
+  });
+
+  it("does not claim playback confirmation from a successful intent launch", async () => {
+    const { api } = fakeApi(["media.play_search"], { launched: true });
+
+    assert.deepEqual(await playSpotify(api, CUSTOM_NODE_ID, { query: "Pearl Jam" }), {
+      launched: true,
+      playbackConfirmed: false,
+      query: "Pearl Jam",
     });
   });
 

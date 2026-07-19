@@ -66,15 +66,26 @@ async function invokeConfiguredNode(api, nodeId, command, params) {
   return parsePayload(result);
 }
 
-export async function playSpotify(api, nodeId, query) {
+export async function playSpotify(api, nodeId, request) {
+  const { query, title = "", artist = "" } = request;
   const normalizedQuery = query.trim();
   if (!normalizedQuery) throw new Error("A Spotify search query is required");
+  const normalizedTitle = title.trim();
+  const normalizedArtist = artist.trim();
   const payload = await invokeConfiguredNode(api, nodeId, MEDIA_COMMAND, {
     query: normalizedQuery,
+    ...(normalizedTitle ? { title: normalizedTitle } : {}),
+    ...(normalizedArtist ? { artist: normalizedArtist } : {}),
     packageName: SPOTIFY_PACKAGE,
   });
-  if (payload.success !== true) throw new Error("Spotify playback was not confirmed");
-  return { success: true, query: normalizedQuery };
+  if (payload.launched !== true) throw new Error("Spotify did not accept the playback request");
+  return {
+    launched: true,
+    playbackConfirmed: payload.playbackConfirmed === true,
+    query: normalizedQuery,
+    ...(normalizedTitle ? { title: normalizedTitle } : {}),
+    ...(normalizedArtist ? { artist: normalizedArtist } : {}),
+  };
 }
 
 function limitedText(value) {
@@ -123,22 +134,24 @@ export default {
     api.registerTool({
       name: "android_media_play",
       label: "Play Spotify",
-      description: "Play a Spotify search on the configured Android assistant phone.",
+      description: "Request Spotify playback on the configured Android phone. Include title and artist whenever known so Spotify can start the track instead of showing search results.",
       parameters: {
         type: "object",
         required: ["query"],
         properties: {
           query: { type: "string", minLength: 1, maxLength: 300 },
+          title: { type: "string", minLength: 1, maxLength: 300 },
+          artist: { type: "string", minLength: 1, maxLength: 300 },
         },
         additionalProperties: false,
       },
-      execute: async (_toolCallId, { query }) =>
-        jsonResult(await playSpotify(api, nodeId, query)),
+      execute: async (_toolCallId, request) =>
+        jsonResult(await playSpotify(api, nodeId, request)),
     }, { optional: true });
     api.registerTool({
       name: "messenger_notifications_read",
       label: "Read Messenger notifications",
-      description: "Read active Facebook Messenger notification previews from the configured Android assistant phone.",
+      description: "Read recent Facebook Messenger notification previews captured on the configured Android phone, including previews dismissed within the seven-day retention window.",
       parameters: {
         type: "object",
         properties: {},

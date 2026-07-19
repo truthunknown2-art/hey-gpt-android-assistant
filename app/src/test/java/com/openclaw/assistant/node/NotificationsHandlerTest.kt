@@ -99,6 +99,35 @@ class NotificationsHandlerTest {
         assertFalse(payload.contains("action"))
     }
 
+    @Test
+    fun `Messenger list retains a recent preview after notification is dismissed`() = runBlocking {
+        Settings.Secure.putString(
+            context.contentResolver,
+            "enabled_notification_listeners",
+            context.packageName,
+        )
+        val now = 2_000_000_000_000L
+        val history = MessengerNotificationHistory(context) { now }
+        history.record("Jen Thorndale", "See you at seven", now - 1_000)
+        every { notificationManager.getActiveNotifications() } returns emptyList()
+
+        val result = NotificationsHandler(context, notificationManager, history).handleMessengerList()
+        val payload = result.payloadJson.orEmpty()
+
+        assertTrue(result.ok)
+        assertTrue(payload.contains("Jen Thorndale"))
+        assertTrue(payload.contains("See you at seven"))
+    }
+
+    @Test
+    fun `Messenger history drops previews older than seven days`() {
+        val now = 2_000_000_000_000L
+        val history = MessengerNotificationHistory(context) { now }
+        history.record("Old sender", "Old preview", now - 8L * 24 * 60 * 60 * 1000)
+
+        assertFalse(history.recent().any { it.sender == "Old sender" })
+    }
+
     private fun notification(
         packageName: String,
         key: String,

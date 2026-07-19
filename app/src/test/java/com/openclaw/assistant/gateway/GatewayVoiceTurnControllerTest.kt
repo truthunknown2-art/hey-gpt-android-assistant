@@ -60,6 +60,7 @@ class GatewayVoiceTurnControllerTest {
         assertTrue(send.contains("\"sessionKey\":\"agent:voice-main:voice-android-device\""))
         assertTrue(send.contains("\"agentId\":\"voice-main\""))
         assertFalse(send.contains("\"model\""))
+        assertFalse(send.contains("\"thinking\""))
     }
 
     @Test

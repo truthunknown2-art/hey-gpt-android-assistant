@@ -3,6 +3,7 @@ package com.openclaw.assistant.service
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
+import com.openclaw.assistant.node.MessengerNotificationHistory
 import com.openclaw.assistant.node.NotificationManager
 
 /**
@@ -10,6 +11,8 @@ import com.openclaw.assistant.node.NotificationManager
  * Requires BIND_NOTIFICATION_LISTENER_SERVICE permission and user to enable it in Settings.
  */
 class OpenClawNotificationListenerService : NotificationListenerService() {
+
+    private val messengerHistory by lazy { MessengerNotificationHistory(applicationContext) }
 
     companion object {
         @Volatile var manager: NotificationManager? = null
@@ -36,7 +39,10 @@ class OpenClawNotificationListenerService : NotificationListenerService() {
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
         super.onNotificationPosted(sbn)
-        sbn?.let { manager?.onNotificationPosted(it) }
+        sbn?.let {
+            manager?.onNotificationPosted(it)
+            messengerHistory.record(it)
+        }
         Log.d("OpenClawNotification", "Notification posted from ${sbn?.packageName}")
     }
 
@@ -51,6 +57,7 @@ class OpenClawNotificationListenerService : NotificationListenerService() {
         instance = this
         activeNotifications?.forEach { sbn ->
             manager?.onNotificationPosted(sbn)
+            messengerHistory.record(sbn)
         }
     }
 

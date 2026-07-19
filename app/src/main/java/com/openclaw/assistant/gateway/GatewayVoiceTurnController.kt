@@ -59,7 +59,6 @@ internal class GatewayVoiceTurnController(
                     put("sessionKey", JsonPrimitive(sessionKey))
                     put("agentId", JsonPrimitive(agentId))
                     put("message", JsonPrimitive(prompt))
-                    put("thinking", JsonPrimitive("low"))
                     put("timeoutMs", JsonPrimitive(REQUEST_TIMEOUT_MS))
                     put("idempotencyKey", JsonPrimitive(requestId))
                 }.toString()

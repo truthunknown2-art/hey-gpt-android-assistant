@@ -2,7 +2,7 @@
 param(
     [string]$Distro = "OpenClawGateway",
     [string]$AgentId = "voice-main",
-    [string]$Model = "openai/gpt-5.6-sol",
+    [string]$Model = "openai/gpt-5.6-luna",
     [string]$NodeId = ""
 )
 
@@ -121,11 +121,11 @@ function Add-VoicePolicy {
     $policy = @'
 ## Ambient Voice Policy
 
-This agent is activated by a nearby wake phrase while the phone is unlocked. Keep replies concise and conversational.
+This agent is activated by a nearby wake phrase while the phone is unlocked. Keep replies concise and conversational. Prefer one or two sentences and under 45 spoken words unless the user asks for detail.
 
 - Use `web_search` and `web_fetch` for read-only web questions.
-- Use `android_media_play` for Spotify playback. The tool owns the phone identity, command, and package selection.
-- Use `messenger_notifications_read` only when the user asks about Messenger notifications. It returns a privacy-minimized, read-only payload.
+- Use `android_media_play` for Spotify playback. Include `title` and `artist` whenever known; the tool owns the phone identity, command, and package selection. A launched request is not proof that playback started, so only say playback is confirmed when `playbackConfirmed` is true.
+- Use `messenger_notifications_read` only when the user asks about Messenger notifications. It returns privacy-minimized, read-only previews captured during the last seven days; it is not full Messenger chat history.
 - Never send or reply to messages, call anyone, purchase, post, upload, submit forms, change account or device settings, administer the Gateway, or look for a workaround when a capability is unavailable.
 - Do not claim an action succeeded unless the corresponding tool returned success.
 '@
@@ -225,6 +225,9 @@ $deny = @(
 ) | Sort-Object -Unique
 
 Invoke-OpenClaw config set "agents.list[$agentIndex].model" $Model | Out-Null
+Invoke-OpenClaw config set "agents.list[$agentIndex].thinkingDefault" off | Out-Null
+Invoke-OpenClaw config set "agents.list[$agentIndex].reasoningDefault" off | Out-Null
+Invoke-OpenClaw config set "agents.list[$agentIndex].fastModeDefault" true --strict-json | Out-Null
 Invoke-OpenClaw config set "agents.list[$agentIndex].tools.profile" minimal | Out-Null
 Invoke-OpenClaw config set "agents.list[$agentIndex].tools.alsoAllow" $alsoAllowJson --strict-json | Out-Null
 Invoke-OpenClaw config set "agents.list[$agentIndex].tools.deny" ($deny | ConvertTo-Json -Compress) --strict-json | Out-Null

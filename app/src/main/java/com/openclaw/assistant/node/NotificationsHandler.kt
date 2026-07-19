@@ -11,9 +11,10 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 
-class NotificationsHandler(
+class NotificationsHandler internal constructor(
     private val context: Context,
-    private val notificationManager: NotificationManager
+    private val notificationManager: NotificationManager,
+    private val messengerHistory: MessengerNotificationHistory = MessengerNotificationHistory(context),
 ) {
     private val json = Json { ignoreUnknownKeys = true }
     @Volatile private var permissionRequester: PermissionRequester? = null
@@ -53,33 +54,37 @@ class NotificationsHandler(
 
         val payload = buildJsonObject {
             put("notifications", buildJsonArray {
-                notificationManager.getActiveNotifications()
+                val active = notificationManager.getActiveNotifications()
                     .asSequence()
                     .filter { it.packageName == MESSENGER_PACKAGE }
+                    .map { sbn ->
+                        MessengerNotificationPreview(
+                            sender = sbn.notification.extras
+                                .getCharSequence("android.title")
+                                ?.toString()
+                                .orEmpty(),
+                            textPreview = sbn.notification.extras
+                                .getCharSequence("android.text")
+                                ?.toString()
+                                .orEmpty(),
+                            timestamp = sbn.postTime,
+                        )
+                    }
+                (active + messengerHistory.recent().asSequence())
+                    .distinct()
+                    .sortedByDescending { it.timestamp }
                     .take(MAX_VOICE_NOTIFICATIONS)
-                    .forEach { sbn ->
+                    .forEach { preview ->
                         add(buildJsonObject {
                             put(
                                 "sender",
-                                JsonPrimitive(
-                                    sbn.notification.extras
-                                        .getCharSequence("android.title")
-                                        ?.toString()
-                                        .orEmpty()
-                                        .take(MAX_NOTIFICATION_TEXT_CHARS),
-                                ),
+                                JsonPrimitive(preview.sender.take(MAX_NOTIFICATION_TEXT_CHARS)),
                             )
                             put(
                                 "textPreview",
-                                JsonPrimitive(
-                                    sbn.notification.extras
-                                        .getCharSequence("android.text")
-                                        ?.toString()
-                                        .orEmpty()
-                                        .take(MAX_NOTIFICATION_TEXT_CHARS),
-                                ),
+                                JsonPrimitive(preview.textPreview.take(MAX_NOTIFICATION_TEXT_CHARS)),
                             )
-                            put("timestamp", JsonPrimitive(sbn.postTime))
+                            put("timestamp", JsonPrimitive(preview.timestamp))
                         })
                     }
             })

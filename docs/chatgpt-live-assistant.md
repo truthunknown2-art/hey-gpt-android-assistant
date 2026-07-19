@@ -137,11 +137,14 @@ It receives two optional plugin tools that fail closed against one configured,
 connected Android node:
 
 - `android_media_play` invokes only `media.play_search` with Spotify fixed as
-  the package. The model supplies only a song, artist, album, or playlist query.
+  the package. The model supplies a bounded query plus optional song title and
+  artist. Android sends structured media focus fields when available so Spotify
+  can start a specific track instead of treating the request as plain search.
 - `messenger_notifications_read` invokes only `notifications.list_package`.
   Android filters to `com.facebook.orca` before returning sender, a bounded text
-  preview, and timestamp. Notification keys, package names, and actions never
-  reach the model.
+  preview, and timestamp. Up to 100 previews are retained in app-private storage
+  for seven days; at most 20 are returned. Notification keys, package names, and
+  actions never reach the model.
 
 Read-only web requests use `web_search` and `web_fetch`. Hosted search is
 pinned to OpenClaw's managed `codex` provider and its bounded hosted-search
@@ -149,9 +152,10 @@ worker, using the existing OpenAI/Codex authentication; there is no generic
 browser control in the unlocked voice policy.
 
 Notification access is not a Messenger inbox API. It can answer questions such
-as "What is the latest active Messenger notification from Sam?" only while that
-notification is still available. A durable message history would require a
-separate approved integration.
+as "What is the latest Messenger notification from Sam?" for previews captured
+during the retention window, including after notification dismissal. It cannot
+recover earlier chats that never generated a captured notification. Full inbox
+history would require a separate approved integration.
 
 Windows Phone Link does not automatically become an OpenClaw tool. It can remain
 a manual convenience; automating it would require a separately connected
@@ -182,8 +186,10 @@ not securely locked. A later transition to secure lock terminates the main lane.
   display-only overlay is optional and blocked UI continues headlessly.
 - A second turn without another wake phrase retains the first turn's context.
 - A later Hey GPT wake on the same installation reuses the same main voice key.
-- "Play a Spotify song" reaches the node advertising `media.play_search`.
-- An active Messenger notification can be read when notification access is on.
+- "Play a Spotify song" sends structured track/artist fields to the node
+  advertising `media.play_search` and physically starts the requested track.
+- A Messenger preview remains readable after notification dismissal when
+  notification access was enabled when it arrived.
 - Securely locked Hey GPT uses only `agent:locked-voice:*` and cannot call tools.
 - Locking during listening, request processing, or TTS ends the main session.
 - The explicit Live button opens the official ChatGPT app exactly once.
