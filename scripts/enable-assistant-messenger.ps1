@@ -13,6 +13,11 @@ $ToolName = "messenger_notifications_read"
 $PresenceCommand = "assistant.presence.v1"
 $ExecuteCommand = "assistant.execute.v1"
 $BlockedRawCommands = @(
+    "bridge.execute",
+    "bridge.grants",
+    "bridge.manifest",
+    "bridge.revoke",
+    "bridge.status",
     "notifications.actions",
     "notifications.list",
     "notifications.list_package"

@@ -89,7 +89,7 @@ class AssistantPrivateReadGrantManagerV1Test {
     @Test
     fun `Messenger grant requires the same normalized sender`() {
         val manager = AssistantPrivateReadGrantManagerV1(nowElapsedMs = { 1_000L })
-        manager.grant(MESSENGER, SESSION, DEVICE, messengerScope("  Jen   Thorndale ", 3))
+        manager.grant(MESSENGER, SESSION, DEVICE, messengerScope("  Jen\u00A0  Thorndale ", 3))
 
         assertTrue(manager.isAuthorized(MESSENGER, SESSION, DEVICE, messengerScope("jen thorndale", 1)))
         assertFalse(manager.isAuthorized(MESSENGER, SESSION, DEVICE, messengerScope("Alex", 1)))

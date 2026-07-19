@@ -5,6 +5,7 @@ import android.provider.Settings
 import com.openclaw.assistant.PermissionRequester
 import com.openclaw.assistant.broker.AndroidMessengerNotificationV1
 import com.openclaw.assistant.broker.AndroidMessengerNotificationsReadV1
+import com.openclaw.assistant.broker.normalizePrivateReadSenderV1
 import com.openclaw.assistant.gateway.GatewaySession
 import com.openclaw.assistant.service.OpenClawNotificationListenerService
 import kotlinx.serialization.json.Json
@@ -84,10 +85,11 @@ class NotificationsHandler internal constructor(
         if (limit !in 1..MAX_PRIVATE_NOTIFICATIONS) {
             return AndroidMessengerNotificationsReadV1.Success(emptyList(), truncated = false)
         }
-        val senderFilter = sender?.trim()?.takeIf { it.isNotEmpty() }
+        val senderFilter = sender?.let(::normalizePrivateReadSenderV1)?.takeIf { it.isNotEmpty() }
         val matching = runCatching {
             messengerPreviews().filter { preview ->
-                senderFilter == null || preview.sender.contains(senderFilter, ignoreCase = true)
+                senderFilter == null ||
+                    normalizePrivateReadSenderV1(preview.sender).contains(senderFilter)
             }
         }.getOrElse { return AndroidMessengerNotificationsReadV1.PermissionRequired }
         return AndroidMessengerNotificationsReadV1.Success(

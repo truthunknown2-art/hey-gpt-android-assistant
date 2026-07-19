@@ -172,20 +172,25 @@ if ($NodeId) {
 
 $nodeConfig = ((Invoke-OpenClaw config get gateway.nodes) -join "`n") | ConvertFrom-Json
 $dangerousCaptureCommands = @("camera.clip", "camera.snap", "screen.record")
-$blockedNotificationCommands = @(
+$blockedGatewayCommands = @(
+    "bridge.execute",
+    "bridge.grants",
+    "bridge.manifest",
+    "bridge.revoke",
+    "bridge.status",
     "notifications.actions",
     "notifications.list",
     "notifications.list_package"
 )
 $allowCommands = @(@($nodeConfig.allowCommands) + $MediaCommand) |
-    Where-Object { $_ -notin $blockedNotificationCommands } |
+    Where-Object { $_ -notin $blockedGatewayCommands } |
     Where-Object { $_ -notin $dangerousCaptureCommands -and $_ -notin $RestrictedNodeCommands } |
     Sort-Object -Unique
 $denyCommands = @(@($nodeConfig.denyCommands) + @(
     "calendar.add",
     "contacts.add",
     "sms.send"
-) + $blockedNotificationCommands + $RestrictedNodeCommands) | Sort-Object -Unique
+) + $blockedGatewayCommands + $RestrictedNodeCommands) | Sort-Object -Unique
 Invoke-OpenClaw config set gateway.nodes.allowCommands ($allowCommands | ConvertTo-Json -Compress) --strict-json | Out-Null
 Invoke-OpenClaw config set gateway.nodes.denyCommands ($denyCommands | ConvertTo-Json -Compress) --strict-json | Out-Null
 Invoke-OpenClaw config validate | Out-Null

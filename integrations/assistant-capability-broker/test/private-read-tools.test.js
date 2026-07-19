@@ -535,7 +535,7 @@ describe("signed private-read tools", () => {
         signingIdentity: subject.signingIdentity,
         nodeId: NODE_ID,
         voiceSessionKey: SESSION,
-        request: { sender: "Jen Thorndale", limit: 1 },
+        request: { sender: "  JEN\u00a0  Thorndale ", limit: 1 },
       });
 
       assert.deepEqual(result.details, {
@@ -547,7 +547,7 @@ describe("signed private-read tools", () => {
       const proposal = subject.calls[1].params.proposal;
       assert.equal(proposal.capability, "android.messenger.notifications.read");
       assert.equal(proposal.risk, "MEDIUM");
-      assert.deepEqual(proposal.arguments, { sender: "Jen Thorndale", limit: 1 });
+      assert.deepEqual(proposal.arguments, { sender: "jen thorndale", limit: 1 });
       assert.equal(JSON.stringify(result).includes("See you at seven"), false);
     } finally {
       subject.close();

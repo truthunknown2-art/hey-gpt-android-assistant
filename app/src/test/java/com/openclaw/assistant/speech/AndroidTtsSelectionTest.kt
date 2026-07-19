@@ -2,6 +2,7 @@ package com.openclaw.assistant.speech
 
 import java.util.Locale
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class AndroidTtsSelectionTest {
@@ -88,6 +89,101 @@ class AndroidTtsSelectionTest {
             null,
             selectBestAndroidTtsVoice(candidates, Locale.US, allowNetworkRequired = false),
         )
+    }
+
+    @Test
+    fun `failed private voice assignment never queues private text`() {
+        val selected = candidate("offline", "en-US", quality = 300, network = false)
+        var enqueueCalls = 0
+
+        val result = queuePrivateAndroidTtsSpeech(
+            prepareVoice = {
+                assignVerifiedOfflineAndroidTtsVoice(
+                    selected = selected,
+                    assignVoice = { false },
+                    effectiveVoice = { selected },
+                )
+            },
+            enqueue = {
+                enqueueCalls += 1
+                true
+            },
+        )
+
+        assertEquals(PrivateAndroidTtsQueueResult.VOICE_UNAVAILABLE, result)
+        assertEquals(0, enqueueCalls)
+    }
+
+    @Test
+    fun `private effective voice mismatch never queues private text`() {
+        val selected = candidate("offline", "en-US", quality = 300, network = false)
+        val different = candidate("different", "en-US", quality = 300, network = false)
+        var enqueueCalls = 0
+
+        val result = queuePrivateAndroidTtsSpeech(
+            prepareVoice = {
+                assignVerifiedOfflineAndroidTtsVoice(
+                    selected = selected,
+                    assignVoice = { true },
+                    effectiveVoice = { different },
+                )
+            },
+            enqueue = {
+                enqueueCalls += 1
+                true
+            },
+        )
+
+        assertEquals(PrivateAndroidTtsQueueResult.VOICE_UNAVAILABLE, result)
+        assertEquals(0, enqueueCalls)
+    }
+
+    @Test
+    fun `private network voice readback never queues private text`() {
+        val selected = candidate("offline", "en-US", quality = 300, network = false)
+        val networkReadback = candidate("offline", "en-US", quality = 300, network = true)
+        var enqueueCalls = 0
+
+        val result = queuePrivateAndroidTtsSpeech(
+            prepareVoice = {
+                assignVerifiedOfflineAndroidTtsVoice(
+                    selected = selected,
+                    assignVoice = { true },
+                    effectiveVoice = { networkReadback },
+                )
+            },
+            enqueue = {
+                enqueueCalls += 1
+                true
+            },
+        )
+
+        assertEquals(PrivateAndroidTtsQueueResult.VOICE_UNAVAILABLE, result)
+        assertEquals(0, enqueueCalls)
+    }
+
+    @Test
+    fun `failed private speech queue is reported immediately`() {
+        val selected = candidate("offline", "en-US", quality = 300, network = false)
+        var enqueueCalls = 0
+
+        val result = queuePrivateAndroidTtsSpeech(
+            prepareVoice = {
+                assignVerifiedOfflineAndroidTtsVoice(
+                    selected = selected,
+                    assignVoice = { true },
+                    effectiveVoice = { selected },
+                )
+            },
+            enqueue = {
+                enqueueCalls += 1
+                false
+            },
+        )
+
+        assertEquals(PrivateAndroidTtsQueueResult.QUEUE_FAILED, result)
+        assertEquals(1, enqueueCalls)
+        assertFalse(result == PrivateAndroidTtsQueueResult.QUEUED)
     }
 
     private fun candidate(

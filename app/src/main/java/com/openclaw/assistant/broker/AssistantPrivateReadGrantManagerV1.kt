@@ -160,7 +160,7 @@ internal fun AssistantProposalV1.privateReadScopeV1(): AssistantPrivateReadScope
 internal fun normalizePrivateReadSenderV1(sender: String): String = sender
     .trim()
     .lowercase(Locale.ROOT)
-    .split(Regex("\\s+"))
+    .split(Regex("[\\s\\p{Z}]+"))
     .filter(String::isNotEmpty)
     .joinToString(" ")
 

@@ -18,6 +18,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import io.mockk.coVerify
+import io.mockk.verify
 
 class InvokeDispatcherTest {
   private val canvas = mockk<CanvasController>()
@@ -212,23 +213,48 @@ class InvokeDispatcherTest {
   }
 
   @Test
-  fun `bridge status is dispatched to handler`() = runTest {
+  fun `Gateway bridge commands are rejected before reaching handler`() = runTest {
+    val dispatcher = createDispatcher()
+
+    OpenClawBridgeCommand.entries.forEach { command ->
+      val result = dispatcher.handleInvoke(command.rawValue, "{}")
+      assertEquals(false, result.ok)
+      assertEquals("LOCAL_BRIDGE_ACCESS_REQUIRED", result.error?.code)
+    }
+
+    verify(exactly = 0) { mobileBridgeHandler.handleStatus() }
+    coVerify(exactly = 0) { mobileBridgeHandler.handleManifest() }
+    coVerify(exactly = 0) { mobileBridgeHandler.handleExecute(any()) }
+    coVerify(exactly = 0) { mobileBridgeHandler.handleGrants() }
+    coVerify(exactly = 0) { mobileBridgeHandler.handleRevoke(any()) }
+  }
+
+  @Test
+  fun `local bridge status remains available on device`() = runTest {
     val dispatcher = createDispatcher()
     every { mobileBridgeHandler.handleStatus() } returns GatewaySession.InvokeResult.ok("""{"enabled":true}""")
 
-    val result = dispatcher.handleInvoke(OpenClawBridgeCommand.Status.rawValue, null)
+    val result = dispatcher.handleInvoke(
+      OpenClawBridgeCommand.Status.rawValue,
+      null,
+      InvocationOrigin.LOCAL_VOICE,
+    )
 
     assertEquals(true, result.ok)
     assertEquals("""{"enabled":true}""", result.payloadJson)
   }
 
   @Test
-  fun `bridge execute is dispatched to handler`() = runTest {
+  fun `local bridge execute remains available on device`() = runTest {
     val dispatcher = createDispatcher()
     val params = """{"requestId":"r1","capability":"device.info","arguments":{}}"""
     coEvery { mobileBridgeHandler.handleExecute(params) } returns GatewaySession.InvokeResult.ok("""{"status":"completed"}""")
 
-    val result = dispatcher.handleInvoke(OpenClawBridgeCommand.Execute.rawValue, params)
+    val result = dispatcher.handleInvoke(
+      OpenClawBridgeCommand.Execute.rawValue,
+      params,
+      InvocationOrigin.LOCAL_VOICE,
+    )
 
     assertEquals(true, result.ok)
     assertEquals("""{"status":"completed"}""", result.payloadJson)

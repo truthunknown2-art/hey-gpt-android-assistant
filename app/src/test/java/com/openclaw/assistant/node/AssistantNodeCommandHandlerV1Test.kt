@@ -212,6 +212,26 @@ class AssistantNodeCommandHandlerV1Test {
     }
 
     @Test
+    fun `Messenger equivalent sender spelling reuses only the canonical scope`() = runTest {
+        val fixture = Fixture(
+            grantMessenger = true,
+            messengerGrantSender = "jen thorndale",
+            sinkAccepts = true,
+        )
+
+        fixture.handler.handleExecute(
+            fixture.signedJson(
+                AssistantCapabilityV1.ANDROID_MESSENGER_NOTIFICATIONS_READ,
+                messengerSender = "  JEN\u00A0  Thorndale ",
+            ),
+        )
+
+        assertEquals(0, fixture.approvalRequests)
+        assertEquals(1, fixture.messengerReads)
+        assertEquals("jen thorndale", fixture.lastMessengerSender)
+    }
+
+    @Test
     fun `unavailable private sink fails without serializing private data`() = runTest {
         val fixture = Fixture(grantContacts = true, sinkAccepts = false)
 
@@ -550,6 +570,7 @@ class AssistantNodeCommandHandlerV1Test {
         grantContacts: Boolean = false,
         grantCalendar: Boolean = false,
         grantMessenger: Boolean = false,
+        private val messengerGrantSender: String = "jen",
         private val sinkAccepts: Boolean = false,
         private val approvalAllowed: Boolean = false,
         private val lockDuringApproval: Boolean = false,
@@ -568,6 +589,7 @@ class AssistantNodeCommandHandlerV1Test {
         var statusReads = 0
         var contactsReads = 0
         var messengerReads = 0
+        var lastMessengerSender: String? = null
         var privateDeliveries = 0
         var deliveredSessionKey: String? = null
         var deliveredDeviceId: String? = null
@@ -619,8 +641,9 @@ class AssistantNodeCommandHandlerV1Test {
                     truncated = false,
                 )
             },
-            messengerNotificationsReader = AndroidMessengerNotificationsReaderV1 { _, _ ->
+            messengerNotificationsReader = AndroidMessengerNotificationsReaderV1 { sender, _ ->
                 messengerReads += 1
+                lastMessengerSender = sender
                 AndroidMessengerNotificationsReadV1.Success(
                     listOf(
                         AndroidMessengerNotificationV1(
@@ -721,7 +744,10 @@ class AssistantNodeCommandHandlerV1Test {
                     AssistantCapabilityV1.ANDROID_MESSENGER_NOTIFICATIONS_READ,
                     SESSION,
                     DEVICE,
-                    com.openclaw.assistant.broker.AssistantPrivateReadScopeV1.Messenger("jen", 3),
+                    com.openclaw.assistant.broker.AssistantPrivateReadScopeV1.Messenger(
+                        messengerGrantSender,
+                        3,
+                    ),
                 )
             }
         }

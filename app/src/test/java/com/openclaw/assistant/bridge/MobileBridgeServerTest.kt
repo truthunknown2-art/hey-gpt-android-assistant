@@ -65,7 +65,7 @@ class MobileBridgeServerTest {
         assertTrue(resp.body.contains("\"status\":\"failed\""))
     }
 
-    @Test fun `execute low-risk capability succeeds`() = runBlocking {
+    @Test fun `bearer authenticated HTTP execute remains available independently`() = runBlocking {
         val token = config.tokenOrNull()!!
         val body = """{"requestId":"r2","capability":"device.info","arguments":{}}"""
         val resp = server.dispatch(MobileBridgeServer.HttpRequest("POST", "/execute", mapOf("authorization" to "Bearer $token"), body))

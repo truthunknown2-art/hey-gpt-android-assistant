@@ -22,6 +22,10 @@ const CALENDAR_CREATE_CAPABILITY = "android.calendar.create";
 const MESSENGER_NOTIFICATIONS_CAPABILITY = "android.messenger.notifications.read";
 const NODE_ID_PATTERN = /^[a-f0-9]{64}$/;
 const MAX_NODE_PAYLOAD_BYTES = 16 * 1024;
+
+function canonicalMessengerSender(value) {
+  return value.trim().replace(/\s+/gu, " ").toLowerCase();
+}
 const NODE_COMMAND_TIMEOUT_MS = 120_000;
 const PRESENCE_TIMEOUT_MS = 10_000;
 const RECEIPT_STATUSES = new Set(["COMPLETED", "DENIED", "CANCELLED", "FAILED", "UNKNOWN"]);
@@ -571,9 +575,12 @@ export async function readMessengerNotificationsPrivately({
   request,
 }) {
   const rawSender = request?.sender;
-  const sender = typeof rawSender === "string" ? rawSender.trim() : undefined;
+  const sender = typeof rawSender === "string" ? canonicalMessengerSender(rawSender) : undefined;
   const limit = request?.limit ?? 3;
-  if (rawSender !== undefined && (typeof sender !== "string" || sender.length < 1 || sender.length > 100)) {
+  if (
+    rawSender !== undefined &&
+    (typeof rawSender !== "string" || rawSender.length > 100 || sender.length < 1 || sender.length > 100)
+  ) {
     throw new PrivateReadToolError("ARGUMENT_SCHEMA");
   }
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10) {

@@ -11,6 +11,12 @@ internal data class AndroidTtsVoiceCandidate(
     val installed: Boolean,
 )
 
+internal enum class PrivateAndroidTtsQueueResult {
+    VOICE_UNAVAILABLE,
+    QUEUE_FAILED,
+    QUEUED,
+}
+
 internal fun selectAndroidTtsEngine(
     configuredEngine: String,
     installedEngines: Set<String>,
@@ -44,4 +50,32 @@ internal fun selectBestAndroidTtsVoice(
         )
         .firstOrNull()
         ?.name
+}
+
+internal fun assignVerifiedOfflineAndroidTtsVoice(
+    selected: AndroidTtsVoiceCandidate?,
+    assignVoice: (String) -> Boolean,
+    effectiveVoice: () -> AndroidTtsVoiceCandidate?,
+): Boolean {
+    if (selected == null || !selected.installed || selected.networkRequired) return false
+    if (!assignVoice(selected.name)) return false
+    val effective = effectiveVoice() ?: return false
+    return effective.name == selected.name &&
+        effective.languageTag.equals(selected.languageTag, ignoreCase = true) &&
+        effective.installed &&
+        !effective.networkRequired
+}
+
+internal fun queuePrivateAndroidTtsSpeech(
+    prepareVoice: () -> Boolean,
+    enqueue: () -> Boolean,
+): PrivateAndroidTtsQueueResult {
+    if (!runCatching(prepareVoice).getOrDefault(false)) {
+        return PrivateAndroidTtsQueueResult.VOICE_UNAVAILABLE
+    }
+    return if (runCatching(enqueue).getOrDefault(false)) {
+        PrivateAndroidTtsQueueResult.QUEUED
+    } else {
+        PrivateAndroidTtsQueueResult.QUEUE_FAILED
+    }
 }

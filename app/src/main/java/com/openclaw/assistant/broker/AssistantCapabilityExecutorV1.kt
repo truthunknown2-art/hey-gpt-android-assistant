@@ -1043,7 +1043,9 @@ internal class AssistantCapabilityExecutorV1(
             )
         }
 
-        val sender = proposal.arguments["sender"]?.jsonPrimitive?.content?.trim()
+        val sender = proposal.arguments["sender"]?.jsonPrimitive?.content
+            ?.let(::normalizePrivateReadSenderV1)
+            ?.takeIf(String::isNotEmpty)
         val limit = proposal.arguments["limit"]?.jsonPrimitive?.intOrNull ?: DEFAULT_MESSENGER_LIMIT
         return runCatching { messengerNotificationsReader.read(sender, limit) }.fold(
             onSuccess = { result ->

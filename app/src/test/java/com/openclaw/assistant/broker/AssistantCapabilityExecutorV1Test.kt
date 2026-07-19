@@ -308,7 +308,7 @@ class AssistantCapabilityExecutorV1Test {
                 if (!messengerReadPermission) {
                     AndroidMessengerNotificationsReadV1.PermissionRequired
                 } else {
-                    assertTrue(sender == null || sender == "Jen")
+                    assertTrue(sender == null || sender == "jen")
                     assertTrue(limit in 1..10)
                     AndroidMessengerNotificationsReadV1.Success(
                         notifications = listOf(

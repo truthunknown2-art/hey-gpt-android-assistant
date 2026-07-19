@@ -113,29 +113,42 @@ class AndroidTTSProvider(private val context: Context) : TTSProvider, PrivateTTS
         // Prefer the engine's best installed voice for the configured locale.
         try {
             val voices = tts.voices.orEmpty()
+            val candidates = voices.map(::voiceCandidate)
             val selectedName = selectBestAndroidTtsVoice(
-                candidates = voices.map { voice ->
-                    AndroidTtsVoiceCandidate(
-                        name = voice.name,
-                        languageTag = voice.locale.toLanguageTag(),
-                        quality = voice.quality,
-                        latency = voice.latency,
-                        networkRequired = voice.isNetworkConnectionRequired,
-                        installed = TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED !in voice.features.orEmpty(),
-                    )
-                },
+                candidates = candidates,
                 targetLocale = tts.language ?: locale,
                 allowNetworkRequired = !requireOffline,
             )
             val selectedVoice = voices.firstOrNull { it.name == selectedName }
-            if (requireOffline && selectedVoice == null) return false
-            selectedVoice?.let {
-                tts.voice = it
+            if (requireOffline) {
+                val selectedCandidate = candidates.firstOrNull { it.name == selectedName }
+                val verified = assignVerifiedOfflineAndroidTtsVoice(
+                    selected = selectedCandidate,
+                    assignVoice = { name ->
+                        val voice = voices.firstOrNull { it.name == name }
+                        voice != null && tts.setVoice(voice) == TextToSpeech.SUCCESS
+                    },
+                    effectiveVoice = { tts.voice?.let(::voiceCandidate) },
+                )
+                if (!verified) return false
+                val effective = tts.voice ?: return false
                 Log.i(
                     TAG,
-                    "Selected voice=${it.name} locale=${it.locale} quality=${it.quality} " +
-                        "network=${it.isNetworkConnectionRequired}",
+                    "Selected private voice=${effective.name} locale=${effective.locale} " +
+                        "quality=${effective.quality} network=${effective.isNetworkConnectionRequired}",
                 )
+            } else {
+                selectedVoice?.let {
+                    if (tts.setVoice(it) != TextToSpeech.SUCCESS) {
+                        Log.w(TAG, "Failed to select voice=${it.name}")
+                    } else {
+                        Log.i(
+                            TAG,
+                            "Selected voice=${it.name} locale=${it.locale} quality=${it.quality} " +
+                                "network=${it.isNetworkConnectionRequired}",
+                        )
+                    }
+                }
             }
         } catch (e: Exception) {
             Log.w(TAG, "Error selecting voice: ${e.message}")
@@ -254,22 +267,57 @@ class AndroidTTSProvider(private val context: Context) : TTSProvider, PrivateTTS
             }
         }
 
-        if (isInitialized) {
-            if (!setupVoice(requireOffline)) {
-                trySend(TTSState.Error(context.getString(R.string.tts_error_private_offline_unavailable)))
+        val activeTts = tts
+        if (!isInitialized || activeTts == null) {
+            trySend(TTSState.Error(context.getString(R.string.tts_error_not_initialized)))
+            close()
+            return@callbackFlow
+        }
+
+        if (requireOffline) {
+            when (queuePrivateAndroidTtsSpeech(
+                prepareVoice = { setupVoice(requireOffline = true) },
+                enqueue = {
+                    trySend(TTSState.Preparing)
+                    activeTts.setOnUtteranceProgressListener(listener)
+                    activeTts.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId) == TextToSpeech.SUCCESS
+                },
+            )) {
+                PrivateAndroidTtsQueueResult.VOICE_UNAVAILABLE -> {
+                    trySend(TTSState.Error(context.getString(R.string.tts_error_private_offline_unavailable)))
+                    close()
+                    return@callbackFlow
+                }
+                PrivateAndroidTtsQueueResult.QUEUE_FAILED -> {
+                    trySend(TTSState.Error(context.getString(R.string.tts_error_generic)))
+                    close()
+                    return@callbackFlow
+                }
+                PrivateAndroidTtsQueueResult.QUEUED -> Unit
+            }
+        } else {
+            setupVoice(requireOffline = false)
+            trySend(TTSState.Preparing)
+            activeTts.setOnUtteranceProgressListener(listener)
+            if (activeTts.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId) != TextToSpeech.SUCCESS) {
+                trySend(TTSState.Error(context.getString(R.string.tts_error_generic)))
                 close()
                 return@callbackFlow
             }
-            trySend(TTSState.Preparing)
-            tts?.setOnUtteranceProgressListener(listener)
-            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
-        } else {
-            trySend(TTSState.Error(context.getString(R.string.tts_error_not_initialized)))
-            close()
         }
         
         awaitClose { stop() }
     }
+
+    private fun voiceCandidate(voice: android.speech.tts.Voice): AndroidTtsVoiceCandidate =
+        AndroidTtsVoiceCandidate(
+            name = voice.name,
+            languageTag = voice.locale.toLanguageTag(),
+            quality = voice.quality,
+            latency = voice.latency,
+            networkRequired = voice.isNetworkConnectionRequired,
+            installed = TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED !in voice.features.orEmpty(),
+        )
     
     private fun splitText(text: String, maxLength: Int): List<String> {
         if (text.length <= maxLength) return listOf(text)

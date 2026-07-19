@@ -270,11 +270,21 @@ internal class InvokeDispatcher(
       OpenClawDeviceCommand.Health.rawValue -> deviceHandler.handleHealth()
 
       // Mobile Bridge compatibility commands
-      OpenClawBridgeCommand.Status.rawValue -> mobileBridgeHandler.handleStatus()
-      OpenClawBridgeCommand.Manifest.rawValue -> mobileBridgeHandler.handleManifest()
-      OpenClawBridgeCommand.Execute.rawValue -> mobileBridgeHandler.handleExecute(paramsJson)
-      OpenClawBridgeCommand.Grants.rawValue -> mobileBridgeHandler.handleGrants()
-      OpenClawBridgeCommand.Revoke.rawValue -> mobileBridgeHandler.handleRevoke(paramsJson)
+      OpenClawBridgeCommand.Status.rawValue -> localBridgeCommand(origin) {
+        mobileBridgeHandler.handleStatus()
+      }
+      OpenClawBridgeCommand.Manifest.rawValue -> localBridgeCommand(origin) {
+        mobileBridgeHandler.handleManifest()
+      }
+      OpenClawBridgeCommand.Execute.rawValue -> localBridgeCommand(origin) {
+        mobileBridgeHandler.handleExecute(paramsJson)
+      }
+      OpenClawBridgeCommand.Grants.rawValue -> localBridgeCommand(origin) {
+        mobileBridgeHandler.handleGrants()
+      }
+      OpenClawBridgeCommand.Revoke.rawValue -> localBridgeCommand(origin) {
+        mobileBridgeHandler.handleRevoke(paramsJson)
+      }
 
       AssistantNodeCommandHandlerV1.PRESENCE_COMMAND -> assistantHandler()?.handlePresence()
         ?: assistantExecutorDisabled()
@@ -305,6 +315,18 @@ internal class InvokeDispatcher(
     GatewaySession.InvokeResult.error(
       code = "LOCAL_NOTIFICATION_ACCESS_REQUIRED",
       message = "Generic notification access is restricted to the on-device assistant",
+    )
+  }
+
+  private suspend fun localBridgeCommand(
+    origin: InvocationOrigin,
+    invoke: suspend () -> GatewaySession.InvokeResult,
+  ): GatewaySession.InvokeResult = if (origin == InvocationOrigin.LOCAL_VOICE) {
+    invoke()
+  } else {
+    GatewaySession.InvokeResult.error(
+      code = "LOCAL_BRIDGE_ACCESS_REQUIRED",
+      message = "Mobile Bridge compatibility commands are not available through the Gateway",
     )
   }
 

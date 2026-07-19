@@ -146,6 +146,35 @@ class NotificationsHandlerTest {
     }
 
     @Test
+    fun `Messenger sender spelling variants select the same canonical result set`() {
+        Settings.Secure.putString(
+            context.contentResolver,
+            "enabled_notification_listeners",
+            context.packageName,
+        )
+        val now = 2_000_000_000_000L
+        val history = MessengerNotificationHistory(context) { now }
+        history.record("Jen\u00A0 Thorndale", "First preview", now - 1_000)
+        history.record("JEN THORNDALE", "Second preview", now - 500)
+        history.record("Alex", "Unrelated preview", now)
+        every { notificationManager.getActiveNotifications() } returns emptyList()
+        val subject = NotificationsHandler(context, notificationManager, history)
+
+        val spaced = subject.readAssistantMessengerNotifications(
+            "  Jen\u00A0  Thorndale ",
+            10,
+        ) as AndroidMessengerNotificationsReadV1.Success
+        val canonical = subject.readAssistantMessengerNotifications(
+            "jen thorndale",
+            10,
+        ) as AndroidMessengerNotificationsReadV1.Success
+
+        assertEquals(canonical, spaced)
+        assertEquals(2, canonical.notifications.size)
+        assertFalse(canonical.notifications.any { it.sender == "Alex" })
+    }
+
+    @Test
     fun `signed Messenger reader requires notification access`() {
         Settings.Secure.putString(context.contentResolver, "enabled_notification_listeners", "")
 

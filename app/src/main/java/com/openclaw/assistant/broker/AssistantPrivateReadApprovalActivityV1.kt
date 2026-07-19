@@ -7,6 +7,8 @@ import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import com.openclaw.assistant.R
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 
@@ -69,9 +71,11 @@ internal class AssistantPrivateReadApprovalActivityV1 : ComponentActivity() {
                 getString(R.string.assistant_private_read_calendar_message, limit)
             }
             AssistantCapabilityV1.ANDROID_MESSENGER_NOTIFICATIONS_READ -> {
-                val sender = pending.arguments["sender"]?.jsonPrimitive?.content.orEmpty()
+                val sender = (pending.arguments["sender"] as? JsonPrimitive)?.contentOrNull
+                    ?.let(::normalizePrivateReadSenderV1)
+                    .orEmpty()
                     .ifBlank { getString(R.string.assistant_private_read_messenger_any_sender) }
-                val limit = pending.arguments["limit"]?.jsonPrimitive?.intOrNull ?: 3
+                val limit = (pending.arguments["limit"] as? JsonPrimitive)?.intOrNull ?: 3
                 getString(R.string.assistant_private_read_messenger_message, sender, limit)
             }
             AssistantCapabilityV1.WINDOWS_FILES_READ -> {

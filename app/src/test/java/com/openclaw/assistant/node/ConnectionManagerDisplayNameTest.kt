@@ -6,6 +6,7 @@ import com.openclaw.assistant.SecurePrefs
 import com.openclaw.assistant.VoiceWakeMode
 import com.openclaw.assistant.protocol.OpenClawNotificationsCommand
 import com.openclaw.assistant.protocol.OpenClawCapability
+import com.openclaw.assistant.protocol.OpenClawBridgeCommand
 import io.mockk.mockk
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
@@ -27,7 +28,7 @@ class ConnectionManagerDisplayNameTest {
     }
 
     @Test
-    fun `custom node never advertises generic notification commands`() {
+    fun `custom node never advertises raw notification or bridge commands`() {
         val context = RuntimeEnvironment.getApplication()
         Settings.Secure.putString(
             context.contentResolver,
@@ -50,7 +51,11 @@ class ConnectionManagerDisplayNameTest {
 
         assertFalse(OpenClawNotificationsCommand.List.rawValue in commands)
         assertFalse(OpenClawNotificationsCommand.Actions.rawValue in commands)
+        OpenClawBridgeCommand.entries.forEach { command ->
+            assertFalse(command.rawValue in commands)
+        }
         assertFalse(OpenClawCapability.Notifications.rawValue in manager.buildCapabilities())
+        assertFalse(OpenClawCapability.Bridge.rawValue in manager.buildCapabilities())
     }
 
     @Test
