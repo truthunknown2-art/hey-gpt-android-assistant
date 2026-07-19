@@ -1,6 +1,11 @@
 package com.openclaw.assistant.node
 
 import com.openclaw.assistant.broker.AndroidContactMatchV1
+import com.openclaw.assistant.broker.AndroidContactCallLaunchV1
+import com.openclaw.assistant.broker.AndroidContactCallResolutionV1
+import com.openclaw.assistant.broker.AndroidContactCallResolverV1
+import com.openclaw.assistant.broker.AndroidContactCallTargetV1
+import com.openclaw.assistant.broker.AndroidContactCallLauncherV1
 import com.openclaw.assistant.broker.AndroidContactsSearchReadV1
 import com.openclaw.assistant.broker.AndroidContactsSearchReaderV1
 import com.openclaw.assistant.broker.AndroidDeviceStatusReaderV1
@@ -197,12 +202,88 @@ class AssistantNodeCommandHandlerV1Test {
         assertFalse(result.payloadJson!!.contains("Jen Thorndale"))
     }
 
+    @Test
+    fun `approved contact call resolves and launches locally without serializing recipient`() = runTest {
+        val fixture = Fixture(callApprovalAllowed = true)
+
+        val result = fixture.handler.handleExecute(
+            fixture.signedJson(AssistantCapabilityV1.ANDROID_PHONE_CALL_CONTACT),
+        )
+
+        assertTrue(result.ok)
+        assertEquals(1, fixture.callResolutions)
+        assertEquals(1, fixture.callApprovalRequests)
+        assertEquals(1, fixture.callLaunches)
+        assertFalse(result.payloadJson!!.contains("Jen Thorndale"))
+        assertFalse(result.payloadJson!!.contains("+1 250 555 0100"))
+        val payload = Json.parseToJsonElement(result.payloadJson!!).jsonObject
+        assertEquals("COMPLETED", payload["status"]?.jsonPrimitive?.content)
+        assertEquals("true", payload["resultSummary"]?.jsonObject?.get("placedCall")?.toString())
+        assertEquals("false", payload["resultSummary"]?.jsonObject?.get("requiresTap")?.toString())
+    }
+
+    @Test
+    fun `denied contact call never launches and never serializes recipient`() = runTest {
+        val fixture = Fixture(callApprovalAllowed = false)
+
+        val result = fixture.handler.handleExecute(
+            fixture.signedJson(AssistantCapabilityV1.ANDROID_PHONE_CALL_CONTACT),
+        )
+
+        assertTrue(result.ok)
+        assertEquals(1, fixture.callResolutions)
+        assertEquals(1, fixture.callApprovalRequests)
+        assertEquals(0, fixture.callLaunches)
+        assertFalse(result.payloadJson!!.contains("Jen Thorndale"))
+        assertEquals(
+            "CALL_APPROVAL_DENIED",
+            Json.parseToJsonElement(result.payloadJson!!).jsonObject["errorCode"]?.jsonPrimitive?.content,
+        )
+    }
+
+    @Test
+    fun `ambiguous contact call fails before approval or launch`() = runTest {
+        val fixture = Fixture(ambiguousCall = true, callApprovalAllowed = true)
+
+        val result = fixture.handler.handleExecute(
+            fixture.signedJson(AssistantCapabilityV1.ANDROID_PHONE_CALL_CONTACT),
+        )
+
+        assertTrue(result.ok)
+        assertEquals(1, fixture.callResolutions)
+        assertEquals(0, fixture.callApprovalRequests)
+        assertEquals(0, fixture.callLaunches)
+        assertEquals(
+            "CONTACT_AMBIGUOUS",
+            Json.parseToJsonElement(result.payloadJson!!).jsonObject["errorCode"]?.jsonPrimitive?.content,
+        )
+    }
+
+    @Test
+    fun `lock during call approval fails closed before launch`() = runTest {
+        val fixture = Fixture(callApprovalAllowed = true, lockDuringCallApproval = true)
+
+        val result = fixture.handler.handleExecute(
+            fixture.signedJson(AssistantCapabilityV1.ANDROID_PHONE_CALL_CONTACT),
+        )
+
+        assertTrue(result.ok)
+        assertEquals(0, fixture.callLaunches)
+        assertEquals(
+            "UNLOCKED_PRESENCE_REQUIRED",
+            Json.parseToJsonElement(result.payloadJson!!).jsonObject["errorCode"]?.jsonPrimitive?.content,
+        )
+    }
+
     private class Fixture(
         grantContacts: Boolean = false,
         private val sinkAccepts: Boolean = false,
         private val approvalAllowed: Boolean = false,
         private val lockDuringApproval: Boolean = false,
         private val lockOnContactsRead: Boolean = false,
+        private val callApprovalAllowed: Boolean = false,
+        private val lockDuringCallApproval: Boolean = false,
+        private val ambiguousCall: Boolean = false,
     ) {
         var unlocked = true
         var statusReads = 0
@@ -211,6 +292,9 @@ class AssistantNodeCommandHandlerV1Test {
         var deliveredSessionKey: String? = null
         var deliveredDeviceId: String? = null
         var approvalRequests = 0
+        var callResolutions = 0
+        var callApprovalRequests = 0
+        var callLaunches = 0
         private var epochNow = NOW
         private var elapsedNow = 1_000L
         val leases = PresenceLeaseManager(
@@ -242,6 +326,20 @@ class AssistantNodeCommandHandlerV1Test {
                 )
             },
             privateReadAuthorizer = grantManager,
+            contactCallResolver = AndroidContactCallResolverV1 {
+                callResolutions += 1
+                if (ambiguousCall) {
+                    AndroidContactCallResolutionV1.Ambiguous
+                } else {
+                    AndroidContactCallResolutionV1.Ready(
+                        AndroidContactCallTargetV1("Jen Thorndale", "+1 250 555 0100"),
+                    )
+                }
+            },
+            contactCallLauncher = AndroidContactCallLauncherV1 {
+                callLaunches += 1
+                AndroidContactCallLaunchV1.Launched(placedCall = true, requiresTap = false)
+            },
             nowEpochMs = { epochNow },
             newReceiptId = { RECEIPT },
         )
@@ -253,6 +351,11 @@ class AssistantNodeCommandHandlerV1Test {
                 approvalRequests += 1
                 if (lockDuringApproval) unlocked = false
                 approvalAllowed
+            },
+            contactCallApprovalGate = AssistantContactCallApprovalGateV1 {
+                callApprovalRequests += 1
+                if (lockDuringCallApproval) unlocked = false
+                callApprovalAllowed
             },
             securityGate = { unlocked },
             privateResultSink = AssistantPrivateResultSinkV1 { delivery ->
@@ -274,6 +377,9 @@ class AssistantNodeCommandHandlerV1Test {
                 AssistantCapabilityV1.ANDROID_CONTACTS_SEARCH -> buildJsonObject {
                     put("query", "Jen")
                     put("limit", 1)
+                }
+                AssistantCapabilityV1.ANDROID_PHONE_CALL_CONTACT -> buildJsonObject {
+                    put("query", "Jen")
                 }
                 else -> buildJsonObject {}
             }

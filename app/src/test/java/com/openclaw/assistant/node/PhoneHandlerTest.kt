@@ -3,6 +3,7 @@ package com.openclaw.assistant.node
 import android.Manifest
 import android.app.Application
 import android.content.Intent
+import com.openclaw.assistant.broker.AndroidContactCallLaunchV1
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -54,6 +55,24 @@ class PhoneHandlerTest {
 
     assertFalse(result.ok)
     assertEquals("INVALID_NUMBER", result.error?.code)
+    assertEquals(null, shadowOf(context).nextStartedActivity)
+  }
+
+  @Test
+  fun `assistant contact call returns only launch disposition`() {
+    shadowOf(context).grantPermissions(Manifest.permission.CALL_PHONE)
+
+    val result = handler.launchAssistantContactCall("+1 (604) 555-1234")
+
+    assertEquals(AndroidContactCallLaunchV1.Launched(true, false), result)
+    assertEquals(Intent.ACTION_CALL, shadowOf(context).nextStartedActivity.action)
+  }
+
+  @Test
+  fun `assistant contact call rejects unsafe number without launching`() {
+    val result = handler.launchAssistantContactCall("*#06#")
+
+    assertEquals(AndroidContactCallLaunchV1.InvalidNumber, result)
     assertEquals(null, shadowOf(context).nextStartedActivity)
   }
 }

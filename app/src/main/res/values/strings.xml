@@ -1095,6 +1095,12 @@
     <string name="assistant_broker_changed_message">The broker identity does not match the key already trusted by this phone. Agent actions remain disabled.\n\nTrusted:\n%1$s\n\nPresented:\n%2$s\n\nDo not proceed unless you intentionally reset broker trust.</string>
     <string name="assistant_private_read_title">Allow private phone access?</string>
     <string name="assistant_private_read_contacts">Contacts search</string>
+    <string name="assistant_contact_call_channel">Call approvals</string>
+    <string name="assistant_contact_call_title">Confirm call</string>
+    <string name="assistant_contact_call_notification">Unlock the phone to approve or deny this call.</string>
+    <string name="assistant_contact_call_message">Call %1$s at %2$s? This approval is valid once and cannot be reused.</string>
+    <string name="assistant_contact_call_approve">Call now</string>
+    <string name="assistant_contact_call_deny">Deny</string>
     <string name="assistant_private_read_notification">Review %1$s on your phone</string>
     <string name="assistant_private_read_contacts_message">OpenClaw wants to search your contacts for &quot;%1$s&quot; and return up to %2$d matches. The permission applies only to this unlocked voice session and expires after 10 minutes.</string>
     <string name="assistant_private_read_generic_message">OpenClaw wants to use %1$s during this unlocked voice session. The permission expires after 10 minutes.</string>

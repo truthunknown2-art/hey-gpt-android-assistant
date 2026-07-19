@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.core.content.ContextCompat
+import com.openclaw.assistant.broker.AndroidContactCallLaunchV1
 import com.openclaw.assistant.gateway.GatewaySession
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
@@ -27,6 +28,23 @@ class PhoneHandler(
   private val json: Json,
   private val invokeErrorFromThrowable: (Throwable) -> Pair<String, String>,
 ) {
+  internal fun launchAssistantContactCall(phoneNumber: String): AndroidContactCallLaunchV1 {
+    val normalizedNumber = SafePhoneNumber.normalizeOrNull(phoneNumber)
+      ?: return AndroidContactCallLaunchV1.InvalidNumber
+    return runCatching {
+      val canCall = ContextCompat.checkSelfPermission(context, Manifest.permission.CALL_PHONE) ==
+        PackageManager.PERMISSION_GRANTED
+      val action = if (canCall) Intent.ACTION_CALL else Intent.ACTION_DIAL
+      context.startActivity(Intent(action, Uri.fromParts("tel", normalizedNumber, null)).apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      })
+      AndroidContactCallLaunchV1.Launched(
+        placedCall = canCall,
+        requiresTap = !canCall,
+      )
+    }.getOrDefault(AndroidContactCallLaunchV1.Failed)
+  }
+
   fun handleCall(paramsJson: String?): GatewaySession.InvokeResult {
     return try {
       val root = paramsJson?.let { json.parseToJsonElement(it).jsonObject }

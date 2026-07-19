@@ -6,10 +6,12 @@ import {
 } from "./contract-v1.js";
 
 export const CONTACTS_TOOL_NAME = "assistant_contacts_search";
+export const CONTACT_CALL_TOOL_NAME = "assistant_phone_call";
 export const PRESENCE_COMMAND = "assistant.presence.v1";
 export const EXECUTE_COMMAND = "assistant.execute.v1";
 
 const CONTACTS_CAPABILITY = "android.contacts.search";
+const CONTACT_CALL_CAPABILITY = "android.phone.call_contact";
 const NODE_ID_PATTERN = /^[a-f0-9]{64}$/;
 const MAX_NODE_PAYLOAD_BYTES = 16 * 1024;
 const NODE_COMMAND_TIMEOUT_MS = 120_000;
@@ -107,6 +109,18 @@ function parseContactsSummary(value) {
   return summary;
 }
 
+function parseContactCallSummary(value) {
+  const summary = asRecord(value, "RECEIPT_INVALID");
+  if (Object.keys(summary).sort().join("\0") !== ["placedCall", "requiresTap"].sort().join("\0")) {
+    throw new PrivateReadToolError("RECEIPT_INVALID");
+  }
+  if (typeof summary.placedCall !== "boolean" || typeof summary.requiresTap !== "boolean") {
+    throw new PrivateReadToolError("RECEIPT_INVALID");
+  }
+  if (summary.placedCall === summary.requiresTap) throw new PrivateReadToolError("RECEIPT_INVALID");
+  return summary;
+}
+
 function parseReceipt(value, proposal) {
   const receipt = parseNodePayload(value);
   if (!exactKeys(receipt, RECEIPT_REQUIRED_KEYS, RECEIPT_ALLOWED_KEYS)) {
@@ -132,7 +146,13 @@ function parseReceipt(value, proposal) {
   }
   if (receipt.status === "COMPLETED") {
     if ("errorCode" in receipt) throw new PrivateReadToolError("RECEIPT_INVALID");
-    receipt.resultSummary = parseContactsSummary(receipt.resultSummary);
+    if (proposal.capability === CONTACTS_CAPABILITY) {
+      receipt.resultSummary = parseContactsSummary(receipt.resultSummary);
+    } else if (proposal.capability === CONTACT_CALL_CAPABILITY) {
+      receipt.resultSummary = parseContactCallSummary(receipt.resultSummary);
+    } else {
+      throw new PrivateReadToolError("RECEIPT_INVALID");
+    }
   } else {
     if ("resultSummary" in receipt || !/^[A-Z0-9_]{1,64}$/.test(receipt.errorCode ?? "")) {
       throw new PrivateReadToolError("RECEIPT_INVALID");
@@ -174,15 +194,25 @@ function unknownReceipt(proposal, startedAtMs, errorCode) {
 
 function resultForModel(receipt) {
   const completed = receipt.status === "COMPLETED";
+  const completedSummary = completed && receipt.capability === CONTACT_CALL_CAPABILITY
+    ? {
+        placedCall: receipt.resultSummary.placedCall,
+        requiresTap: receipt.resultSummary.requiresTap,
+      }
+    : completed
+      ? {
+          privateDelivery: "spoken_on_phone",
+          matchCount: receipt.resultSummary.matchCount,
+          truncated: receipt.resultSummary.truncated,
+        }
+      : {};
   const payload = {
     status: receipt.status,
-    privateDelivery: completed ? "spoken_on_phone" : "not_delivered",
-    ...(completed ? {
-      matchCount: receipt.resultSummary.matchCount,
-      truncated: receipt.resultSummary.truncated,
-    } : {
+    ...completedSummary,
+    ...(!completed ? {
+      ...(receipt.capability === CONTACTS_CAPABILITY ? { privateDelivery: "not_delivered" } : {}),
       errorCode: receipt.errorCode,
-    }),
+    } : {}),
   };
   return {
     content: [{ type: "text", text: JSON.stringify(payload) }],
@@ -257,8 +287,68 @@ export async function searchContactsPrivately({
   return resultForModel(receipt);
 }
 
+export async function callContactWithApproval({
+  api,
+  ledger,
+  signingIdentity,
+  nodeId,
+  voiceSessionKey,
+  request,
+}) {
+  const rawQuery = request?.query;
+  const query = typeof rawQuery === "string" ? rawQuery.trim() : undefined;
+  if (typeof query !== "string" || query.length < 1 || query.length > 100) {
+    throw new PrivateReadToolError("ARGUMENT_SCHEMA");
+  }
+  const { nodes } = await api.runtime.nodes.list({ connected: true });
+  selectNode(nodes, nodeId);
+  const presence = parsePresence(await api.runtime.nodes.invoke({
+    nodeId,
+    command: PRESENCE_COMMAND,
+    params: {},
+    timeoutMs: PRESENCE_TIMEOUT_MS,
+    idempotencyKey: randomUUID(),
+  }));
+  const planId = randomUUID();
+  const capabilitySnapshotHash = canonicalHash({
+    contractVersion: CONTRACT_VERSION,
+    capabilities: [CONTACT_CALL_CAPABILITY],
+    targetDeviceId: nodeId,
+  });
+  ledger.createPlan({ planId, voiceSessionKey, capabilitySnapshotHash });
+  const proposal = createProposal({
+    capability: CONTACT_CALL_CAPABILITY,
+    arguments: { query },
+    targetDeviceId: nodeId,
+    voiceSessionKey,
+    presenceLeaseId: presence.presenceLeaseId,
+    planId,
+    lifetimeMs: 60_000,
+  });
+  const signed = signingIdentity.sign(proposal);
+  ledger.recordProposal(signed);
+  const startedAtMs = Date.now();
+  let receipt;
+  try {
+    const response = await api.runtime.nodes.invoke({
+      nodeId,
+      command: EXECUTE_COMMAND,
+      params: signed,
+      timeoutMs: NODE_COMMAND_TIMEOUT_MS,
+      idempotencyKey: proposal.idempotencyKey,
+    });
+    receipt = parseReceipt(response, proposal);
+  } catch (error) {
+    receipt = unknownReceipt(proposal, startedAtMs, controlledUnknownCode(error));
+  }
+  ledger.recordReceipt(receipt);
+  return resultForModel(receipt);
+}
+
 export function registerPrivateReadTools(api, state) {
-  if (api.pluginConfig?.privateReadsEnabled !== true) return 0;
+  const contactsEnabled = api.pluginConfig?.privateReadsEnabled === true;
+  const callsEnabled = api.pluginConfig?.phoneCallsEnabled === true;
+  if (!contactsEnabled && !callsEnabled) return 0;
   const agentId = typeof api.pluginConfig?.privateReadAgentId === "string"
     ? api.pluginConfig.privateReadAgentId
     : "voice-main";
@@ -267,32 +357,65 @@ export function registerPrivateReadTools(api, state) {
     throw new Error("assistant-capability-broker requires one valid androidNodeId for private reads");
   }
   const voiceSessionKey = `agent:${agentId}:voice-android-${nodeId.slice(0, 32)}`;
-  api.registerTool({
-    name: CONTACTS_TOOL_NAME,
-    label: "Search contacts privately",
-    description: "Search contacts on the configured unlocked Android phone. Matching names and phone numbers are spoken only on the phone and are never returned to the model. The first private read in a voice session requires an on-phone 10-minute approval.",
-    parameters: {
-      type: "object",
-      required: ["query"],
-      properties: {
-        query: { type: "string", minLength: 1, maxLength: 100 },
-        limit: { type: "integer", minimum: 1, maximum: 10, default: 5 },
+  let registered = 0;
+  if (contactsEnabled) {
+    api.registerTool({
+      name: CONTACTS_TOOL_NAME,
+      label: "Search contacts privately",
+      description: "Search contacts on the configured unlocked Android phone. Matching names and phone numbers are spoken only on the phone and are never returned to the model. The first private read in a voice session requires an on-phone 10-minute approval.",
+      parameters: {
+        type: "object",
+        required: ["query"],
+        properties: {
+          query: { type: "string", minLength: 1, maxLength: 100 },
+          limit: { type: "integer", minimum: 1, maximum: 10, default: 5 },
+        },
+        additionalProperties: false,
       },
-      additionalProperties: false,
-    },
-    execute: async (_toolCallId, request) => {
-      const ledger = state.ledger();
-      const signingIdentity = state.signingIdentity();
-      if (!ledger || !signingIdentity) throw new Error("assistant capability broker is unavailable");
-      return searchContactsPrivately({
-        api,
-        ledger,
-        signingIdentity,
-        nodeId,
-        voiceSessionKey,
-        request,
-      });
-    },
-  }, { names: [CONTACTS_TOOL_NAME], optional: true });
-  return 1;
+      execute: async (_toolCallId, request) => {
+        const ledger = state.ledger();
+        const signingIdentity = state.signingIdentity();
+        if (!ledger || !signingIdentity) throw new Error("assistant capability broker is unavailable");
+        return searchContactsPrivately({
+          api,
+          ledger,
+          signingIdentity,
+          nodeId,
+          voiceSessionKey,
+          request,
+        });
+      },
+    }, { names: [CONTACTS_TOOL_NAME], optional: true });
+    registered += 1;
+  }
+  if (callsEnabled) {
+    api.registerTool({
+      name: CONTACT_CALL_TOOL_NAME,
+      label: "Call a contact with approval",
+      description: "Resolve one contact privately on the configured unlocked Android phone, show the real recipient on-phone, and place the call only after a fresh one-shot approval. Contact names and phone numbers never return to the model.",
+      parameters: {
+        type: "object",
+        required: ["query"],
+        properties: {
+          query: { type: "string", minLength: 1, maxLength: 100 },
+        },
+        additionalProperties: false,
+      },
+      execute: async (_toolCallId, request) => {
+        const ledger = state.ledger();
+        const signingIdentity = state.signingIdentity();
+        if (!ledger || !signingIdentity) throw new Error("assistant capability broker is unavailable");
+        return callContactWithApproval({
+          api,
+          ledger,
+          signingIdentity,
+          nodeId,
+          voiceSessionKey,
+          request,
+        });
+      },
+    }, { names: [CONTACT_CALL_TOOL_NAME], optional: true });
+    registered += 1;
+  }
+  return registered;
 }

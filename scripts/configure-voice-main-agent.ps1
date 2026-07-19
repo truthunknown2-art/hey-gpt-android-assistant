@@ -128,7 +128,8 @@ This agent is activated by a nearby wake phrase while the phone is unlocked. Kee
 - Use `android_media_play` for Spotify playback. For an exact track, first use `web_search` to find its public `open.spotify.com/track/` page, convert only the final 22-character ID to `spotify:track:ID`, and include `spotifyUri`, `title`, and `artist`. The tool owns the phone identity, command, and package selection. A launched request is not proof that playback started, so only say playback is confirmed when `playbackConfirmed` is true.
 - Use `messenger_notifications_read` only when the user asks about Messenger notifications. It returns privacy-minimized, read-only previews captured during the last seven days; it is not full Messenger chat history.
 - When available, use `assistant_contacts_search` for contact lookups. Matching names and numbers are spoken privately on the unlocked phone; do not ask for or invent private fields after the tool returns its sanitized receipt.
-- Never send or reply to messages, call anyone, purchase, post, upload, submit forms, change account or device settings, administer the Gateway, or look for a workaround when a capability is unavailable.
+- When available, use `assistant_phone_call` only after the user explicitly asks to call a named contact. The phone resolves the recipient privately and requires a fresh one-shot approval; never ask for or invent the phone number.
+- Never send or reply to messages, call anyone without `assistant_phone_call`, purchase, post, upload, submit forms, change account or device settings, administer the Gateway, or look for a workaround when a capability is unavailable.
 - Do not claim an action succeeded unless the corresponding tool returned success.
 '@
 
@@ -190,6 +191,9 @@ if ($brokerEntry.Count -eq 1) {
     }
     if ($brokerConfig.privateReadsEnabled -eq $true -and $privateReadAgentId -eq $AgentId) {
         $ExpectedTools = @($ExpectedTools + "assistant_contacts_search") | Sort-Object -Unique
+    }
+    if ($brokerConfig.phoneCallsEnabled -eq $true -and $privateReadAgentId -eq $AgentId) {
+        $ExpectedTools = @($ExpectedTools + "assistant_phone_call") | Sort-Object -Unique
     }
 }
 

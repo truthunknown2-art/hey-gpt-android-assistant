@@ -8,6 +8,8 @@ import android.provider.ContactsContract
 import androidx.core.content.ContextCompat
 import com.openclaw.assistant.PermissionRequester
 import com.openclaw.assistant.broker.AndroidContactMatchV1
+import com.openclaw.assistant.broker.AndroidContactCallResolutionV1
+import com.openclaw.assistant.broker.AndroidContactCallTargetV1
 import com.openclaw.assistant.broker.AndroidContactsSearchReadV1
 import com.openclaw.assistant.gateway.GatewaySession
 import kotlinx.serialization.json.Json
@@ -160,6 +162,25 @@ class ContactsHandler(private val appContext: Context) {
         )
     }
 
+    internal fun resolveAssistantContactCall(query: String): AndroidContactCallResolutionV1 =
+        when (val result = readAssistantContacts(query, ASSISTANT_CALL_MATCH_LIMIT)) {
+            AndroidContactsSearchReadV1.PermissionRequired ->
+                AndroidContactCallResolutionV1.PermissionRequired
+            is AndroidContactsSearchReadV1.Success -> when {
+                result.matches.isEmpty() -> AndroidContactCallResolutionV1.NotFound
+                result.truncated || result.matches.size != 1 -> AndroidContactCallResolutionV1.Ambiguous
+                else -> {
+                    val match = result.matches.single()
+                    AndroidContactCallResolutionV1.Ready(
+                        AndroidContactCallTargetV1(
+                            displayName = match.displayName,
+                            phoneNumber = match.phoneNumber,
+                        ),
+                    )
+                }
+            }
+        }
+
     suspend fun handleAdd(paramsJson: String?): GatewaySession.InvokeResult {
         if (!ensureWritePermission()) {
             return GatewaySession.InvokeResult.error(
@@ -208,6 +229,10 @@ class ContactsHandler(private val appContext: Context) {
         } catch (e: Exception) {
             GatewaySession.InvokeResult.error("CONTACTS_ADD_FAILED", "CONTACTS_ADD_FAILED: ${e.message}")
         }
+    }
+
+    private companion object {
+        const val ASSISTANT_CALL_MATCH_LIMIT = 2
     }
 
     suspend fun handleUpdate(paramsJson: String?): GatewaySession.InvokeResult {

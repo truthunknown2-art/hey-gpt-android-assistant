@@ -67,6 +67,7 @@ $runtime = ((Invoke-OpenClaw plugins inspect $PluginId --runtime --json) -join "
 $tools = @($runtime.plugin.toolNames | ForEach-Object { [string]$_ }) | Sort-Object -Unique
 $knownTools = @(
     "assistant_contacts_search",
+    "assistant_phone_call",
     "assistant_memory_forget",
     "assistant_memory_remember"
 ) | Sort-Object

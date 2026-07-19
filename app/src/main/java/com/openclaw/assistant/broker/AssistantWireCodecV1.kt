@@ -153,6 +153,7 @@ internal object AssistantWireCodecV1 {
             AssistantCapabilityV1.ANDROID_DEVICE_STATUS ->
                 setOf("batteryLevelPercent", "charging", "screenInteractive")
             AssistantCapabilityV1.ANDROID_CONTACTS_SEARCH -> setOf("matchCount", "truncated")
+            AssistantCapabilityV1.ANDROID_PHONE_CALL_CONTACT -> setOf("placedCall", "requiresTap")
             else -> emptySet()
         }
         return keys.all { it in allowed }

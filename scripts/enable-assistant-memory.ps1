@@ -131,6 +131,9 @@ if (-not $Disable) {
 if ($brokerConfig.privateReadsEnabled -eq $true) {
     $expected += "assistant_contacts_search"
 }
+if ($brokerConfig.phoneCallsEnabled -eq $true) {
+    $expected += "assistant_phone_call"
+}
 $expected = @($expected | Sort-Object -Unique)
 $registrationMismatch =
     $registered.Count -ne $expected.Count -or

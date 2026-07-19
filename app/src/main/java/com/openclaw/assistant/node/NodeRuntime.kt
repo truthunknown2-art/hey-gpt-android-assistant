@@ -26,6 +26,9 @@ import com.openclaw.assistant.broker.AssistantBrokerPinResultV1
 import com.openclaw.assistant.broker.AssistantBrokerPublicKeyV1
 import com.openclaw.assistant.broker.AssistantBrokerTrustStoreV1
 import com.openclaw.assistant.broker.AssistantCapabilityExecutorV1
+import com.openclaw.assistant.broker.AndroidContactCallLauncherV1
+import com.openclaw.assistant.broker.AndroidContactCallResolverV1
+import com.openclaw.assistant.broker.AssistantContactCallApprovalsV1
 import com.openclaw.assistant.broker.AssistantPresenceLeases
 import com.openclaw.assistant.broker.AssistantPrivateReadApprovals
 import com.openclaw.assistant.broker.AssistantPrivateReadGrants
@@ -1082,9 +1085,12 @@ class NodeRuntime(context: Context) {
         deviceStatusReader = deviceHandler::readAssistantStatus,
         contactsSearchReader = contactsHandler::readAssistantContacts,
         privateReadAuthorizer = grants,
+        contactCallResolver = AndroidContactCallResolverV1(contactsHandler::resolveAssistantContactCall),
+        contactCallLauncher = AndroidContactCallLauncherV1(phoneHandler::launchAssistantContactCall),
       ),
       privateReadGrants = grants,
       privateReadApprovalGate = AndroidAssistantPrivateReadApprovalGateV1(appContext),
+      contactCallApprovalGate = AndroidAssistantContactCallApprovalGateV1(appContext),
       securityGate = ::assistantSecurityGate,
       privateResultSink = AssistantPrivateResultSinkV1(AssistantPrivateResultsV1.router::deliver),
     )
@@ -1099,6 +1105,7 @@ class NodeRuntime(context: Context) {
     pendingAssistantBrokerKey = null
     _pendingAssistantBrokerTrust.value = null
     AssistantPrivateReadApprovals.registry.revokeAll()
+    AssistantContactCallApprovalsV1.registry.revokeAll()
     AssistantPrivateReadGrants.manager.revokeAll()
     AssistantPrivateResultsV1.router.revokeAll()
     AssistantPresenceLeases.manager.revokeAll()

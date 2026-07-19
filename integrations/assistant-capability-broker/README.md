@@ -1,7 +1,7 @@
 # Assistant Capability Broker
 
 This is the foundation for typed assistant plans, proposals, receipts, private
-Android reads, and explicit local memory. It always registers one operator-read
+Android reads/actions, and explicit local memory. It always registers one operator-read
 Gateway status method and one operator-read signing-public-key method. Model
 tools remain disabled by default.
 
@@ -33,6 +33,15 @@ OpenClaw's descriptor-cached plugin context. Contact names and phone numbers are
 spoken by the bound phone voice session; only match count, truncation, status,
 and a terminal receipt return to OpenClaw. Lost or malformed execution results
 become durable `UNKNOWN` receipts and are never retried automatically.
+
+When `phoneCallsEnabled` is explicitly set for the same agent/node binding, the
+broker also registers `assistant_phone_call`. The model supplies only a bounded
+contact-name query. The phone resolves exactly one contact locally, shows the
+real name and number in a secure unlocked one-shot approval, revalidates the
+signed proposal and presence lease after approval, and only then places the
+call (or opens the dialer when direct-call permission is unavailable). Only
+`placedCall`, `requiresTap`, status, and a terminal receipt return to OpenClaw;
+the resolved contact and number remain process-local on Android.
 
 The broker creates one Ed25519 identity in its private state directory and
 reuses it across restarts. `assistant.broker.publicKey` returns only the raw

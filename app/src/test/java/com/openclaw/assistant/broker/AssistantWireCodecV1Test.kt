@@ -86,6 +86,27 @@ class AssistantWireCodecV1Test {
         assertTrue(!encoded.contains("Jen"))
     }
 
+    @Test
+    fun `call receipt accepts disposition but rejects private recipient fields`() {
+        val encoded = AssistantWireCodecV1.encodeReceipt(
+            receipt(
+                AssistantCapabilityV1.ANDROID_PHONE_CALL_CONTACT,
+                buildJsonObject {
+                    put("placedCall", true)
+                    put("requiresTap", false)
+                },
+            ),
+        )
+        val private = receipt(
+            AssistantCapabilityV1.ANDROID_PHONE_CALL_CONTACT,
+            buildJsonObject { put("phoneNumber", "+1 250 555 0100") },
+        )
+
+        assertTrue(encoded.contains("\"placedCall\":true"))
+        assertTrue(!encoded.contains("250"))
+        assertFails { AssistantWireCodecV1.encodeReceipt(private) }
+    }
+
     private fun signed(): SignedAssistantProposalV1 {
         val arguments = buildJsonObject {}
         return SignedAssistantProposalV1(

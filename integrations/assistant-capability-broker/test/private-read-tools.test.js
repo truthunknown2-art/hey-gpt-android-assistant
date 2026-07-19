@@ -7,9 +7,11 @@ import { describe, it } from "node:test";
 import { verifySignedProposal } from "../dist/contract-v1.js";
 import { BrokerLedger } from "../dist/ledger.js";
 import {
+  CONTACT_CALL_TOOL_NAME,
   CONTACTS_TOOL_NAME,
   EXECUTE_COMMAND,
   PRESENCE_COMMAND,
+  callContactWithApproval,
   registerPrivateReadTools,
   searchContactsPrivately,
 } from "../dist/private-read-tools.js";
@@ -39,7 +41,7 @@ function receiptFor(proposal, overrides = {}) {
   };
 }
 
-function fixture({ executeResponse } = {}) {
+function fixture({ executeResponse, phoneCallsEnabled = false } = {}) {
   const stateDir = mkdtempSync(path.join(tmpdir(), "assistant-private-read-"));
   const ledger = new BrokerLedger(stateDir);
   const signingIdentity = new BrokerSigningIdentityV1(stateDir);
@@ -47,6 +49,7 @@ function fixture({ executeResponse } = {}) {
   const api = {
     pluginConfig: {
       privateReadsEnabled: true,
+      phoneCallsEnabled,
       privateReadAgentId: "voice-main",
       androidNodeId: NODE_ID,
     },
@@ -217,6 +220,84 @@ describe("signed private-read tools", () => {
         /ARGUMENT_SCHEMA/,
       );
       assert.equal(subject.calls.length, 0);
+    } finally {
+      subject.close();
+    }
+  });
+
+  it("calls one locally resolved contact through a high-risk signed proposal", async () => {
+    const subject = fixture({
+      executeResponse: (proposal) => ({
+        ok: true,
+        payload: receiptFor(proposal, {
+          resultSummary: { placedCall: true, requiresTap: false },
+        }),
+      }),
+    });
+    try {
+      const result = await callContactWithApproval({
+        api: subject.api,
+        ledger: subject.ledger,
+        signingIdentity: subject.signingIdentity,
+        nodeId: NODE_ID,
+        voiceSessionKey: SESSION,
+        request: { query: "Jen" },
+      });
+
+      assert.deepEqual(result.details, {
+        status: "COMPLETED",
+        placedCall: true,
+        requiresTap: false,
+      });
+      const proposal = subject.calls[1].params.proposal;
+      assert.equal(proposal.capability, "android.phone.call_contact");
+      assert.equal(proposal.risk, "HIGH");
+      assert.deepEqual(proposal.arguments, { query: "Jen" });
+      assert.equal(JSON.stringify(result).includes("Jen"), false);
+      assert.equal(subject.ledger.status().terminalReceipts, 1);
+    } finally {
+      subject.close();
+    }
+  });
+
+  it("registers the optional call tool only when explicitly enabled", () => {
+    const subject = fixture({ phoneCallsEnabled: true });
+    const names = [];
+    subject.api.registerTool = (tool) => names.push(tool.name);
+    try {
+      assert.equal(registerPrivateReadTools(subject.api, {
+        ledger: () => subject.ledger,
+        signingIdentity: () => subject.signingIdentity,
+      }), 2);
+      assert.deepEqual(names.sort(), [CONTACTS_TOOL_NAME, CONTACT_CALL_TOOL_NAME].sort());
+    } finally {
+      subject.close();
+    }
+  });
+
+  it("rejects a contradictory call disposition receipt", async () => {
+    const subject = fixture({
+      executeResponse: (proposal) => ({
+        ok: true,
+        payload: receiptFor(proposal, {
+          resultSummary: { placedCall: true, requiresTap: true },
+        }),
+      }),
+    });
+    try {
+      const result = await callContactWithApproval({
+        api: subject.api,
+        ledger: subject.ledger,
+        signingIdentity: subject.signingIdentity,
+        nodeId: NODE_ID,
+        voiceSessionKey: SESSION,
+        request: { query: "Jen" },
+      });
+
+      assert.deepEqual(result.details, {
+        status: "UNKNOWN",
+        errorCode: "RECEIPT_INVALID",
+      });
     } finally {
       subject.close();
     }

@@ -2,6 +2,7 @@ package com.openclaw.assistant.node
 
 import com.openclaw.assistant.broker.AssistantCapabilityExecutorV1
 import com.openclaw.assistant.broker.AssistantCapabilityV1
+import com.openclaw.assistant.broker.AssistantContactCallPreparationV1
 import com.openclaw.assistant.broker.AssistantExecutionOutcomeV1
 import com.openclaw.assistant.broker.AssistantPrivateReadGrantManagerV1
 import com.openclaw.assistant.broker.AssistantPrivateResultDeliveryV1
@@ -20,12 +21,18 @@ internal fun interface AssistantPrivateReadApprovalGateV1 {
     suspend fun request(signed: com.openclaw.assistant.broker.SignedAssistantProposalV1): Boolean
 }
 
+internal fun interface AssistantContactCallApprovalGateV1 {
+    suspend fun request(prepared: AssistantContactCallPreparationV1.Ready): Boolean
+}
+
 /** Fixed, signed command boundary. These commands remain unadvertised until release gates close. */
 internal class AssistantNodeCommandHandlerV1(
     private val presenceLeases: PresenceLeaseManager,
     private val executor: AssistantCapabilityExecutorV1,
     private val privateReadGrants: AssistantPrivateReadGrantManagerV1,
     private val privateReadApprovalGate: AssistantPrivateReadApprovalGateV1,
+    private val contactCallApprovalGate: AssistantContactCallApprovalGateV1 =
+        AssistantContactCallApprovalGateV1 { false },
     private val securityGate: () -> Boolean,
     private val privateResultSink: AssistantPrivateResultSinkV1,
 ) {
@@ -47,6 +54,9 @@ internal class AssistantNodeCommandHandlerV1(
         }
         val expectedDeviceId = lease.targetDeviceId
         val expectedSessionKey = lease.voiceSessionKey
+        if (signed.proposal.capability == AssistantCapabilityV1.ANDROID_PHONE_CALL_CONTACT) {
+            return handleContactCall(signed, expectedDeviceId, expectedSessionKey)
+        }
         if (
             signed.proposal.capability == AssistantCapabilityV1.ANDROID_CONTACTS_SEARCH &&
             !privateReadGrants.isAuthorized(
@@ -85,6 +95,40 @@ internal class AssistantNodeCommandHandlerV1(
             expectedVoiceSessionKey = expectedSessionKey,
         ).deliverPrivateResultOrFail(signed.proposal)
         return sanitizedResult(outcome)
+    }
+
+    private suspend fun handleContactCall(
+        signed: com.openclaw.assistant.broker.SignedAssistantProposalV1,
+        expectedDeviceId: String,
+        expectedSessionKey: String,
+    ): GatewaySession.InvokeResult {
+        val prepared = when (val result = executor.prepareContactCall(
+            signed = signed,
+            expectedDeviceId = expectedDeviceId,
+            expectedVoiceSessionKey = expectedSessionKey,
+        )) {
+            is AssistantContactCallPreparationV1.Terminal -> return sanitizedResult(result.outcome)
+            is AssistantContactCallPreparationV1.Ready -> result
+        }
+        val approved = runCatching { contactCallApprovalGate.request(prepared) }.getOrDefault(false)
+        if (!approved) {
+            return sanitizedResult(
+                executor.cancelPreparedContactCall(prepared, "CALL_APPROVAL_DENIED"),
+            )
+        }
+        if (!securityGate()) {
+            return sanitizedResult(
+                executor.cancelPreparedContactCall(prepared, "UNLOCKED_PRESENCE_REQUIRED"),
+            )
+        }
+        return sanitizedResult(
+            executor.executePreparedContactCall(
+                prepared = prepared,
+                signed = signed,
+                expectedDeviceId = expectedDeviceId,
+                expectedVoiceSessionKey = expectedSessionKey,
+            ),
+        )
     }
 
     private fun AssistantExecutionOutcomeV1.withErrorCode(code: String): AssistantExecutionOutcomeV1 = copy(
