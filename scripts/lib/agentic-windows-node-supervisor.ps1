@@ -1,5 +1,8 @@
 [CmdletBinding()]
-param([Parameter(Mandatory = $true)][string]$StateDir)
+param(
+    [Parameter(Mandatory = $true)][string]$StateDir,
+    [switch]$RunOnce
+)
 
 $ErrorActionPreference = "Stop"
 $resolvedStateDir = [IO.Path]::GetFullPath($StateDir).TrimEnd('\')
@@ -24,8 +27,12 @@ try {
         exit 0
     }
 
-    & $env:ComSpec /d /c ('"' + $nodeCommandPath + '"')
-    exit $LASTEXITCODE
+    do {
+        & $env:ComSpec /d /c ('"' + $nodeCommandPath + '"')
+        $exitCode = $LASTEXITCODE
+        if ($RunOnce) { exit $exitCode }
+        Start-Sleep -Seconds 10
+    } while ($true)
 } finally {
     if ($null -ne $lockStream) {
         $lockStream.Dispose()

@@ -19,7 +19,8 @@ exit /b 0
             "-NonInteractive",
             "-ExecutionPolicy", "Bypass",
             "-File", ('"' + $supervisor + '"'),
-            "-StateDir", ('"' + $stateDir + '"')
+            "-StateDir", ('"' + $stateDir + '"'),
+            "-RunOnce"
         )
         $first = Start-Process powershell.exe -ArgumentList $arguments -WindowStyle Hidden -PassThru
         try {

@@ -13,7 +13,94 @@ function Complete-WindowsNodeTaskState {
     return $true
 }
 
-function Get-OwnedWindowsNodeProcessIds {
+function ConvertTo-BashSingleQuotedLiteral {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    $singleQuoteEscape = "'" + [char]34 + "'" + [char]34 + "'"
+    return "'" + $Value.Replace("'", $singleQuoteEscape) + "'"
+}
+
+function ConvertTo-PowerShellSingleQuotedLiteral {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    return "'" + $Value.Replace("'", "''") + "'"
+}
+
+function New-AgenticWindowsNodeVbsContent {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$PowerShellPath,
+        [Parameter(Mandatory = $true)][string]$SupervisorPath,
+        [Parameter(Mandatory = $true)][string]$StateDir
+    )
+
+    $command = '"' + $PowerShellPath + '" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
+        $SupervisorPath + '" -StateDir "' + $StateDir + '"'
+    $escapedCommand = $command.Replace('"', '""')
+    return "' Managed by hey-gpt-android-assistant`r`n" +
+        'CreateObject("WScript.Shell").Run "' + $escapedCommand + '", 0, False' + "`r`n"
+}
+
+function New-OpenClawGatewayBootstrapContent {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$CurrentContent,
+        [Parameter(Mandatory = $true)][string]$PowerShellPath,
+        [Parameter(Mandatory = $true)][string]$SupervisorPath,
+        [Parameter(Mandatory = $true)][string]$StateDir
+    )
+
+    $startMarker = "# hey-gpt-agentic-windows-node:start"
+    $endMarker = "# hey-gpt-agentic-windows-node:end"
+    $startIndex = $CurrentContent.IndexOf($startMarker, [StringComparison]::Ordinal)
+    $endIndex = $CurrentContent.IndexOf($endMarker, [StringComparison]::Ordinal)
+    if (($startIndex -ge 0) -ne ($endIndex -ge 0) -or ($startIndex -ge 0 -and $endIndex -lt $startIndex)) {
+        throw "The existing agentic Windows node bootstrap markers are malformed."
+    }
+
+    $baseContent = $CurrentContent
+    if ($startIndex -ge 0) {
+        $afterIndex = $endIndex + $endMarker.Length
+        while ($afterIndex -lt $baseContent.Length -and $baseContent[$afterIndex] -in @("`r", "`n")) {
+            $afterIndex++
+        }
+        $baseContent = $baseContent.Substring(0, $startIndex).TrimEnd() + "`r`n`r`n" +
+            $baseContent.Substring($afterIndex).TrimStart()
+    }
+
+    $loopMarker = "while (`$true) {"
+    $loopIndex = $baseContent.LastIndexOf($loopMarker, [StringComparison]::Ordinal)
+    if ($loopIndex -lt 0) {
+        throw "The OpenClaw Gateway supervisor loop marker is missing."
+    }
+
+    $quotedPowerShell = ConvertTo-PowerShellSingleQuotedLiteral $PowerShellPath
+    $quotedSupervisor = ConvertTo-PowerShellSingleQuotedLiteral $SupervisorPath
+    $quotedStateDir = ConvertTo-PowerShellSingleQuotedLiteral $StateDir
+    $block = @"
+$startMarker
+`$agenticNodePowerShell = $quotedPowerShell
+`$agenticNodeSupervisor = $quotedSupervisor
+`$agenticNodeStateDir = $quotedStateDir
+`$agenticNodeArguments = @(
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy", "Bypass",
+    "-File", ('"' + `$agenticNodeSupervisor + '"'),
+    "-StateDir", ('"' + `$agenticNodeStateDir + '"')
+) -join " "
+Start-Process -FilePath `$agenticNodePowerShell -ArgumentList `$agenticNodeArguments -WindowStyle Hidden
+$endMarker
+"@
+
+    return $baseContent.Substring(0, $loopIndex).TrimEnd() + "`r`n`r`n" +
+        $block.Trim() + "`r`n`r`n" + $baseContent.Substring($loopIndex).TrimStart()
+}
+
+function Get-OwnedWindowsNodeRootProcessIds {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][object[]]$Processes,
@@ -21,11 +108,47 @@ function Get-OwnedWindowsNodeProcessIds {
     )
 
     $normalizedCommandPath = [IO.Path]::GetFullPath($NodeCommandPath)
-    $roots = @($Processes | Where-Object {
+    return @($Processes | Where-Object {
         [string]$_.Name -ieq "cmd.exe" -and
         [string]$_.CommandLine -and
         ([string]$_.CommandLine).IndexOf($normalizedCommandPath, [StringComparison]::OrdinalIgnoreCase) -ge 0
     } | ForEach-Object { [int]$_.ProcessId })
+}
+
+function Get-OwnedWindowsNodeSupervisorProcessIds {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Processes,
+        [Parameter(Mandatory = $true)][string]$SupervisorPath,
+        [Parameter(Mandatory = $true)][string]$StateDir
+    )
+
+    $normalizedSupervisorPath = [IO.Path]::GetFullPath($SupervisorPath)
+    $normalizedStateDir = [IO.Path]::GetFullPath($StateDir).TrimEnd('\')
+    return @($Processes | Where-Object {
+        [IO.Path]::GetFileName([string]$_.Name) -in @("pwsh.exe", "powershell.exe") -and
+        [string]$_.CommandLine -and
+        ([string]$_.CommandLine).IndexOf($normalizedSupervisorPath, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+        ([string]$_.CommandLine).IndexOf($normalizedStateDir, [StringComparison]::OrdinalIgnoreCase) -ge 0
+    } | ForEach-Object { [int]$_.ProcessId })
+}
+
+function Get-OwnedWindowsNodeProcessIds {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Processes,
+        [Parameter(Mandatory = $true)][string]$NodeCommandPath,
+        [string]$SupervisorPath = "",
+        [string]$StateDir = ""
+    )
+
+    $roots = @(Get-OwnedWindowsNodeRootProcessIds -Processes $Processes -NodeCommandPath $NodeCommandPath)
+    if ($SupervisorPath -and $StateDir) {
+        $roots = @($roots + @(Get-OwnedWindowsNodeSupervisorProcessIds `
+            -Processes $Processes `
+            -SupervisorPath $SupervisorPath `
+            -StateDir $StateDir)) | Sort-Object -Unique
+    }
 
     if ($roots.Count -eq 0) { return @() }
 
@@ -54,10 +177,18 @@ function Get-OwnedWindowsNodeProcessIds {
 
 function Stop-OwnedWindowsNodeProcesses {
     [CmdletBinding()]
-    param([Parameter(Mandatory = $true)][string]$NodeCommandPath)
+    param(
+        [Parameter(Mandatory = $true)][string]$NodeCommandPath,
+        [string]$SupervisorPath = "",
+        [string]$StateDir = ""
+    )
 
     $processes = @(Get-CimInstance Win32_Process)
-    $processIds = @(Get-OwnedWindowsNodeProcessIds -Processes $processes -NodeCommandPath $NodeCommandPath)
+    $processIds = @(Get-OwnedWindowsNodeProcessIds `
+        -Processes $processes `
+        -NodeCommandPath $NodeCommandPath `
+        -SupervisorPath $SupervisorPath `
+        -StateDir $StateDir)
     foreach ($processId in $processIds) {
         Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
     }

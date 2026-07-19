@@ -247,17 +247,19 @@ pwsh -File .\scripts\enable-assistant-windows-files.ps1 `
 ```
 
 The script validates that the scheduled task belongs to the dedicated state
-directory, then replaces the detached logon launcher with a tracked,
-file-locked S4U supervisor. The supervisor starts 30 seconds after Windows boot,
-retries after failure, also has a logon fallback, and ignores duplicate starts;
-it does not require Windows autologon. Provisioning terminates only process trees
+directory, then adds a narrowly marked launch hook to the existing pre-logon
+OpenClaw Gateway supervisor and rewrites the existing node logon launcher as a
+file-locked fallback. The persistent node supervisor retries after failure,
+while the shared lock makes logon and manual task starts harmless when the
+boot-owned process is already running; Windows autologon is not required.
+Provisioning terminates only process trees
 rooted in that dedicated `node.cmd`, stages and tests the plugin before atomic
 replacement, pins the Windows node to the Android session key's 32-character
 device suffix and the broker public key, preserves only the `documents`
 read-root alias by default, restarts both sides, and fails unless the connected
 node advertises exactly the fixed command. Before mutation it snapshots the
-scheduled task, supervisor, Windows node config, Gateway config, and broker
-stage. Any later failure restores them before the scheduled node is restarted.
+Windows launchers, supervisor, Windows node config, Gateway config, and broker
+stage. Any later failure restores them before the node is restarted.
 If rollback itself fails, every available snapshot is preserved and the Windows
 node remains stopped until manual recovery.
 
