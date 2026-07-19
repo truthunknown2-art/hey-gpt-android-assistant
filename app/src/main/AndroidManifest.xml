@@ -48,6 +48,7 @@
     <!-- Contacts -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.WRITE_CONTACTS" />
+    <uses-permission android:name="android.permission.CALL_PHONE" />
 
     <!-- Calendar -->
     <uses-permission android:name="android.permission.READ_CALENDAR" />
@@ -77,6 +78,8 @@
 
     <!-- Required to detect TTS engines and speech recognizer languages (Android 11+) -->
     <queries>
+        <package android:name="com.openai.chatgpt" />
+        <package android:name="com.spotify.music" />
         <intent>
             <action android:name="android.intent.action.TTS_SERVICE" />
         </intent>
@@ -114,6 +117,19 @@
             </intent-filter>
         </activity>
 
+        <!-- Wakes and dismisses only an already-trusted/non-secure keyguard
+             before invoking the user's selected Android assistant. It cannot
+             dismiss a PIN/biometric-secured keyguard. -->
+        <activity
+            android:name="com.openclaw.assistant.chatgpt.TrustedKeyguardHandoffActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:finishOnTaskLaunch="true"
+            android:noHistory="true"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:theme="@style/Theme.OpenClawAssistant.Transparent" />
+
         <!-- Settings Activity -->
         <activity
             android:name="com.openclaw.assistant.SettingsActivity"
@@ -131,6 +147,14 @@
             android:name="com.openclaw.assistant.ChatActivity"
             android:exported="false"
             android:theme="@style/Theme.OpenClawAssistant" />
+
+        <activity
+            android:name="com.openclaw.assistant.AmbientVoiceActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:finishOnTaskLaunch="true"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.OpenClawAssistant.Transparent" />
 
         <!-- WakeHermesClaw multi-backend UI -->
         <activity
@@ -174,6 +198,41 @@
             android:launchMode="singleTask"
             android:excludeFromRecents="true"
             android:theme="@style/Theme.OpenClawAssistant" />
+        <activity
+            android:name="com.openclaw.assistant.broker.AssistantPrivateReadApprovalActivityV1"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:label="@string/assistant_private_read_title"
+            android:launchMode="singleTask"
+            android:showWhenLocked="false"
+            android:theme="@style/Theme.OpenClawAssistant" />
+        <activity
+            android:name="com.openclaw.assistant.broker.AssistantContactCallApprovalActivityV1"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:label="@string/assistant_contact_call_title"
+            android:launchMode="singleTask"
+            android:showWhenLocked="false"
+            android:theme="@style/Theme.OpenClawAssistant" />
+        <activity
+            android:name="com.openclaw.assistant.broker.AssistantContactSmsApprovalActivityV1"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:label="@string/assistant_contact_sms_title"
+            android:launchMode="singleTask"
+            android:showWhenLocked="false"
+            android:theme="@style/Theme.OpenClawAssistant" />
+        <activity
+            android:name="com.openclaw.assistant.broker.AssistantCalendarCreateApprovalActivityV1"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:label="@string/assistant_calendar_create_title"
+            android:launchMode="singleTask"
+            android:showWhenLocked="false"
+            android:theme="@style/Theme.OpenClawAssistant" />
+        <receiver
+            android:name="com.openclaw.assistant.node.AssistantSmsSentReceiverV1"
+            android:exported="false" />
         <activity
             android:name="com.openclaw.assistant.bridge.pairing.BridgePairingActivity"
             android:exported="false"
@@ -251,6 +310,21 @@
                 android:resource="@xml/agent_voice_accessibility_service" />
         </service>
 
+        <!-- Least-privilege bridge used only to invoke Android's current
+             digital-assistant action after the offline "Hey GPT" wake word. -->
+        <service
+            android:name="com.openclaw.assistant.chatgpt.AssistTriggerAccessibilityService"
+            android:label="@string/assist_trigger_service_name"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/assist_trigger_accessibility_service" />
+        </service>
+
         <!-- Notification Listener Service -->
         <service
             android:name="com.openclaw.assistant.service.OpenClawNotificationListenerService"
@@ -279,6 +353,7 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
 

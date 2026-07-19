@@ -1,0 +1,158 @@
+{
+  "id": "assistant-capability-broker",
+  "name": "Assistant Capability Broker",
+  "description": "Durable typed plans and receipts for the agentic assistant.",
+  "version": "0.8.0",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "memoryEnabled": {
+        "type": "boolean",
+        "default": false
+      },
+      "memoryAgentId": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+        "default": "voice-main"
+      },
+      "privateReadsEnabled": {
+        "type": "boolean",
+        "default": false
+      },
+      "phoneCallsEnabled": {
+        "type": "boolean",
+        "default": false
+      },
+      "smsSendEnabled": {
+        "type": "boolean",
+        "default": false
+      },
+      "calendarReadsEnabled": {
+        "type": "boolean",
+        "default": false
+      },
+      "calendarWritesEnabled": {
+        "type": "boolean",
+        "default": false
+      },
+      "messengerReadsEnabled": {
+        "type": "boolean",
+        "default": false
+      },
+      "privateReadAgentId": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+        "default": "voice-main"
+      },
+      "androidNodeId": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
+      },
+      "windowsFileSearchEnabled": {
+        "type": "boolean",
+        "default": false
+      },
+      "windowsFileReadEnabled": {
+        "type": "boolean",
+        "default": false
+      },
+      "windowsFileAgentId": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+        "default": "voice-main"
+      },
+      "windowsNodeId": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
+      },
+      "windowsNodeEnabled": {
+        "type": "boolean",
+        "default": false
+      },
+      "windowsVoiceSessionKey": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "windowsBrokerKeyId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9._-]{1,128}$"
+      },
+      "windowsBrokerPublicKeyBase64Url": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{43}$"
+      },
+      "windowsReadRoots": {
+        "type": "object",
+        "minProperties": 1,
+        "maxProperties": 10,
+        "propertyNames": {
+          "pattern": "^[a-z][a-z0-9_-]{0,31}$"
+        },
+        "additionalProperties": {
+          "type": "string",
+          "minLength": 3
+        }
+      },
+      "windowsReadExtensions": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 100,
+        "items": {
+          "type": "string",
+          "pattern": "^\\.[A-Za-z0-9]{1,12}$"
+        }
+      }
+    },
+    "additionalProperties": false
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "assistant_memory_remember",
+      "assistant_memory_forget",
+      "assistant_contacts_search",
+      "assistant_phone_call",
+      "assistant_sms_send",
+      "assistant_calendar_next",
+      "assistant_calendar_create",
+      "messenger_notifications_read",
+      "assistant_windows_files_search",
+      "assistant_windows_files_read"
+    ]
+  },
+  "toolMetadata": {
+    "assistant_memory_remember": {
+      "optional": true
+    },
+    "assistant_memory_forget": {
+      "optional": true
+    },
+    "assistant_contacts_search": {
+      "optional": true
+    },
+    "assistant_phone_call": {
+      "optional": true
+    },
+    "assistant_sms_send": {
+      "optional": true
+    },
+    "assistant_calendar_next": {
+      "optional": true
+    },
+    "assistant_calendar_create": {
+      "optional": true
+    },
+    "messenger_notifications_read": {
+      "optional": true
+    },
+    "assistant_windows_files_search": {
+      "optional": true
+    },
+    "assistant_windows_files_read": {
+      "optional": true
+    }
+  }
+}

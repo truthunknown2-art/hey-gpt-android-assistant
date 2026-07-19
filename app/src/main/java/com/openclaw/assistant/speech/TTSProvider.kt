@@ -56,6 +56,11 @@ interface TTSProvider {
     }
 }
 
+/** A provider that can prove speech synthesis does not require a network voice. */
+interface PrivateTTSProvider {
+    fun speakPrivateWithProgress(text: String): Flow<TTSState>
+}
+
 /**
  * TTS State for progress tracking
  */
@@ -71,6 +76,7 @@ sealed class TTSState {
  */
 object TTSProviderType {
     const val LOCAL = "local"
+    const val POCKET = "pocket"
     const val ELEVENLABS = "elevenlabs"
     const val OPENAI = "openai"
     const val VOICEVOX = "voicevox"

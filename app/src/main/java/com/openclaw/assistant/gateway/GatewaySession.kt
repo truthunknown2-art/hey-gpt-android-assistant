@@ -100,6 +100,21 @@ class GatewaySession(
       return minOf(maxOf(invokeTimeoutMs + 5_000L, 15_000L), 120_000L)
     }
 
+    internal suspend fun <T> sendAndAwaitPendingRpc(
+      id: String,
+      deferred: CompletableDeferred<T>,
+      pendingRequests: ConcurrentHashMap<String, CompletableDeferred<T>>,
+      timeoutMs: Long,
+      sendRequest: suspend () -> Unit,
+    ): T = try {
+      sendRequest()
+      withTimeout(timeoutMs) { deferred.await() }
+    } catch (_: TimeoutCancellationException) {
+      throw IllegalStateException("request timeout")
+    } finally {
+      pendingRequests.remove(id, deferred)
+    }
+
     internal fun isLoopbackHost(raw: String?): Boolean {
       val host = raw?.trim()?.lowercase().orEmpty()
       if (host.isEmpty()) return false
@@ -338,12 +353,8 @@ class GatewaySession(
           put("method", JsonPrimitive(method))
           if (params != null) put("params", params)
         }
-      sendJson(frame)
-      return try {
-        withTimeout(timeoutMs) { deferred.await() }
-      } catch (err: TimeoutCancellationException) {
-        pending.remove(id)
-        throw IllegalStateException("request timeout")
+      return sendAndAwaitPendingRpc(id, deferred, pending, timeoutMs) {
+        sendJson(frame)
       }
     }
 

@@ -93,6 +93,7 @@ import android.content.ContentResolver
 import com.openclaw.assistant.data.SettingsRepository
 import com.openclaw.assistant.service.HotwordService
 import com.openclaw.assistant.ui.GatewayTrustDialog
+import com.openclaw.assistant.ui.AssistantBrokerTrustDialog
 import com.openclaw.assistant.ui.backend.ChatBackendTarget
 
 private const val TAG = "ChatActivity"
@@ -191,6 +192,8 @@ class ChatActivity : ComponentActivity() {
                     onAgentSelected = { viewModel.setAgent(it) },
                     onAcceptGatewayTrust = { viewModel.acceptGatewayTrust() },
                     onDeclineGatewayTrust = { viewModel.declineGatewayTrust() },
+                    onAcceptAssistantBrokerTrust = { viewModel.acceptAssistantBrokerTrust() },
+                    onDeclineAssistantBrokerTrust = { viewModel.declineAssistantBrokerTrust() },
                     onAttachFiles = { viewModel.addAttachments(it) },
                     onRemoveAttachment = { viewModel.removeAttachment(it) }
                 )
@@ -327,6 +330,8 @@ fun ChatScreen(
     onAgentSelected: (String?) -> Unit = {},
     onAcceptGatewayTrust: () -> Unit = {},
     onDeclineGatewayTrust: () -> Unit = {},
+    onAcceptAssistantBrokerTrust: () -> Unit = {},
+    onDeclineAssistantBrokerTrust: () -> Unit = {},
     onAttachFiles: (List<PendingFileAttachment>) -> Unit = {},
     onRemoveAttachment: (String) -> Unit = {}
 ) {
@@ -500,6 +505,13 @@ fun ChatScreen(
                         prompt = uiState.pendingGatewayTrust,
                         onAccept = onAcceptGatewayTrust,
                         onDecline = onDeclineGatewayTrust
+                    )
+                }
+                if (uiState.pendingAssistantBrokerTrust != null) {
+                    AssistantBrokerTrustDialog(
+                        prompt = uiState.pendingAssistantBrokerTrust,
+                        onAccept = onAcceptAssistantBrokerTrust,
+                        onDecline = onDeclineAssistantBrokerTrust,
                     )
                 }
 

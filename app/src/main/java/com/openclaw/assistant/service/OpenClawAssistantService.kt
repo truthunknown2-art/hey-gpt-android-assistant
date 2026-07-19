@@ -16,6 +16,7 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import com.openclaw.assistant.BuildConfig
 import com.google.firebase.crashlytics.FirebaseCrashlytics
+import com.openclaw.assistant.chatgpt.ChatGptLiveLauncher
 
 /**
  * Voice Interaction Service
@@ -27,7 +28,13 @@ class OpenClawAssistantService : VoiceInteractionService() {
         private const val TAG = "OpenClawAssistantSvc"
         private const val PENDING_SESSION_TIMEOUT_MS = 30_000L
         const val ACTION_SHOW_ASSISTANT = "com.openclaw.assistant.ACTION_SHOW_ASSISTANT"
+        const val ACTION_HANDOFF_CHATGPT = "com.openclaw.assistant.ACTION_HANDOFF_CHATGPT"
         const val EXTRA_VOICE_TARGET = "com.openclaw.assistant.EXTRA_VOICE_TARGET"
+        const val EXTRA_VOICE_PROFILE = "com.openclaw.assistant.EXTRA_VOICE_PROFILE"
+        const val EXTRA_SESSION_KEY = "com.openclaw.assistant.EXTRA_SESSION_KEY"
+        const val EXTRA_FORCE_CONTINUOUS = "com.openclaw.assistant.EXTRA_FORCE_CONTINUOUS"
+        const val EXTRA_REQUIRE_UNLOCKED = "com.openclaw.assistant.EXTRA_REQUIRE_UNLOCKED"
+        const val VOICE_PROFILE_HEY_GPT_MAIN = "hey_gpt_main"
     }
 
     private var isServiceReady = false
@@ -45,8 +52,9 @@ class OpenClawAssistantService : VoiceInteractionService() {
     private val debugReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             Log.e(TAG, "Assistant trigger receiver triggered: ${intent?.action}")
-            if (intent?.action == ACTION_SHOW_ASSISTANT) {
-                triggerShowSession(intent)
+            when (intent?.action) {
+                ACTION_SHOW_ASSISTANT -> triggerShowSession(intent)
+                ACTION_HANDOFF_CHATGPT -> launchChatGptHandoff()
             }
         }
     }
@@ -54,7 +62,10 @@ class OpenClawAssistantService : VoiceInteractionService() {
     override fun onCreate() {
         super.onCreate()
         Log.e(TAG, "VoiceInteractionService onCreate")
-        val filter = IntentFilter(ACTION_SHOW_ASSISTANT)
+        val filter = IntentFilter().apply {
+            addAction(ACTION_SHOW_ASSISTANT)
+            addAction(ACTION_HANDOFF_CHATGPT)
+        }
         ContextCompat.registerReceiver(this, debugReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
     }
 
@@ -69,6 +80,8 @@ class OpenClawAssistantService : VoiceInteractionService() {
         Log.e(TAG, "onStartCommand received: $action")
         if (action == ACTION_SHOW_ASSISTANT) {
             triggerShowSession(intent)
+        } else if (action == ACTION_HANDOFF_CHATGPT) {
+            launchChatGptHandoff()
         }
         return START_STICKY
     }
@@ -103,10 +116,32 @@ class OpenClawAssistantService : VoiceInteractionService() {
         }
     }
 
+    /**
+     * Minimal handoff-only path. It intentionally does not construct an
+     * OpenClawSession, recognizer, TTS stack, or require a configured Gateway.
+     */
+    private fun launchChatGptHandoff() {
+        Log.i(TAG, "chatgpt_launch_requested")
+        val result = ChatGptLiveLauncher.launch(this)
+        Log.i(TAG, "chatgpt_launch_result=$result")
+    }
+
     private fun buildSessionArgs(sourceIntent: Intent?): Bundle {
         return Bundle().apply {
             sourceIntent?.getStringExtra(EXTRA_VOICE_TARGET)?.takeIf { it.isNotBlank() }?.let { target ->
                 putString(EXTRA_VOICE_TARGET, target)
+            }
+            sourceIntent?.getStringExtra(EXTRA_VOICE_PROFILE)?.takeIf { it.isNotBlank() }?.let { profile ->
+                putString(EXTRA_VOICE_PROFILE, profile)
+            }
+            sourceIntent?.getStringExtra(EXTRA_SESSION_KEY)?.takeIf { it.isNotBlank() }?.let { sessionKey ->
+                putString(EXTRA_SESSION_KEY, sessionKey)
+            }
+            if (sourceIntent?.hasExtra(EXTRA_FORCE_CONTINUOUS) == true) {
+                putBoolean(EXTRA_FORCE_CONTINUOUS, sourceIntent.getBooleanExtra(EXTRA_FORCE_CONTINUOUS, false))
+            }
+            if (sourceIntent?.hasExtra(EXTRA_REQUIRE_UNLOCKED) == true) {
+                putBoolean(EXTRA_REQUIRE_UNLOCKED, sourceIntent.getBooleanExtra(EXTRA_REQUIRE_UNLOCKED, false))
             }
         }
     }

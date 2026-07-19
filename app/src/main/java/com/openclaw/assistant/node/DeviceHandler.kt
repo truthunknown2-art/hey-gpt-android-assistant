@@ -14,6 +14,7 @@ import android.os.StatFs
 import androidx.core.content.ContextCompat
 import com.openclaw.assistant.BuildConfig
 import com.openclaw.assistant.SecurePrefs
+import com.openclaw.assistant.broker.AndroidDeviceStatusSummaryV1
 import com.openclaw.assistant.gateway.GatewaySession
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -23,7 +24,47 @@ class DeviceHandler(
   private val prefs: SecurePrefs,
 ) {
 
+  internal data class StatusSnapshot(
+    val batteryLevel: Int,
+    val charging: Boolean,
+    val plugged: Int,
+    val status: Int,
+    val temperatureCelsius: Double,
+    val voltage: Int,
+    val screenInteractive: Boolean,
+    val voiceWakeMode: String,
+    val locationMode: String,
+    val screenPreventSleep: Boolean,
+  )
+
   fun handleStatus(): GatewaySession.InvokeResult {
+    val snapshot = readStatusSnapshot()
+
+    val payload = buildJsonObject {
+      put("batteryLevel", JsonPrimitive(snapshot.batteryLevel))
+      put("charging", JsonPrimitive(snapshot.charging))
+      put("plugged", JsonPrimitive(snapshot.plugged))
+      put("status", JsonPrimitive(snapshot.status))
+      put("temperature", JsonPrimitive(snapshot.temperatureCelsius))
+      put("voltage", JsonPrimitive(snapshot.voltage))
+      put("screenInteractive", JsonPrimitive(snapshot.screenInteractive))
+      put("voiceWakeMode", JsonPrimitive(snapshot.voiceWakeMode))
+      put("locationMode", JsonPrimitive(snapshot.locationMode))
+      put("screenPreventSleep", JsonPrimitive(snapshot.screenPreventSleep))
+    }
+    return GatewaySession.InvokeResult.ok(payload.toString())
+  }
+
+  internal fun readAssistantStatus(): AndroidDeviceStatusSummaryV1 {
+    val snapshot = readStatusSnapshot()
+    return AndroidDeviceStatusSummaryV1(
+      batteryLevelPercent = snapshot.batteryLevel.takeIf { it in 0..100 },
+      charging = snapshot.charging,
+      screenInteractive = snapshot.screenInteractive,
+    )
+  }
+
+  private fun readStatusSnapshot(): StatusSnapshot {
     val batteryIntent: Intent? = appContext.registerReceiver(
       null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)
     )
@@ -38,20 +79,18 @@ class DeviceHandler(
     val voltage = batteryIntent?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1) ?: -1
 
     val powerManager = appContext.getSystemService(Context.POWER_SERVICE) as PowerManager
-
-    val payload = buildJsonObject {
-      put("batteryLevel", JsonPrimitive(level))
-      put("charging", JsonPrimitive(isCharging))
-      put("plugged", JsonPrimitive(plugged))
-      put("status", JsonPrimitive(status))
-      put("temperature", JsonPrimitive(temperature / 10.0)) // Celsius
-      put("voltage", JsonPrimitive(voltage))
-      put("screenInteractive", JsonPrimitive(powerManager.isInteractive))
-      put("voiceWakeMode", JsonPrimitive(prefs.voiceWakeMode.value.rawValue))
-      put("locationMode", JsonPrimitive(prefs.locationMode.value.rawValue))
-      put("screenPreventSleep", JsonPrimitive(prefs.preventSleep.value))
-    }
-    return GatewaySession.InvokeResult.ok(payload.toString())
+    return StatusSnapshot(
+      batteryLevel = level,
+      charging = isCharging,
+      plugged = plugged,
+      status = status,
+      temperatureCelsius = temperature / 10.0,
+      voltage = voltage,
+      screenInteractive = powerManager.isInteractive,
+      voiceWakeMode = prefs.voiceWakeMode.value.rawValue,
+      locationMode = prefs.locationMode.value.rawValue,
+      screenPreventSleep = prefs.preventSleep.value,
+    )
   }
 
   fun handleInfo(): GatewaySession.InvokeResult {

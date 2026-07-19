@@ -9,12 +9,16 @@ import com.openclaw.assistant.protocol.OpenClawContactsCommand
 import com.openclaw.assistant.protocol.OpenClawCalendarCommand
 import com.openclaw.assistant.protocol.OpenClawMotionCommand
 import com.openclaw.assistant.protocol.OpenClawBridgeCommand
+import com.openclaw.assistant.protocol.OpenClawPhoneCommand
+import com.openclaw.assistant.protocol.OpenClawMediaCommand
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import io.mockk.coVerify
+import io.mockk.verify
 
 class InvokeDispatcherTest {
   private val canvas = mockk<CanvasController>()
@@ -37,6 +41,8 @@ class InvokeDispatcherTest {
   private val appHandler = mockk<AppHandler>()
   private val voiceWakeHandler = mockk<VoiceWakeHandler>()
   private val mobileBridgeHandler = mockk<MobileBridgeHandler>()
+  private val phoneHandler = mockk<PhoneHandler>()
+  private val mediaHandler = mockk<MediaHandler>()
 
   private fun createDispatcher(
     isForeground: Boolean = true,
@@ -63,6 +69,8 @@ class InvokeDispatcherTest {
     appHandler = appHandler,
     voiceWakeHandler = voiceWakeHandler,
     mobileBridgeHandler = mobileBridgeHandler,
+    phoneHandler = phoneHandler,
+    mediaHandler = mediaHandler,
     isForeground = { isForeground },
     cameraEnabled = { cameraEnabled },
     locationEnabled = { locationEnabled }
@@ -100,14 +108,50 @@ class InvokeDispatcherTest {
   }
 
   @Test
-  fun `notifications list is dispatched to handler`() = runTest {
+  fun `Gateway notification list is rejected before reaching handler`() = runTest {
     val dispatcher = createDispatcher()
-    coEvery { notificationsHandler.handleList() } returns GatewaySession.InvokeResult.ok("""{"notifications":[]}""")
 
     val result = dispatcher.handleInvoke(OpenClawNotificationsCommand.List.rawValue, null)
 
+    assertEquals(false, result.ok)
+    assertEquals("LOCAL_NOTIFICATION_ACCESS_REQUIRED", result.error?.code)
+    coVerify(exactly = 0) { notificationsHandler.handleList() }
+  }
+
+  @Test
+  fun `Gateway notification actions are rejected before reaching handler`() = runTest {
+    val dispatcher = createDispatcher()
+
+    val result = dispatcher.handleInvoke(OpenClawNotificationsCommand.Actions.rawValue, "{}")
+
+    assertEquals(false, result.ok)
+    assertEquals("LOCAL_NOTIFICATION_ACCESS_REQUIRED", result.error?.code)
+    coVerify(exactly = 0) { notificationsHandler.handleActions(any()) }
+  }
+
+  @Test
+  fun `local voice notification list remains on device`() = runTest {
+    val dispatcher = createDispatcher()
+    coEvery { notificationsHandler.handleList() } returns GatewaySession.InvokeResult.ok("""{"notifications":[]}""")
+
+    val result = dispatcher.handleInvoke(
+      OpenClawNotificationsCommand.List.rawValue,
+      null,
+      InvocationOrigin.LOCAL_VOICE,
+    )
+
     assertEquals(true, result.ok)
     assertEquals("""{"notifications":[]}""", result.payloadJson)
+  }
+
+  @Test
+  fun `legacy raw Messenger notification command is not dispatchable`() = runTest {
+    val dispatcher = createDispatcher()
+
+    val result = dispatcher.handleInvoke("notifications.list_package", null)
+
+    assertEquals(false, result.ok)
+    assertEquals("INVALID_REQUEST", result.error?.code)
   }
 
   @Test
@@ -169,25 +213,98 @@ class InvokeDispatcherTest {
   }
 
   @Test
-  fun `bridge status is dispatched to handler`() = runTest {
+  fun `Gateway bridge commands are rejected before reaching handler`() = runTest {
+    val dispatcher = createDispatcher()
+
+    OpenClawBridgeCommand.entries.forEach { command ->
+      val result = dispatcher.handleInvoke(command.rawValue, "{}")
+      assertEquals(false, result.ok)
+      assertEquals("LOCAL_BRIDGE_ACCESS_REQUIRED", result.error?.code)
+    }
+
+    verify(exactly = 0) { mobileBridgeHandler.handleStatus() }
+    coVerify(exactly = 0) { mobileBridgeHandler.handleManifest() }
+    coVerify(exactly = 0) { mobileBridgeHandler.handleExecute(any()) }
+    coVerify(exactly = 0) { mobileBridgeHandler.handleGrants() }
+    coVerify(exactly = 0) { mobileBridgeHandler.handleRevoke(any()) }
+  }
+
+  @Test
+  fun `local bridge status remains available on device`() = runTest {
     val dispatcher = createDispatcher()
     every { mobileBridgeHandler.handleStatus() } returns GatewaySession.InvokeResult.ok("""{"enabled":true}""")
 
-    val result = dispatcher.handleInvoke(OpenClawBridgeCommand.Status.rawValue, null)
+    val result = dispatcher.handleInvoke(
+      OpenClawBridgeCommand.Status.rawValue,
+      null,
+      InvocationOrigin.LOCAL_VOICE,
+    )
 
     assertEquals(true, result.ok)
     assertEquals("""{"enabled":true}""", result.payloadJson)
   }
 
   @Test
-  fun `bridge execute is dispatched to handler`() = runTest {
+  fun `local bridge execute remains available on device`() = runTest {
     val dispatcher = createDispatcher()
     val params = """{"requestId":"r1","capability":"device.info","arguments":{}}"""
     coEvery { mobileBridgeHandler.handleExecute(params) } returns GatewaySession.InvokeResult.ok("""{"status":"completed"}""")
 
-    val result = dispatcher.handleInvoke(OpenClawBridgeCommand.Execute.rawValue, params)
+    val result = dispatcher.handleInvoke(
+      OpenClawBridgeCommand.Execute.rawValue,
+      params,
+      InvocationOrigin.LOCAL_VOICE,
+    )
 
     assertEquals(true, result.ok)
     assertEquals("""{"status":"completed"}""", result.payloadJson)
+  }
+
+  @Test
+  fun `local phone call is dispatched to handler`() = runTest {
+    val dispatcher = createDispatcher()
+    val params = """{"number":"+15551234567"}"""
+    every { phoneHandler.handleCall(params) } returns GatewaySession.InvokeResult.ok("{}")
+
+    val result = dispatcher.handleInvoke(
+      OpenClawPhoneCommand.Call.rawValue,
+      params,
+      InvocationOrigin.LOCAL_VOICE,
+    )
+
+    assertEquals(true, result.ok)
+  }
+
+  @Test
+  fun `gateway phone call is rejected before handler`() = runTest {
+    val dispatcher = createDispatcher()
+    val result = dispatcher.handleInvoke(
+      OpenClawPhoneCommand.Call.rawValue,
+      """{"number":"+15551234567"}""",
+    )
+
+    assertEquals(false, result.ok)
+    assertEquals("LOCAL_CONFIRMATION_REQUIRED", result.error?.code)
+  }
+
+  @Test
+  fun `media search is dispatched to handler`() = runTest {
+    val dispatcher = createDispatcher()
+    val params = """{"query":"Miles Davis"}"""
+    coEvery { mediaHandler.handlePlaySearch(params) } returns GatewaySession.InvokeResult.ok("{}")
+
+    val result = dispatcher.handleInvoke(OpenClawMediaCommand.PlaySearch.rawValue, params)
+
+    assertEquals(true, result.ok)
+  }
+
+  @Test
+  fun `signed assistant commands fail closed while executor is unprovisioned`() = runTest {
+    val dispatcher = createDispatcher()
+
+    val result = dispatcher.handleInvoke(AssistantNodeCommandHandlerV1.EXECUTE_COMMAND, "{}")
+
+    assertEquals(false, result.ok)
+    assertEquals("ASSISTANT_EXECUTOR_DISABLED", result.error?.code)
   }
 }

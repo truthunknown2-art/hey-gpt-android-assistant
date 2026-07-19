@@ -94,6 +94,18 @@ class SettingsRepository(context: Context) {
             prefs.edit().putString(KEY_HERMES_WAKE_WORD, normalizeWakeWord(value, DEFAULT_HERMES_WAKE_WORD)).apply()
         }
 
+    var chatGptWakeWord: String
+        get() {
+            ensureWakeTargetsV2Migrated()
+            return normalizeWakeWord(
+                prefs.getString(KEY_CHATGPT_WAKE_WORD, DEFAULT_CHATGPT_WAKE_WORD) ?: DEFAULT_CHATGPT_WAKE_WORD,
+                DEFAULT_CHATGPT_WAKE_WORD
+            )
+        }
+        set(value) = prefs.edit()
+            .putString(KEY_CHATGPT_WAKE_WORD, normalizeWakeWord(value, DEFAULT_CHATGPT_WAKE_WORD))
+            .apply()
+
     var openClawWakeSound: String
         get() {
             ensureDualWakeWordsMigrated()
@@ -108,6 +120,16 @@ class SettingsRepository(context: Context) {
         }
         set(value) = prefs.edit().putString(KEY_HERMES_WAKE_SOUND, normalizeWakeSound(value, WAKE_SOUND_HIGH)).apply()
 
+    var chatGptWakeSound: String
+        get() {
+            ensureWakeTargetsV2Migrated()
+            return prefs.getString(KEY_CHATGPT_WAKE_SOUND, WAKE_SOUND_STANDARD) ?: WAKE_SOUND_STANDARD
+        }
+        set(value) = prefs.edit().putString(
+            KEY_CHATGPT_WAKE_SOUND,
+            normalizeWakeSound(value, WAKE_SOUND_STANDARD)
+        ).apply()
+
     // Wake word detection sensitivity threshold (0.0 = easiest to trigger, 1.0 = hardest)
     var wakeWordSensitivity: Float
         get() = prefs.getFloat(KEY_WAKE_WORD_SENSITIVITY, 0.7f)
@@ -119,10 +141,11 @@ class SettingsRepository(context: Context) {
     }
 
     fun getWakeWordTargets(): List<WakeWordTarget> {
-        ensureDualWakeWordsMigrated()
+        ensureWakeTargetsV2Migrated()
         return listOf(
             WakeWordTarget(openClawWakeWord, VOICE_TARGET_OPENCLAW, openClawWakeSound),
-            WakeWordTarget(hermesWakeWord, VOICE_TARGET_HERMES, hermesWakeSound)
+            WakeWordTarget(hermesWakeWord, VOICE_TARGET_HERMES, hermesWakeSound),
+            WakeWordTarget(chatGptWakeWord, VOICE_TARGET_CHATGPT, chatGptWakeSound)
         ).filter { it.phrase.isNotBlank() }
     }
 
@@ -174,6 +197,26 @@ class SettingsRepository(context: Context) {
         editor.putBoolean(KEY_DUAL_WAKE_WORDS_MIGRATED, true).apply()
     }
 
+    /**
+     * Adds the ChatGPT target without changing the already-shipped dual-target
+     * migration. Keeping a separate idempotent version marker prevents an
+     * upgraded install from repeatedly rewriting user wake-word preferences.
+     */
+    private fun ensureWakeTargetsV2Migrated() {
+        ensureDualWakeWordsMigrated()
+        if (prefs.getBoolean(KEY_WAKE_TARGETS_V2_MIGRATED, false)) return
+        val editor = prefs.edit()
+        if (!prefs.contains(KEY_CHATGPT_WAKE_WORD)) {
+            editor.putString(KEY_CHATGPT_WAKE_WORD, DEFAULT_CHATGPT_WAKE_WORD)
+        }
+        if (!prefs.contains(KEY_CHATGPT_WAKE_SOUND)) {
+            editor.putString(KEY_CHATGPT_WAKE_SOUND, WAKE_SOUND_STANDARD)
+        }
+        editor.putBoolean(KEY_WAKE_TARGETS_V2_MIGRATED, true).apply()
+    }
+
+    fun hasUsableWakeTarget(): Boolean = getWakeWordTargets().any { it.phrase.isNotBlank() }
+
     // TTS enabled
     var ttsEnabled: Boolean
         get() = prefs.getBoolean(KEY_TTS_ENABLED, true) // Default true as per user request
@@ -191,7 +234,7 @@ class SettingsRepository(context: Context) {
 
     // TTS Speed
     var ttsSpeed: Float
-        get() = prefs.getFloat(KEY_TTS_SPEED, 1.2f)
+        get() = prefs.getFloat(KEY_TTS_SPEED, 1.0f)
         set(value) = prefs.edit().putFloat(KEY_TTS_SPEED, value).apply()
 
     // TTS Engine
@@ -199,10 +242,14 @@ class SettingsRepository(context: Context) {
         get() = prefs.getString(KEY_TTS_ENGINE, "") ?: ""
         set(value) = prefs.edit().putString(KEY_TTS_ENGINE, value).apply()
     
-    // TTS Type (local, elevenlabs, openai, voicevox)
+    // TTS Type (Pocket TTS, local, ElevenLabs, OpenAI, VOICEVOX)
     var ttsType: String
         get() = prefs.getString(KEY_TTS_TYPE, TTS_TYPE_LOCAL) ?: TTS_TYPE_LOCAL
         set(value) = prefs.edit().putString(KEY_TTS_TYPE, value).apply()
+
+    var pocketTtsUrl: String
+        get() = prefs.getString(KEY_POCKET_TTS_URL, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_POCKET_TTS_URL, value.trim()).apply()
     
     // ElevenLabs settings
     var elevenLabsApiKey: String
@@ -293,6 +340,10 @@ class SettingsRepository(context: Context) {
         get() = prefs.getBoolean(KEY_MEDIA_BUTTON_ENABLED, false)
         set(value) = prefs.edit().putBoolean(KEY_MEDIA_BUTTON_ENABLED, value).apply()
 
+    var spotifyClientId: String
+        get() = prefs.getString(KEY_SPOTIFY_CLIENT_ID, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_SPOTIFY_CLIENT_ID, value.trim()).apply()
+
     // Latest app update version dismissed from the startup notice.
     var dismissedUpdateVersion: String
         get() = prefs.getString(KEY_DISMISSED_UPDATE_VERSION, "") ?: ""
@@ -380,6 +431,9 @@ class SettingsRepository(context: Context) {
         private const val KEY_HERMES_WAKE_WORD = "hermes_wake_word"
         private const val KEY_OPENCLAW_WAKE_SOUND = "openclaw_wake_sound"
         private const val KEY_HERMES_WAKE_SOUND = "hermes_wake_sound"
+        private const val KEY_CHATGPT_WAKE_WORD = "chatgpt_wake_word"
+        private const val KEY_CHATGPT_WAKE_SOUND = "chatgpt_wake_sound"
+        private const val KEY_WAKE_TARGETS_V2_MIGRATED = "wake_targets_v2_migrated"
         private const val KEY_DUAL_WAKE_WORDS_MIGRATED = "dual_wake_words_migrated"
         private const val KEY_WAKE_WORD_SENSITIVITY = "wake_word_sensitivity"
         private const val KEY_IS_VERIFIED = "is_verified"
@@ -399,6 +453,7 @@ class SettingsRepository(context: Context) {
         private const val KEY_TTS_BARGE_IN_ENABLED = "tts_barge_in_enabled"
         private const val KEY_WAKE_WORD_DEBUG_ENABLED = "wake_word_debug_enabled"
         private const val KEY_MEDIA_BUTTON_ENABLED = "media_button_enabled"
+        private const val KEY_SPOTIFY_CLIENT_ID = "spotify_client_id"
         private const val KEY_DISMISSED_UPDATE_VERSION = "dismissed_update_version"
         private const val KEY_SPEECH_LANGUAGE = "speech_language"
         private const val KEY_APP_LANGUAGE = "app_language"
@@ -406,6 +461,7 @@ class SettingsRepository(context: Context) {
         
         // TTS settings keys
         private const val KEY_TTS_TYPE = "tts_type"
+        private const val KEY_POCKET_TTS_URL = "pocket_tts_url"
         private const val KEY_ELEVENLABS_API_KEY = "elevenlabs_api_key"
         private const val KEY_ELEVENLABS_VOICE_ID = "elevenlabs_voice_id"
         private const val KEY_ELEVENLABS_MODEL = "elevenlabs_model"
@@ -426,8 +482,10 @@ class SettingsRepository(context: Context) {
 
         const val DEFAULT_OPENCLAW_WAKE_WORD = "hey claw"
         const val DEFAULT_HERMES_WAKE_WORD = "hey hermes"
+        const val DEFAULT_CHATGPT_WAKE_WORD = "hey g p t"
         const val VOICE_TARGET_OPENCLAW = "openclaw"
         const val VOICE_TARGET_HERMES = "hermes"
+        const val VOICE_TARGET_CHATGPT = "chatgpt"
         const val WAKE_SOUND_NONE = "none"
         const val WAKE_SOUND_STANDARD = "standard"
         const val WAKE_SOUND_HIGH = "high"
@@ -440,6 +498,7 @@ class SettingsRepository(context: Context) {
         
         // TTS Type constants
         const val TTS_TYPE_LOCAL = "local"
+        const val TTS_TYPE_POCKET = "pocket"
         const val TTS_TYPE_ELEVENLABS = "elevenlabs"
         const val TTS_TYPE_OPENAI = "openai"
         const val TTS_TYPE_VOICEVOX = "voicevox"

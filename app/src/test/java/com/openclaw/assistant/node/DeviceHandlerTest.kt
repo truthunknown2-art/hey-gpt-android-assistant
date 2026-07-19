@@ -57,6 +57,18 @@ class DeviceHandlerTest {
   }
 
   @Test
+  fun `assistant status exposes only bounded low risk fields`() {
+    every { prefs.voiceWakeMode } returns MutableStateFlow(VoiceWakeMode.Off)
+    every { prefs.locationMode } returns MutableStateFlow(LocationMode.Off)
+    every { prefs.preventSleep } returns MutableStateFlow(false)
+
+    val status = handler.readAssistantStatus()
+
+    assertTrue(status.batteryLevelPercent == null || status.batteryLevelPercent in 0..100)
+    assertEquals(false, status.charging)
+  }
+
+  @Test
   fun `handlePermissions returns permission fields`() {
     val result = handler.handlePermissions()
 

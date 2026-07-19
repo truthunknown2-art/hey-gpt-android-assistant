@@ -5,6 +5,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.KeyguardManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -17,14 +18,27 @@ import android.media.MediaRecorder
 import android.media.ToneGenerator
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
+import android.speech.tts.TextToSpeech
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import com.openclaw.assistant.OpenClawApplication
+import com.openclaw.assistant.AmbientVoiceActivity
 import com.openclaw.assistant.MainActivity
 import com.openclaw.assistant.R
 import com.openclaw.assistant.BuildConfig
 import com.google.firebase.crashlytics.FirebaseCrashlytics
 import com.openclaw.assistant.data.SettingsRepository
+import com.openclaw.assistant.chatgpt.ChatGptHandoffTracker
+import com.openclaw.assistant.chatgpt.ChatGptLiveLauncher
+import com.openclaw.assistant.chatgpt.LockedConversationController
+import com.openclaw.assistant.chatgpt.VoiceConversationRoute
+import com.openclaw.assistant.chatgpt.chooseVoiceConversationRoute
+import com.openclaw.assistant.chatgpt.limitLockedVoiceReply
+import com.openclaw.assistant.chatgpt.localTtsTimeoutMs
+import com.openclaw.assistant.speech.TTSManager
+import com.openclaw.assistant.speech.TTSUtils
 import kotlinx.coroutines.*
 import org.vosk.Model
 import org.vosk.Recognizer
@@ -32,6 +46,9 @@ import org.vosk.android.RecognitionListener as VoskRecognitionListener
 import org.vosk.android.SpeechService
 import org.vosk.android.StorageService
 import java.io.IOException
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import org.json.JSONObject
 
 /**
@@ -42,10 +59,34 @@ class HotwordService : Service(), VoskRecognitionListener {
     companion object {
         private const val TAG = "HotwordService"
         private const val NOTIFICATION_ID = 1001
+        private const val LOCAL_COMMAND_NOTIFICATION_ID = 5602
         private const val CHANNEL_ID = "hotword_channel"
+        private const val LOCAL_COMMAND_CHANNEL_ID = "local_voice_commands"
         private const val SAMPLE_RATE = 16000.0f
+        private const val LOCAL_COMMAND_TIMEOUT_MS = 4_000
+        private const val LOCAL_COMMAND_SILENCE_MS = 1_200L
+        private const val CHATGPT_WAKE_TONE_SETTLE_MS = 220L
+        private const val MICROPHONE_RELEASE_TIMEOUT_MS = 3_000L
+        private const val OPENCLAW_CONNECT_GRACE_MS = 8_000L
+        private const val LOCKED_TURN_WAKE_LOCK_TIMEOUT_MS = 3 * 60 * 1000L
+        private const val HOTWORD_RESUME_SETTLE_MS = 500L
+        private const val AUDIO_IDLE_DEBOUNCE_MS = 3_500L
+        private const val INTERRUPT_CLAIM_WAIT_MS = 350L
+        private const val AMBIENT_VOICE_LAUNCH_TIMEOUT_MS = 5_000L
         const val ACTION_RESUME_HOTWORD = "com.openclaw.assistant.ACTION_RESUME_HOTWORD"
         const val ACTION_PAUSE_HOTWORD = "com.openclaw.assistant.ACTION_PAUSE_HOTWORD"
+        const val EXTRA_EXISTING_SESSION_CAN_CLAIM_INTERRUPT =
+            "com.openclaw.assistant.EXTRA_EXISTING_SESSION_CAN_CLAIM_INTERRUPT"
+        const val ACTION_REQUEST_CHATGPT_HANDOFF =
+            "com.openclaw.assistant.ACTION_REQUEST_CHATGPT_HANDOFF"
+        const val ACTION_AMBIENT_UI_ATTACHED =
+            "com.openclaw.assistant.ACTION_AMBIENT_UI_ATTACHED"
+        const val ACTION_STOP_AMBIENT_SESSION =
+            "com.openclaw.assistant.ACTION_STOP_AMBIENT_SESSION"
+        const val ACTION_AMBIENT_SESSION_ENDED =
+            "com.openclaw.assistant.ACTION_AMBIENT_SESSION_ENDED"
+        const val EXTRA_AMBIENT_STOP_REASON =
+            "com.openclaw.assistant.EXTRA_AMBIENT_STOP_REASON"
         
         fun start(context: Context) {
             val intent = Intent(context, HotwordService::class.java)
@@ -73,23 +114,84 @@ class HotwordService : Service(), VoskRecognitionListener {
         fun shouldCopyModel(currentVersion: Int, savedVersion: Int, targetDirExists: Boolean, targetDirNotEmpty: Boolean): Boolean {
             return !(savedVersion == currentVersion && targetDirExists && targetDirNotEmpty)
         }
+
+        /**
+         * Keeps the secure-turn caller suspended until the recorder restart has
+         * actually been attempted, so its CPU wake lock cannot be released in
+         * the settling gap.
+         */
+        internal suspend fun restartHotwordBeforeWakeLockRelease(
+            settleDelayMs: Long,
+            shouldRestart: () -> Boolean,
+            restart: () -> Unit,
+        ) {
+            require(settleDelayMs >= 0)
+            if (settleDelayMs > 0) delay(settleDelayMs)
+            if (shouldRestart()) restart()
+        }
+
+        internal suspend fun waitForExistingSessionClaim(
+            isBargeInCandidate: Boolean,
+            waitForClaim: suspend () -> Unit,
+            isLaunchPending: () -> Boolean,
+        ): Boolean {
+            if (!isBargeInCandidate) return true
+            waitForClaim()
+            return isLaunchPending()
+        }
+
+        internal fun shouldInitializeVosk(startAction: String?): Boolean =
+            startAction != ACTION_REQUEST_CHATGPT_HANDOFF
+
+        internal fun shouldStartVoskInitialization(modelReady: Boolean, initializationActive: Boolean): Boolean =
+            !modelReady && !initializationActive
+
+        internal fun resumeAfterChatGptHandoff(
+            modelReady: Boolean,
+            initialize: () -> Unit,
+            resume: () -> Unit,
+        ) {
+            if (modelReady) resume() else initialize()
+        }
+
+        internal fun isBargeInCandidate(
+            isSessionActive: Boolean,
+            existingSessionCanClaimInterrupt: Boolean,
+            ttsBargeInEnabled: Boolean,
+        ): Boolean =
+            ttsBargeInEnabled && (isSessionActive || existingSessionCanClaimInterrupt)
     }
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     
     private var model: Model? = null
     private var speechService: SpeechService? = null
+    private var voskInitJob: Job? = null
     
     private lateinit var settings: SettingsRepository
+    private lateinit var ttsManager: TTSManager
 
     @Volatile private var isListeningForCommand = false
     @Volatile private var isSessionActive = false
     @Volatile private var pendingInterruptLaunch = false
+    @Volatile private var existingSessionCanClaimInterrupt = false
     private var audioRetryCount = 0
     private val MAX_AUDIO_RETRIES = 5
     private var watchdogJob: Job? = null
     private var errorRecoveryJob: Job? = null
     private var retryJob: Job? = null
+    private var chatGptLaunchJob: Job? = null
+    private var chatGptGraceJob: Job? = null
+    private var chatGptMonitorJob: Job? = null
+    private var chatGptIdleJob: Job? = null
+    private var localCommandCaptureJob: Job? = null
+    private var ambientVoiceLaunchJob: Job? = null
+    private var ambientVoiceLaunchPending = false
+    private var ambientVoiceSession: AmbientVoiceSession? = null
+    private var ambientVoiceSessionToken: String? = null
+    private var isDestroying = false
+    private var chatGptHandoffActive = false
+    private val chatGptHandoffTracker = ChatGptHandoffTracker()
     private val SESSION_TIMEOUT_MS = 5 * 60 * 1000L // 5 minutes
 
     private fun debugLog(message: String) {
@@ -100,9 +202,14 @@ class HotwordService : Service(), VoskRecognitionListener {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
                 ACTION_PAUSE_HOTWORD -> {
+                    if (ambientVoiceSession?.isActive == true) return
                     Log.d(TAG, "Pause signal received")
+                    ambientVoiceLaunchPending = false
+                    ambientVoiceLaunchJob?.cancel()
+                    ambientVoiceLaunchJob = null
                     debugLog("Session started — hotword paused")
                     pendingInterruptLaunch = false
+                    existingSessionCanClaimInterrupt = false
                     isSessionActive = true
                     speechService?.stop()
                     speechService?.shutdown()
@@ -111,10 +218,21 @@ class HotwordService : Service(), VoskRecognitionListener {
                     startWatchdog()
                 }
                 ACTION_RESUME_HOTWORD -> {
+                    if (ambientVoiceSession?.isActive == true) {
+                        Log.d(TAG, "Ignoring external hotword resume during ambient voice session")
+                        return
+                    }
                     Log.d(TAG, "Resume signal received")
+                    ambientVoiceLaunchPending = false
+                    ambientVoiceLaunchJob?.cancel()
+                    ambientVoiceLaunchJob = null
                     debugLog("Session ended — resuming hotword")
                     cancelWatchdog()
                     pendingInterruptLaunch = false
+                    existingSessionCanClaimInterrupt = intent.getBooleanExtra(
+                        EXTRA_EXISTING_SESSION_CAN_CLAIM_INTERRUPT,
+                        false,
+                    )
                     // Reset both flags to ensure clean state
                     isSessionActive = false
                     isListeningForCommand = false
@@ -130,7 +248,36 @@ class HotwordService : Service(), VoskRecognitionListener {
 
                     resumeHotwordDetection()
                 }
+                ACTION_AMBIENT_UI_ATTACHED -> {
+                    val token = intent.getStringExtra(AmbientVoiceActivity.EXTRA_SESSION_TOKEN)
+                    if (AmbientVoicePolicy.acceptsUiAttachment(
+                            currentToken = ambientVoiceSessionToken,
+                            attachedToken = token,
+                            sessionActive = ambientVoiceSession?.isActive == true,
+                        )
+                    ) {
+                        Log.i(TAG, "Ambient voice UI attached")
+                        ambientVoiceLaunchPending = false
+                        ambientVoiceLaunchJob?.cancel()
+                        ambientVoiceLaunchJob = null
+                    }
+                }
+                ACTION_STOP_AMBIENT_SESSION -> {
+                    val token = intent.getStringExtra(AmbientVoiceActivity.EXTRA_SESSION_TOKEN).orEmpty()
+                    val reason = intent.getStringExtra(EXTRA_AMBIENT_STOP_REASON)
+                        ?.takeIf { it.isNotBlank() }
+                        ?: "ui_stop"
+                    ambientVoiceSession?.stop(token, reason)
+                }
             }
+        }
+    }
+
+    private val recordingCallback = object : AudioManager.AudioRecordingCallback() {
+        override fun onRecordingConfigChanged(configs: MutableList<android.media.AudioRecordingConfiguration>?) {
+            if (!chatGptHandoffActive || !chatGptHandoffTracker.isArmed) return
+            configs ?: return
+            handleExternalRecordingState(configs.map { it.clientAudioSessionId }.toSet())
         }
     }
 
@@ -178,14 +325,24 @@ class HotwordService : Service(), VoskRecognitionListener {
         }
 
         settings = SettingsRepository.getInstance(this)
+        ttsManager = TTSManager(this)
+        if (!ttsManager.initializeCurrentProvider()) {
+            Log.w(TAG, "Configured TTS provider failed to initialize")
+        }
 
         createNotificationChannel()
         
         val filter = IntentFilter().apply {
             addAction(ACTION_RESUME_HOTWORD)
             addAction(ACTION_PAUSE_HOTWORD)
+            addAction(ACTION_AMBIENT_UI_ATTACHED)
+            addAction(ACTION_STOP_AMBIENT_SESSION)
         }
         ContextCompat.registerReceiver(this, controlReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        getSystemService(AudioManager::class.java).registerAudioRecordingCallback(
+            recordingCallback,
+            android.os.Handler(android.os.Looper.getMainLooper())
+        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -217,6 +374,11 @@ class HotwordService : Service(), VoskRecognitionListener {
             return START_NOT_STICKY
         }
 
+        if (!shouldInitializeVosk(intent?.action)) {
+            beginChatGptHandoff()
+            return if (settings.hotwordEnabled) START_STICKY else START_NOT_STICKY
+        }
+
         initVosk()
         return START_STICKY
     }
@@ -242,6 +404,10 @@ class HotwordService : Service(), VoskRecognitionListener {
     }
 
     override fun onDestroy() {
+        isDestroying = true
+        ambientVoiceSessionToken?.let { token ->
+            ambientVoiceSession?.stop(token, "service_destroyed")
+        }
         super.onDestroy()
         cancelWatchdog()
         try {
@@ -249,6 +415,11 @@ class HotwordService : Service(), VoskRecognitionListener {
         } catch (e: Exception) {}
         scope.cancel()
         speechService?.shutdown()
+        localCommandCaptureJob?.cancel()
+        if (::ttsManager.isInitialized) ttsManager.shutdown()
+        runCatching {
+            getSystemService(AudioManager::class.java).unregisterAudioRecordingCallback(recordingCallback)
+        }
     }
 
     private fun showPermissionNotification() {
@@ -302,6 +473,13 @@ class HotwordService : Service(), VoskRecognitionListener {
             )
             val notificationManager = getSystemService(NotificationManager::class.java)
             notificationManager.createNotificationChannel(channel)
+            notificationManager.createNotificationChannel(
+                NotificationChannel(
+                    LOCAL_COMMAND_CHANNEL_ID,
+                    getString(R.string.local_command_channel),
+                    NotificationManager.IMPORTANCE_HIGH,
+                )
+            )
         }
     }
 
@@ -325,6 +503,13 @@ class HotwordService : Service(), VoskRecognitionListener {
     private fun initVosk() {
         if (model != null) {
             if (!isSessionActive) startHotwordListening()
+            return
+        }
+        if (!shouldStartVoskInitialization(
+                modelReady = model != null,
+                initializationActive = voskInitJob?.isActive == true,
+            )
+        ) {
             return
         }
         debugLog("Vosk: initializing model...")
@@ -352,7 +537,7 @@ class HotwordService : Service(), VoskRecognitionListener {
             }
         }
 
-        scope.launch(Dispatchers.IO) {
+        voskInitJob = scope.launch(Dispatchers.IO) {
             try {
                 val modelPath = copyAssets()
                 if (modelPath != null) {
@@ -389,6 +574,10 @@ class HotwordService : Service(), VoskRecognitionListener {
                         setCustomKey("is_session_active", isSessionActive)
                         recordException(e)
                     }
+                }
+            } finally {
+                withContext(NonCancellable + Dispatchers.Main.immediate) {
+                    voskInitJob = null
                 }
             }
         }
@@ -569,23 +758,6 @@ class HotwordService : Service(), VoskRecognitionListener {
         }
     }
 
-    // Cache for compiled Regex objects to avoid redundant instantiations on every audio frame
-    private val wakeWordRegexCache = java.util.concurrent.ConcurrentHashMap<String, Regex>()
-
-    /**
-     * Parses Vosk keyword spotting confidence for [word] from result text.
-     * Vosk grammar mode returns results like "[open claw](0.92)" or plain "open claw".
-     * Returns the score (0.0–1.0), or 1.0 if plain text match, or 0.0 if not found.
-     */
-    private fun parseWakeWordConfidence(text: String, word: String): Float {
-        val pattern = wakeWordRegexCache.computeIfAbsent(word) {
-            Regex("\\[${Regex.escape(word)}\\]\\(([0-9.]+)\\)", RegexOption.IGNORE_CASE)
-        }
-        val match = pattern.find(text)
-        return match?.groupValues?.get(1)?.toFloatOrNull()
-            ?: if (text.contains(word, ignoreCase = true)) 1.0f else 0.0f
-    }
-
     override fun onPartialResult(hypothesis: String?) {}
 
     override fun onResult(hypothesis: String?) {
@@ -597,17 +769,12 @@ class HotwordService : Service(), VoskRecognitionListener {
 
                 // Check against configured wake words with confidence threshold
                 val wakeWordTargets = settings.getWakeWordTargets()
-                var maxConfidence = 0f
-                var detectedTarget: SettingsRepository.WakeWordTarget? = null
-                wakeWordTargets.forEach { target ->
-                    val conf = parseWakeWordConfidence(text, target.phrase)
-                    if (conf > maxConfidence) maxConfidence = conf
-                    if (conf >= settings.wakeWordSensitivity &&
-                        (detectedTarget == null || conf >= parseWakeWordConfidence(text, detectedTarget!!.phrase))
-                    ) {
-                        detectedTarget = target
-                    }
-                }
+                val maxConfidence = WakeWordTargetMatcher.maxConfidence(text, wakeWordTargets)
+                val detectedTarget = WakeWordTargetMatcher.select(
+                    text = text,
+                    targets = wakeWordTargets,
+                    threshold = settings.wakeWordSensitivity,
+                )
 
                 if (text.isNotEmpty()) {
                     debugLog("heard: \"$text\" conf=${"%.2f".format(maxConfidence)}")
@@ -648,6 +815,12 @@ class HotwordService : Service(), VoskRecognitionListener {
 
     private fun onHotwordDetected(target: SettingsRepository.WakeWordTarget) {
         if (isListeningForCommand || (isSessionActive && !settings.ttsBargeInEnabled)) return
+        val bargeInCandidate = isBargeInCandidate(
+            isSessionActive = isSessionActive,
+            existingSessionCanClaimInterrupt = existingSessionCanClaimInterrupt,
+            ttsBargeInEnabled = settings.ttsBargeInEnabled,
+        )
+        existingSessionCanClaimInterrupt = false
         isListeningForCommand = true
         startWatchdog()
 
@@ -655,10 +828,10 @@ class HotwordService : Service(), VoskRecognitionListener {
         playWakeSound(target.wakeSound)
 
         // Broadcast to interrupt ongoing TTS (Barge-in)
+        pendingInterruptLaunch = true
         val interruptIntent = Intent("com.openclaw.assistant.ACTION_INTERRUPT_TTS")
         interruptIntent.setPackage(packageName)
         sendBroadcast(interruptIntent)
-        pendingInterruptLaunch = true
 
         // Stop service on Main thread to avoid race conditions
         scope.launch {
@@ -673,43 +846,135 @@ class HotwordService : Service(), VoskRecognitionListener {
             }
             speechService = null
 
-            delay(350) // Give an existing session a moment to claim the interrupt
-
-            if (!pendingInterruptLaunch) {
+            if (!waitForExistingSessionClaim(
+                    isBargeInCandidate = bargeInCandidate,
+                    waitForClaim = { delay(INTERRUPT_CLAIM_WAIT_MS) },
+                    isLaunchPending = { pendingInterruptLaunch },
+                )
+            ) {
                 Log.d(TAG, "Barge-in handled by existing session")
                 return@launch
             }
             pendingInterruptLaunch = false
             isSessionActive = true
-            val intent = Intent(this@HotwordService, OpenClawAssistantService::class.java).apply {
-                action = OpenClawAssistantService.ACTION_SHOW_ASSISTANT
-                putExtra(OpenClawAssistantService.EXTRA_VOICE_TARGET, target.target)
+
+            val isChatGptHandoff = target.target == SettingsRepository.VOICE_TARGET_CHATGPT
+            if (isChatGptHandoff) {
+                val isDeviceLocked = getSystemService(KeyguardManager::class.java).isDeviceLocked
+                if (!isDeviceLocked) {
+                    delay(CHATGPT_WAKE_TONE_SETTLE_MS)
+                    val lockedAfterTone =
+                        getSystemService(KeyguardManager::class.java).isDeviceLocked
+                    if (lockedAfterTone) {
+                        Log.i(TAG, "chatgpt_device_locked_during_handoff")
+                        captureLockedConversation()
+                        return@launch
+                    }
+                    Log.i(TAG, "hey_gpt_main_openclaw_session")
+                    launchHeyGptMainSession()
+                } else {
+                    captureLockedConversation()
+                }
+                return@launch
             }
-            try {
-                startService(intent)
-                Log.e(TAG, "startService ACTION_SHOW_ASSISTANT called")
-            } catch (e: IllegalStateException) {
-                Log.w(TAG, "Background start failed, falling back to broadcast", e)
-                val broadcastIntent = Intent(OpenClawAssistantService.ACTION_SHOW_ASSISTANT).apply {
-                    setPackage(packageName)
+            launchAssistantSession(
+                Intent(this@HotwordService, OpenClawAssistantService::class.java).apply {
+                    action = OpenClawAssistantService.ACTION_SHOW_ASSISTANT
                     putExtra(OpenClawAssistantService.EXTRA_VOICE_TARGET, target.target)
+                },
+            )
+        }
+    }
+
+    private fun launchHeyGptMainSession() {
+        val runtime = (application as OpenClawApplication).ensureRuntime()
+        if (ambientVoiceSession?.isActive == true) {
+            Log.d(TAG, "Ambient voice session already active")
+            return
+        }
+        val token = UUID.randomUUID().toString()
+        ambientVoiceSessionToken = token
+        val session = AmbientVoiceSession(this, ::finishAmbientVoiceSession)
+        ambientVoiceSession = session
+        if (!session.start(token, VoiceSessionKeys.mainVoice(runtime.deviceId))) return
+        startWatchdog()
+
+        val intent = Intent(this, AmbientVoiceActivity::class.java).apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP,
+            )
+            putExtra(AmbientVoiceActivity.EXTRA_SESSION_TOKEN, token)
+        }
+        ambientVoiceLaunchPending = true
+        try {
+            startActivity(intent)
+            Log.i(TAG, "Ambient OpenClaw voice activity requested")
+            ambientVoiceLaunchJob?.cancel()
+            ambientVoiceLaunchJob = scope.launch {
+                delay(AMBIENT_VOICE_LAUNCH_TIMEOUT_MS)
+                when (AmbientVoicePolicy.uiTimeoutDecision(
+                    currentToken = ambientVoiceSessionToken,
+                    timeoutToken = token,
+                    launchPending = ambientVoiceLaunchPending,
+                    sessionActive = ambientVoiceSession?.isActive == true,
+                )) {
+                    AmbientUiTimeoutDecision.IGNORE -> return@launch
+                    AmbientUiTimeoutDecision.CONTINUE_HEADLESS -> {
+                        ambientVoiceLaunchPending = false
+                        Log.w(TAG, "Ambient voice UI was blocked; continuing headless")
+                    }
+                    AmbientUiTimeoutDecision.END_SESSION -> {
+                        ambientVoiceLaunchPending = false
+                        ambientVoiceSession?.stop(token, "ui_and_session_start_failed")
+                    }
                 }
-                sendBroadcast(broadcastIntent)
-            } catch (e: SecurityException) {
-                Log.w(TAG, "Background start failed, falling back to broadcast", e)
-                val broadcastIntent = Intent(OpenClawAssistantService.ACTION_SHOW_ASSISTANT).apply {
-                    setPackage(packageName)
-                    putExtra(OpenClawAssistantService.EXTRA_VOICE_TARGET, target.target)
-                }
-                sendBroadcast(broadcastIntent)
-            } catch (e: Exception) {
-                Log.w(TAG, "Background start failed, falling back to broadcast", e)
-                val broadcastIntent = Intent(OpenClawAssistantService.ACTION_SHOW_ASSISTANT).apply {
-                    setPackage(packageName)
-                    putExtra(OpenClawAssistantService.EXTRA_VOICE_TARGET, target.target)
-                }
-                sendBroadcast(broadcastIntent)
             }
+        } catch (error: Exception) {
+            Log.w(TAG, "Ambient voice UI unavailable; continuing headless", error)
+            ambientVoiceLaunchPending = false
+            ambientVoiceLaunchJob?.cancel()
+            ambientVoiceLaunchJob = null
+        }
+    }
+
+    private suspend fun finishAmbientVoiceSession(token: String, reason: String) {
+        if (token != ambientVoiceSessionToken) return
+        Log.i(TAG, "Ambient voice session ended: $reason")
+        ambientVoiceLaunchPending = false
+        ambientVoiceLaunchJob?.cancel()
+        ambientVoiceLaunchJob = null
+        ambientVoiceSession = null
+        ambientVoiceSessionToken = null
+        cancelWatchdog()
+        if (isDestroying) return
+        sendBroadcast(
+            Intent(ACTION_AMBIENT_SESSION_ENDED)
+                .setPackage(packageName)
+                .putExtra(AmbientVoiceActivity.EXTRA_SESSION_TOKEN, token),
+        )
+        isSessionActive = false
+        isListeningForCommand = false
+        updateNotification()
+        restartHotwordBeforeWakeLockRelease(
+            settleDelayMs = HOTWORD_RESUME_SETTLE_MS,
+            shouldRestart = { !isDestroying && !isSessionActive && speechService == null },
+            restart = { startHotwordListening() },
+        )
+    }
+
+    private fun launchAssistantSession(intent: Intent) {
+        try {
+            startService(intent)
+            Log.e(TAG, "startService ACTION_SHOW_ASSISTANT called")
+        } catch (error: Exception) {
+            Log.w(TAG, "Background start failed, falling back to broadcast", error)
+            val broadcastIntent = Intent(OpenClawAssistantService.ACTION_SHOW_ASSISTANT).apply {
+                setPackage(packageName)
+                intent.extras?.let(::putExtras)
+            }
+            sendBroadcast(broadcastIntent)
         }
     }
 
@@ -732,16 +997,408 @@ class HotwordService : Service(), VoskRecognitionListener {
         }
     }
 
+    /** Captures one unrestricted question for the secure-lock conversation lane. */
+    private fun captureLockedConversation() {
+        localCommandCaptureJob?.cancel()
+        localCommandCaptureJob = scope.launch {
+            delay(CHATGPT_WAKE_TONE_SETTLE_MS)
+            val currentModel = model
+            if (currentModel == null) {
+                Log.w(TAG, "Locked conversation model unavailable")
+                handleCapturedLockedConversation("")
+                return@launch
+            }
+
+            try {
+                val recognizer = Recognizer(currentModel, SAMPLE_RATE)
+                val commandSpeechService = SpeechService(recognizer, SAMPLE_RATE)
+                val completed = AtomicBoolean(false)
+                val lastTranscript = AtomicReference("")
+                var silenceJob: Job? = null
+
+                fun finishCapture(transcript: String) {
+                    if (!completed.compareAndSet(false, true)) return
+                    silenceJob?.cancel()
+                    scope.launch {
+                        runCatching { commandSpeechService.stop() }
+                        runCatching { commandSpeechService.shutdown() }
+                        if (speechService === commandSpeechService) speechService = null
+                        handleCapturedLockedConversation(transcript.trim())
+                    }
+                }
+
+                val listener = object : VoskRecognitionListener {
+                    override fun onPartialResult(hypothesis: String?) {
+                        extractVoskText(hypothesis).takeIf { it.isNotBlank() }?.let { text ->
+                            lastTranscript.set(text)
+                            silenceJob?.cancel()
+                            silenceJob = scope.launch {
+                                delay(LOCAL_COMMAND_SILENCE_MS)
+                                finishCapture(lastTranscript.get())
+                            }
+                        }
+                    }
+
+                    override fun onResult(hypothesis: String?) {
+                        val text = extractVoskText(hypothesis).ifBlank { lastTranscript.get() }
+                        if (text.isNotBlank()) finishCapture(text)
+                    }
+
+                    override fun onFinalResult(hypothesis: String?) {
+                        finishCapture(extractVoskText(hypothesis).ifBlank { lastTranscript.get() })
+                    }
+
+                    override fun onError(exception: Exception?) {
+                        Log.w(TAG, "Offline locked-conversation capture failed", exception)
+                        finishCapture(lastTranscript.get())
+                    }
+
+                    override fun onTimeout() {
+                        finishCapture(lastTranscript.get())
+                    }
+                }
+
+                speechService = commandSpeechService
+                Log.i(TAG, "locked_conversation_capture_started")
+                if (!commandSpeechService.startListening(listener, LOCAL_COMMAND_TIMEOUT_MS)) {
+                    finishCapture("")
+                }
+            } catch (error: Exception) {
+                Log.w(TAG, "Unable to start offline locked-conversation capture", error)
+                handleCapturedLockedConversation("")
+            }
+        }
+    }
+
+    private fun extractVoskText(payload: String?): String {
+        if (payload.isNullOrBlank()) return ""
+        return runCatching {
+            val json = JSONObject(payload)
+            json.optString("text", "")
+                .ifBlank { json.optString("partial", "") }
+                .trim()
+        }
+            .getOrDefault("")
+    }
+
+    private suspend fun handleCapturedLockedConversation(transcript: String) {
+        Log.i(TAG, "locked_conversation_captured length=${transcript.length}")
+        val wakeLock = acquireLockedTurnWakeLock()
+        try {
+            routeSecureConversation(transcript)
+        } finally {
+            runCatching { if (wakeLock?.isHeld == true) wakeLock.release() }
+        }
+    }
+
+    private suspend fun routeSecureConversation(transcript: String) {
+        if (transcript.isBlank()) {
+            Log.i(TAG, "secure_lock_blank_capture")
+            ChatGptLiveLauncher.postFallbackNotification(this)
+            speakLocalFeedback(getString(R.string.locked_conversation_unlock_required))
+            finishSecureLocalCommand("Secure-lock capture unavailable")
+            return
+        }
+
+        val runtime = (application as OpenClawApplication).ensureRuntime()
+        val openClawReady =
+            (runtime.isConnected.value && !runtime.isOperatorOffline.value) ||
+                withTimeoutOrNull(OPENCLAW_CONNECT_GRACE_MS) {
+                    while (!runtime.isConnected.value || runtime.isOperatorOffline.value) delay(200)
+                    true
+                } == true
+
+        when (
+            chooseVoiceConversationRoute(
+                isDeviceLocked = true,
+                hasTranscript = transcript.isNotBlank(),
+                openClawReady = openClawReady,
+            )
+        ) {
+            VoiceConversationRoute.MAIN_OPENCLAW -> launchHeyGptMainSession()
+            VoiceConversationRoute.LOCKED_OPENCLAW -> runLockedOpenClawConversation(runtime, transcript)
+            VoiceConversationRoute.UNLOCK_REQUIRED -> {
+                Log.i(TAG, "secure_lock_fallback_unavailable")
+                ChatGptLiveLauncher.postFallbackNotification(this)
+                speakLocalFeedback(getString(R.string.locked_conversation_unlock_required))
+                finishSecureLocalCommand("Secure-lock conversation unavailable")
+            }
+        }
+    }
+
+    private suspend fun runLockedOpenClawConversation(
+        runtime: com.openclaw.assistant.node.NodeRuntime,
+        transcript: String,
+    ) {
+        Log.i(TAG, "secure_lock_openclaw_started")
+        playLockedConversationSound()
+        val response = try {
+            LockedConversationController(runtime::requestGateway).ask(runtime.deviceId, transcript)
+        } catch (error: kotlinx.coroutines.CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            Log.w(TAG, "secure_lock_openclaw_request_failed", error)
+            null
+        }
+
+        if (response.isNullOrBlank()) {
+            Log.w(TAG, "secure_lock_openclaw_timeout")
+            val error = runtime.chatError.value
+                ?.takeIf { it.isNotBlank() }
+                ?: getString(R.string.locked_conversation_timeout)
+            postLocalCommandNotification(error)
+            speakLocalFeedback(error)
+            finishSecureLocalCommand("Secure-lock conversation failed")
+            return
+        }
+
+        val speechText = limitLockedVoiceReply(TTSUtils.stripMarkdownForSpeech(response))
+            .take(TextToSpeech.getMaxSpeechInputLength() - 100)
+        Log.i(TAG, "secure_lock_openclaw_response_received")
+        speakLocalFeedback(speechText)
+        finishSecureLocalCommand("Secure-lock OpenClaw conversation completed")
+    }
+
+    private fun acquireLockedTurnWakeLock(): PowerManager.WakeLock? = runCatching {
+        getSystemService(PowerManager::class.java).newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "OpenClawAssistant::LockedVoiceTurn",
+        ).apply {
+            setReferenceCounted(false)
+            acquire(LOCKED_TURN_WAKE_LOCK_TIMEOUT_MS)
+        }
+    }.onFailure { error ->
+        Log.w(TAG, "Unable to hold CPU for locked voice turn", error)
+    }.getOrNull()
+
+    /** Distinguishes the tool-free locked lane from the official Live handoff. */
+    private fun playLockedConversationSound() {
+        runCatching {
+            val generator = ToneGenerator(AudioManager.STREAM_MUSIC, 70)
+            generator.startTone(ToneGenerator.TONE_PROP_BEEP2, 120)
+            scope.launch {
+                delay(160)
+                generator.release()
+            }
+        }.onFailure { error ->
+            Log.w(TAG, "Failed to play locked conversation sound", error)
+        }
+    }
+
+    private suspend fun finishSecureLocalCommand(reason: String) {
+        completeLocalCommand(reason)
+        audioRetryCount = 0
+        updateNotification()
+        restartHotwordBeforeWakeLockRelease(
+            settleDelayMs = HOTWORD_RESUME_SETTLE_MS,
+            shouldRestart = { !isSessionActive && speechService == null },
+            restart = { startHotwordListening() },
+        )
+        Log.i(TAG, "$reason; secure_hotword_restart_attempted")
+    }
+
+    private fun completeLocalCommand(reason: String) {
+        Log.i(TAG, "$reason; hotword_resume_requested")
+        cancelWatchdog()
+        isSessionActive = false
+        isListeningForCommand = false
+    }
+
+    private suspend fun speakLocalFeedback(text: String): Boolean {
+        return try {
+            val initialized = withContext(Dispatchers.Main.immediate) {
+                ttsManager.initializeCurrentProvider()
+            }
+            if (!initialized) {
+                Log.w(TAG, "Configured TTS provider failed to initialize before speech")
+                false
+            } else {
+                val spoken = withTimeoutOrNull(localTtsTimeoutMs(text)) {
+                    withContext(Dispatchers.Main.immediate) { ttsManager.speak(text) }
+                } ?: false
+                if (!spoken) withContext(Dispatchers.Main.immediate) { ttsManager.stop() }
+                spoken
+            }
+        } catch (cancelled: CancellationException) {
+            withContext(NonCancellable + Dispatchers.Main.immediate) { ttsManager.stop() }
+            throw cancelled
+        }
+    }
+
+    private fun postLocalCommandNotification(message: String) {
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = NotificationCompat.Builder(this, LOCAL_COMMAND_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_mic)
+            .setContentTitle(getString(R.string.local_command_needs_attention))
+            .setContentText(message)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(message))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .build()
+        getSystemService(NotificationManager::class.java)
+            .notify(LOCAL_COMMAND_NOTIFICATION_ID, notification)
+    }
+
     private fun resumeHotwordDetection() {
         if (isSessionActive) return
         isListeningForCommand = false
         audioRetryCount = 0
         updateNotification()
         scope.launch {
-            delay(500)
+            delay(HOTWORD_RESUME_SETTLE_MS)
             if (!isSessionActive && speechService == null) {
                 startHotwordListening()
             }
+        }
+    }
+
+    private fun beginChatGptHandoff() {
+        if (chatGptHandoffActive) return
+        Log.i(TAG, "Pausing wake word for ChatGPT Live microphone handoff")
+        cancelWatchdog()
+        chatGptLaunchJob?.cancel()
+        chatGptGraceJob?.cancel()
+        chatGptMonitorJob?.cancel()
+        chatGptIdleJob?.cancel()
+        chatGptHandoffTracker.reset()
+        chatGptHandoffActive = true
+        isSessionActive = true
+        isListeningForCommand = false
+        speechService?.let {
+            runCatching { it.stop() }
+            runCatching { it.shutdown() }
+        }
+        speechService = null
+
+        // SpeechService shutdown is asynchronous at the audio-server boundary.
+        // Do not arm external-recording observation until our own recorder is
+        // demonstrably gone, or it can be mistaken for ChatGPT.
+        chatGptLaunchJob = scope.launch {
+            val baselineSessions = withTimeoutOrNull(MICROPHONE_RELEASE_TIMEOUT_MS) {
+                var sessions = snapshotRecordingSessions()
+                while (sessions == null || sessions.isNotEmpty()) {
+                    delay(100)
+                    sessions = snapshotRecordingSessions()
+                }
+                sessions
+            }
+            if (!chatGptHandoffActive) return@launch
+            if (baselineSessions == null) {
+                Log.w(TAG, "microphone_release_timeout")
+                postLocalCommandNotification("The microphone is busy. Try Hey GPT again in a moment.")
+                finishChatGptHandoff("Microphone did not release")
+                return@launch
+            }
+
+            delay(150)
+            if (!chatGptHandoffActive) return@launch
+            chatGptHandoffTracker.arm(baselineSessions)
+            Log.i(TAG, "chatgpt_launch_requested")
+
+            // Ask the system-bound VoiceInteractionService to perform the
+            // minimal launch. No OpenClawSession or backend is constructed.
+            val intent = Intent(this@HotwordService, OpenClawAssistantService::class.java).apply {
+                action = OpenClawAssistantService.ACTION_HANDOFF_CHATGPT
+            }
+            try {
+                startService(intent)
+            } catch (error: Exception) {
+                Log.w(TAG, "VoiceInteractionService handoff unavailable; using direct fallback", error)
+                val result = ChatGptLiveLauncher.launch(this@HotwordService)
+                Log.i(TAG, "chatgpt_launch_result=$result")
+            }
+
+            // If Start with Voice is off, or ChatGPT needs sign-in, no recording
+            // begins. Avoid leaving the wake listener paused forever.
+            chatGptGraceJob = scope.launch {
+                delay(20_000)
+                if (chatGptHandoffActive && !chatGptHandoffTracker.recordingObserved) {
+                    snapshotRecordingSessions()?.let(::handleExternalRecordingState)
+                    if (!chatGptHandoffTracker.recordingObserved) {
+                        ChatGptLiveLauncher.postFallbackNotification(this@HotwordService)
+                        finishChatGptHandoff("ChatGPT did not start recording")
+                    }
+                }
+            }
+            chatGptMonitorJob = scope.launch {
+                delay(500)
+                while (chatGptHandoffActive && chatGptHandoffTracker.isArmed) {
+                    snapshotRecordingSessions()?.let(::handleExternalRecordingState)
+                    delay(2_000)
+                }
+            }
+        }
+    }
+
+    private fun snapshotRecordingSessions(): Set<Int>? = runCatching {
+        getSystemService(AudioManager::class.java)
+            .activeRecordingConfigurations
+            .map { it.clientAudioSessionId }
+            .toSet()
+    }.getOrElse { error ->
+        Log.w(TAG, "Unable to inspect microphone ownership", error)
+        null
+    }
+
+    private fun hasActiveRecording(): Boolean =
+        snapshotRecordingSessions()?.isNotEmpty() ?: true
+
+    private fun handleExternalRecordingState(recordingSessions: Set<Int>) {
+        val recordingWasObserved = chatGptHandoffTracker.recordingObserved
+        val hasExternalRecording = chatGptHandoffTracker.hasExternalRecording(recordingSessions)
+        val shouldResume = chatGptHandoffTracker.onRecordingStateChanged(hasExternalRecording)
+        if (hasExternalRecording) {
+            if (!recordingWasObserved) Log.i(TAG, "external_recording_started")
+            chatGptIdleJob?.cancel()
+            chatGptIdleJob = null
+        } else if (shouldResume && chatGptIdleJob?.isActive != true) {
+            Log.i(TAG, "external_recording_stopped")
+            chatGptIdleJob = scope.launch {
+                delay(AUDIO_IDLE_DEBOUNCE_MS)
+                val currentSessions = snapshotRecordingSessions()
+                val stillIdle = currentSessions != null &&
+                    !chatGptHandoffTracker.hasExternalRecording(currentSessions)
+                if (chatGptHandoffActive && stillIdle) {
+                    finishChatGptHandoff("External microphone recording ended")
+                }
+            }
+        }
+    }
+
+    private fun finishChatGptHandoff(reason: String) {
+        Log.i(TAG, "$reason; hotword_resumed")
+        chatGptLaunchJob?.cancel()
+        chatGptLaunchJob = null
+        chatGptGraceJob?.cancel()
+        chatGptGraceJob = null
+        chatGptMonitorJob?.cancel()
+        chatGptMonitorJob = null
+        chatGptIdleJob?.cancel()
+        chatGptIdleJob = null
+        chatGptHandoffTracker.reset()
+        chatGptHandoffActive = false
+        isSessionActive = false
+        isListeningForCommand = false
+        if (settings.hotwordEnabled) {
+            resumeAfterChatGptHandoff(
+                modelReady = model != null,
+                initialize = ::initVosk,
+                resume = ::resumeHotwordDetection,
+            )
+        } else {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+            stopSelf()
         }
     }
 
@@ -749,10 +1406,16 @@ class HotwordService : Service(), VoskRecognitionListener {
         watchdogJob?.cancel()
         watchdogJob = scope.launch {
             delay(SESSION_TIMEOUT_MS)
-            Log.w(TAG, "Watchdog timeout! Auto-resuming hotword detection.")
-            isSessionActive = false
-            isListeningForCommand = false
-            resumeHotwordDetection()
+            val token = ambientVoiceSessionToken
+            if (token != null && ambientVoiceSession?.isActive == true) {
+                Log.w(TAG, "Watchdog timeout! Ending ambient voice session.")
+                ambientVoiceSession?.stop(token, "watchdog_timeout")
+            } else {
+                Log.w(TAG, "Watchdog timeout! Auto-resuming hotword detection.")
+                isSessionActive = false
+                isListeningForCommand = false
+                resumeHotwordDetection()
+            }
         }
     }
 

@@ -59,6 +59,7 @@ import com.openclaw.assistant.gateway.AgentInfo
 import com.openclaw.assistant.ui.backend.BackendListActivity
 import com.openclaw.assistant.ui.backend.ToolProgressFeed
 import com.openclaw.assistant.ui.bridge.MobileBridgeSettingsScreen
+import com.openclaw.assistant.ui.settings.SpotifySettingsScreen
 import com.openclaw.assistant.ui.theme.OpenClawAssistantTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import com.openclaw.assistant.utils.GatewayConfigUtils
@@ -263,8 +264,10 @@ fun SettingsScreen(
     var resumeLatestSession by rememberSaveable { mutableStateOf(settings.resumeLatestSession) }
     var openClawWakeWord by rememberSaveable { mutableStateOf(settings.openClawWakeWord) }
     var hermesWakeWord by rememberSaveable { mutableStateOf(settings.hermesWakeWord) }
+    var chatGptWakeWord by rememberSaveable { mutableStateOf(settings.chatGptWakeWord) }
     var openClawWakeSound by rememberSaveable { mutableStateOf(settings.openClawWakeSound) }
     var hermesWakeSound by rememberSaveable { mutableStateOf(settings.hermesWakeSound) }
+    var chatGptWakeSound by rememberSaveable { mutableStateOf(settings.chatGptWakeSound) }
     var wakeWordSensitivity by rememberSaveable { mutableStateOf(settings.wakeWordSensitivity) }
     var speechSilenceTimeout by rememberSaveable { mutableStateOf(settings.speechSilenceTimeout.toFloat().coerceIn(5000f, 30000f)) }
     var speechLanguage by rememberSaveable { mutableStateOf(settings.speechLanguage) }
@@ -306,6 +309,7 @@ fun SettingsScreen(
     
     // TTS Settings
     var ttsType by rememberSaveable { mutableStateOf(settings.ttsType) }
+    var pocketTtsUrl by rememberSaveable { mutableStateOf(settings.pocketTtsUrl) }
     var showTtsTypeMenu by rememberSaveable { mutableStateOf(false) }
     
     // ElevenLabs
@@ -451,6 +455,7 @@ fun SettingsScreen(
                         IconButton(onClick = onCredits) {
                             Icon(Icons.Default.Info, contentDescription = stringResource(R.string.credits_title))
                         }
+                        if (selectedSettingsCategory != SettingsCategory.Spotify) {
                         TextButton(
                             onClick = {
                                 settings.connectionType = if (openClawTabIndex == 0) {
@@ -499,6 +504,7 @@ fun SettingsScreen(
                                 settings.ttsSpeed = ttsSpeed
                                 settings.ttsEngine = ttsEngine
                                 settings.ttsType = ttsType
+                                settings.pocketTtsUrl = pocketTtsUrl
                                 settings.elevenLabsApiKey = elevenLabsApiKey
                                 settings.elevenLabsVoiceId = elevenLabsVoiceId
                                 settings.elevenLabsSpeed = elevenLabsSpeed
@@ -510,8 +516,10 @@ fun SettingsScreen(
                                 settings.resumeLatestSession = resumeLatestSession
                                 settings.openClawWakeWord = openClawWakeWord
                                 settings.hermesWakeWord = hermesWakeWord
+                                settings.chatGptWakeWord = chatGptWakeWord
                                 settings.openClawWakeSound = openClawWakeSound
                                 settings.hermesWakeSound = hermesWakeSound
+                                settings.chatGptWakeSound = chatGptWakeSound
                                 settings.wakeWordSensitivity = wakeWordSensitivity
                                 settings.wakewordConnectionType = wakewordConnectionType
                                 settings.speechSilenceTimeout = speechSilenceTimeout.toLong()
@@ -539,6 +547,7 @@ fun SettingsScreen(
                             enabled = true
                         ) {
                             Text(stringResource(R.string.save_button))
+                        }
                         }
                     }
                 )
@@ -1137,6 +1146,7 @@ fun SettingsScreen(
                         ) {
                             val ttsTypeLabel = when (ttsType) {
                                 SettingsRepository.TTS_TYPE_LOCAL -> "System TTS"
+                                SettingsRepository.TTS_TYPE_POCKET -> "Pocket TTS"
                                 SettingsRepository.TTS_TYPE_ELEVENLABS -> "ElevenLabs"
                                 SettingsRepository.TTS_TYPE_OPENAI -> "OpenAI"
                                 SettingsRepository.TTS_TYPE_VOICEVOX -> "VOICEVOX"
@@ -1156,6 +1166,18 @@ fun SettingsScreen(
                                 expanded = showTtsTypeMenu,
                                 onDismissRequest = { showTtsTypeMenu = false }
                             ) {
+                                DropdownMenuItem(
+                                    text = { Text("Pocket TTS (local Gateway)") },
+                                    onClick = {
+                                        ttsType = SettingsRepository.TTS_TYPE_POCKET
+                                        showTtsTypeMenu = false
+                                    },
+                                    leadingIcon = {
+                                        if (ttsType == SettingsRepository.TTS_TYPE_POCKET) {
+                                            Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                        }
+                                    }
+                                )
                                 DropdownMenuItem(
                                     text = { Text("System TTS") },
                                     onClick = {
@@ -1211,6 +1233,19 @@ fun SettingsScreen(
 
                         // Provider-specific settings
                         when (ttsType) {
+                            SettingsRepository.TTS_TYPE_POCKET -> {
+                                Spacer(modifier = Modifier.height(16.dp))
+                                OutlinedTextField(
+                                    value = pocketTtsUrl,
+                                    onValueChange = { pocketTtsUrl = it },
+                                    label = { Text(stringResource(R.string.tts_pocket_endpoint_label)) },
+                                    placeholder = { Text(stringResource(R.string.tts_pocket_endpoint_hint)) },
+                                    supportingText = { Text(stringResource(R.string.tts_pocket_endpoint_help)) },
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
                             SettingsRepository.TTS_TYPE_ELEVENLABS -> {
                                 Spacer(modifier = Modifier.height(16.dp))
                                 ElevenLabsSettingsCard(
@@ -1306,7 +1341,9 @@ fun SettingsScreen(
                         }
 
                         // Voice Speed (All providers except ElevenLabs which has its own speed setting)
-                        if (ttsType != SettingsRepository.TTS_TYPE_ELEVENLABS) {
+                        if (ttsType != SettingsRepository.TTS_TYPE_ELEVENLABS &&
+                            ttsType != SettingsRepository.TTS_TYPE_POCKET
+                        ) {
                             Spacer(modifier = Modifier.height(16.dp))
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -1477,6 +1514,11 @@ fun SettingsScreen(
                 Spacer(modifier = Modifier.height(24.dp))
             }
 
+            if (selectedSettingsCategory == SettingsCategory.Spotify) {
+                SpotifySettingsScreen(settings)
+                Spacer(modifier = Modifier.height(24.dp))
+            }
+
             // === WAKE WORD SECTION ===
             if (selectedSettingsCategory == SettingsCategory.WakeWord) {
             CollapsibleSection(title = stringResource(R.string.wake_word), collapsible = false) {
@@ -1512,6 +1554,43 @@ fun SettingsScreen(
                             wakeSound = hermesWakeSound,
                             onWakeSoundChange = { hermesWakeSound = it },
                             soundOptions = wakeSoundOptions
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        WakeWordTargetSettingsCard(
+                            title = stringResource(R.string.wake_word_chatgpt_live),
+                            wakeWord = chatGptWakeWord,
+                            onWakeWordChange = { chatGptWakeWord = it.lowercase() },
+                            wakeSound = chatGptWakeSound,
+                            onWakeSoundChange = { chatGptWakeSound = it },
+                            soundOptions = wakeSoundOptions
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        OutlinedButton(
+                            onClick = {
+                                runCatching {
+                                    androidx.core.content.ContextCompat.startForegroundService(
+                                        context,
+                                        Intent(context, HotwordService::class.java).apply {
+                                            action = HotwordService.ACTION_REQUEST_CHATGPT_HANDOFF
+                                        },
+                                    )
+                                }.onFailure { error ->
+                                    Log.w("SettingsActivity", "Unable to open official ChatGPT Live", error)
+                                    Toast.makeText(
+                                        context,
+                                        context.getString(R.string.chatgpt_live_launch_failed),
+                                        Toast.LENGTH_LONG,
+                                    ).show()
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(stringResource(R.string.open_official_chatgpt_live))
+                        }
+                        Text(
+                            text = stringResource(R.string.open_official_chatgpt_live_desc),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray,
                         )
 
                         HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), thickness = 0.5.dp)
@@ -1893,6 +1972,7 @@ private enum class SettingsCategory {
     Backend,
     Chat,
     Voice,
+    Spotify,
     MobileBridge,
     WakeWord,
     Diagnostics,
@@ -1906,6 +1986,7 @@ private fun SettingsCategory.title(): String = when (this) {
     SettingsCategory.Backend -> stringResource(R.string.settings_category_connections)
     SettingsCategory.Chat -> stringResource(R.string.settings_category_chat)
     SettingsCategory.Voice -> stringResource(R.string.settings_category_voice_mode)
+    SettingsCategory.Spotify -> stringResource(R.string.settings_category_spotify)
     SettingsCategory.MobileBridge -> stringResource(R.string.settings_category_mobile_bridge)
     SettingsCategory.WakeWord -> stringResource(R.string.wake_word)
     SettingsCategory.Diagnostics -> stringResource(R.string.diagnostics_title)
@@ -1936,6 +2017,12 @@ private fun SettingsOverviewMenu(
             subtitle = stringResource(R.string.settings_category_voice_desc),
             icon = Icons.Default.GraphicEq,
             onClick = { onSelected(SettingsCategory.Voice) },
+        ),
+        SettingsOverviewItem(
+            title = stringResource(R.string.settings_category_spotify),
+            subtitle = stringResource(R.string.settings_category_spotify_desc),
+            icon = Icons.Default.MusicNote,
+            onClick = { onSelected(SettingsCategory.Spotify) },
         ),
         SettingsOverviewItem(
             title = stringResource(R.string.settings_category_mobile_bridge),

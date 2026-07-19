@@ -70,6 +70,7 @@ import com.openclaw.assistant.ui.components.ConnectionState
 import com.openclaw.assistant.ui.components.PairingRequiredCard
 import com.openclaw.assistant.ui.components.StatusIndicator
 import com.openclaw.assistant.ui.GatewayTrustDialog
+import com.openclaw.assistant.ui.AssistantBrokerTrustDialog
 import com.openclaw.assistant.ui.setup.EditablePairingPayload
 import com.openclaw.assistant.ui.setup.PairingPayloadReviewEditor
 import com.openclaw.assistant.ui.setup.applyPairingPayload
@@ -176,6 +177,12 @@ private enum class PermissionToggle(
         R.string.permission_send_sms_desc,
         Icons.Default.Sms,
         listOf(Manifest.permission.SEND_SMS, Manifest.permission.READ_SMS)
+    ),
+    Phone(
+        R.string.permission_phone_calls,
+        R.string.permission_phone_calls_desc,
+        Icons.Default.Phone,
+        listOf(Manifest.permission.CALL_PHONE)
     )
 }
 
@@ -288,11 +295,19 @@ fun SetupGuideScreen(
         }
     ) { paddingValues ->
         val pendingGatewayTrust by runtime.pendingGatewayTrust.collectAsState()
+        val pendingAssistantBrokerTrust by runtime.pendingAssistantBrokerTrust.collectAsState()
         if (pendingGatewayTrust != null) {
             GatewayTrustDialog(
                 prompt = pendingGatewayTrust!!,
                 onAccept = { runtime.acceptGatewayTrustPrompt() },
                 onDecline = { runtime.declineGatewayTrustPrompt() }
+            )
+        }
+        if (pendingAssistantBrokerTrust != null) {
+            AssistantBrokerTrustDialog(
+                prompt = pendingAssistantBrokerTrust!!,
+                onAccept = { runtime.acceptAssistantBrokerTrustPrompt() },
+                onDecline = { runtime.declineAssistantBrokerTrustPrompt() },
             )
         }
 
@@ -419,14 +434,17 @@ fun SetupGuideScreen(
                 SetupStep.Permissions -> PermissionsStep(
                     onNext = { currentStep = SetupStep.FinalCheck }
                 )
-                SetupStep.FinalCheck -> FinalCheckStep(
-                    settings = settings,
-                    isHermesSetup = connectionMode == ConnectionMode.Hermes,
-                    onFinish = {
+                SetupStep.FinalCheck -> {
+                    val finishSetup = {
                         settings.hasCompletedSetup = true
                         onComplete()
                     }
-                )
+                    FinalCheckStep(
+                        settings = settings,
+                        isHermesSetup = connectionMode == ConnectionMode.Hermes,
+                        onFinish = finishSetup
+                    )
+                }
             }
         }
     }
@@ -1343,6 +1361,7 @@ private fun HermesFinalStep(onFinish: () -> Unit) {
     val gatewayChatReady by runtime.chatHealthOk.collectAsState()
     val isPairingRequired by runtime.isPairingRequired.collectAsState()
     val pendingGatewayTrust by runtime.pendingGatewayTrust.collectAsState()
+    val pendingAssistantBrokerTrust by runtime.pendingAssistantBrokerTrust.collectAsState()
     val statusText by runtime.statusText.collectAsState()
     val displayName by runtime.displayName.collectAsState()
     val primaryBackend = remember(backends) {
@@ -1427,6 +1446,13 @@ private fun HermesFinalStep(onFinish: () -> Unit) {
                 prompt = pendingGatewayTrust!!,
                 onAccept = { runtime.acceptGatewayTrustPrompt() },
                 onDecline = { runtime.declineGatewayTrustPrompt() },
+            )
+        }
+        if (pendingAssistantBrokerTrust != null) {
+            AssistantBrokerTrustDialog(
+                prompt = pendingAssistantBrokerTrust!!,
+                onAccept = { runtime.acceptAssistantBrokerTrustPrompt() },
+                onDecline = { runtime.declineAssistantBrokerTrustPrompt() },
             )
         }
         Column(

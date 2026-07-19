@@ -42,6 +42,16 @@ It is not a complete list of all transitive Gradle dependencies. For those, refe
 - Upstream project: https://github.com/microsoft/onnxruntime
 - Upstream license: MIT
 
+### Spotify Android App Remote SDK
+
+- Usage: authorized exact-track playback through the installed Spotify app
+- Source in this repo: `app/libs/spotify-app-remote-release-0.8.0.aar`
+- Upstream release: https://github.com/spotify/android-sdk/releases/tag/v0.8.0-appremote_v2.1.0-auth
+- SHA-256: `B5A6DD880EAF01F63A871CBA9EF7AF77C341F8A94FFC8FDF2E9021F9A9D4C198`
+- Upstream license: Apache-2.0
+- Bundled license: `app/libs/spotify-android-sdk-LICENSE.txt`
+- Notes: The user supplies only the public client ID. No Spotify client secret or Web API token is stored.
+
 ### Custom VOICEVOX ONNX Runtime binary
 
 - Usage: runtime required by the bundled VOICEVOX full flavor

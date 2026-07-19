@@ -1,6 +1,9 @@
 package com.openclaw.assistant.speech
 
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
@@ -23,7 +26,7 @@ private val COMMA_ENDERS = listOf("。", "，", ", ")
 /**
  * Android native TTS provider (wrapper around TextToSpeech)
  */
-class AndroidTTSProvider(private val context: Context) : TTSProvider {
+class AndroidTTSProvider(private val context: Context) : TTSProvider, PrivateTTSProvider {
     
     private var tts: TextToSpeech? = null
     private var isInitialized = false
@@ -35,9 +38,12 @@ class AndroidTTSProvider(private val context: Context) : TTSProvider {
     }
     
     private fun initialize() {
-        val preferredEngine = settings.ttsEngine
+        val preferredEngine = selectAndroidTtsEngine(
+            configuredEngine = settings.ttsEngine,
+            installedEngines = installedTtsEngines(),
+        )
         
-        if (preferredEngine.isNotEmpty()) {
+        if (preferredEngine != null) {
             Log.d(TAG, "Initializing with preferred engine: $preferredEngine")
             tts = TextToSpeech(context.applicationContext, { status ->
                 if (status == TextToSpeech.SUCCESS) {
@@ -51,6 +57,20 @@ class AndroidTTSProvider(private val context: Context) : TTSProvider {
         } else {
             tryDefaultEngine()
         }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun installedTtsEngines(): Set<String> {
+        val intent = Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE)
+        val services = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.packageManager.queryIntentServices(
+                intent,
+                PackageManager.ResolveInfoFlags.of(0),
+            )
+        } else {
+            context.packageManager.queryIntentServices(intent, 0)
+        }
+        return services.mapNotNullTo(linkedSetOf()) { it.serviceInfo?.packageName }
     }
     
     private fun tryDefaultEngine() {
@@ -71,8 +91,8 @@ class AndroidTTSProvider(private val context: Context) : TTSProvider {
         pendingSpeak = null
     }
     
-    private fun setupVoice() {
-        val tts = this.tts ?: return
+    private fun setupVoice(requireOffline: Boolean = false): Boolean {
+        val tts = this.tts ?: return false
         
         val languageTag = settings.speechLanguage
         val locale = if (languageTag.isNotEmpty()) {
@@ -90,18 +110,51 @@ class AndroidTTSProvider(private val context: Context) : TTSProvider {
         tts.setSpeechRate(settings.ttsSpeed)
         tts.setPitch(1.0f)
         
-        // Try to select high-quality voice
+        // Prefer the engine's best installed voice for the configured locale.
         try {
-            val targetLang = tts.language?.language
-            val voices = tts.voices
-            val bestVoice = voices?.filter { it.locale.language == targetLang }
-                ?.firstOrNull { !it.isNetworkConnectionRequired }
-                ?: voices?.firstOrNull { it.locale.language == targetLang }
-            
-            bestVoice?.let { tts.voice = it }
+            val voices = tts.voices.orEmpty()
+            val candidates = voices.map(::voiceCandidate)
+            val selectedName = selectBestAndroidTtsVoice(
+                candidates = candidates,
+                targetLocale = tts.language ?: locale,
+                allowNetworkRequired = !requireOffline,
+            )
+            val selectedVoice = voices.firstOrNull { it.name == selectedName }
+            if (requireOffline) {
+                val selectedCandidate = candidates.firstOrNull { it.name == selectedName }
+                val verified = assignVerifiedOfflineAndroidTtsVoice(
+                    selected = selectedCandidate,
+                    assignVoice = { name ->
+                        val voice = voices.firstOrNull { it.name == name }
+                        voice != null && tts.setVoice(voice) == TextToSpeech.SUCCESS
+                    },
+                    effectiveVoice = { tts.voice?.let(::voiceCandidate) },
+                )
+                if (!verified) return false
+                val effective = tts.voice ?: return false
+                Log.i(
+                    TAG,
+                    "Selected private voice=${effective.name} locale=${effective.locale} " +
+                        "quality=${effective.quality} network=${effective.isNetworkConnectionRequired}",
+                )
+            } else {
+                selectedVoice?.let {
+                    if (tts.setVoice(it) != TextToSpeech.SUCCESS) {
+                        Log.w(TAG, "Failed to select voice=${it.name}")
+                    } else {
+                        Log.i(
+                            TAG,
+                            "Selected voice=${it.name} locale=${it.locale} quality=${it.quality} " +
+                                "network=${it.isNetworkConnectionRequired}",
+                        )
+                    }
+                }
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Error selecting voice: ${e.message}")
+            if (requireOffline) return false
         }
+        return true
     }
     
     override suspend fun speak(text: String): Boolean {
@@ -187,7 +240,13 @@ class AndroidTTSProvider(private val context: Context) : TTSProvider {
     
     override fun getConfigurationError(): String? = null
     
-    override fun speakWithProgress(text: String): Flow<TTSState> = callbackFlow {
+    override fun speakWithProgress(text: String): Flow<TTSState> =
+        speakWithProgressInternal(text, requireOffline = false)
+
+    override fun speakPrivateWithProgress(text: String): Flow<TTSState> =
+        speakWithProgressInternal(text, requireOffline = true)
+
+    private fun speakWithProgressInternal(text: String, requireOffline: Boolean): Flow<TTSState> = callbackFlow {
         val utteranceId = UUID.randomUUID().toString()
         
         val listener = object : UtteranceProgressListener() {
@@ -208,18 +267,57 @@ class AndroidTTSProvider(private val context: Context) : TTSProvider {
             }
         }
 
-        if (isInitialized) {
-            setupVoice()
-            trySend(TTSState.Preparing)
-            tts?.setOnUtteranceProgressListener(listener)
-            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
-        } else {
+        val activeTts = tts
+        if (!isInitialized || activeTts == null) {
             trySend(TTSState.Error(context.getString(R.string.tts_error_not_initialized)))
             close()
+            return@callbackFlow
+        }
+
+        if (requireOffline) {
+            when (queuePrivateAndroidTtsSpeech(
+                prepareVoice = { setupVoice(requireOffline = true) },
+                enqueue = {
+                    trySend(TTSState.Preparing)
+                    activeTts.setOnUtteranceProgressListener(listener)
+                    activeTts.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId) == TextToSpeech.SUCCESS
+                },
+            )) {
+                PrivateAndroidTtsQueueResult.VOICE_UNAVAILABLE -> {
+                    trySend(TTSState.Error(context.getString(R.string.tts_error_private_offline_unavailable)))
+                    close()
+                    return@callbackFlow
+                }
+                PrivateAndroidTtsQueueResult.QUEUE_FAILED -> {
+                    trySend(TTSState.Error(context.getString(R.string.tts_error_generic)))
+                    close()
+                    return@callbackFlow
+                }
+                PrivateAndroidTtsQueueResult.QUEUED -> Unit
+            }
+        } else {
+            setupVoice(requireOffline = false)
+            trySend(TTSState.Preparing)
+            activeTts.setOnUtteranceProgressListener(listener)
+            if (activeTts.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId) != TextToSpeech.SUCCESS) {
+                trySend(TTSState.Error(context.getString(R.string.tts_error_generic)))
+                close()
+                return@callbackFlow
+            }
         }
         
         awaitClose { stop() }
     }
+
+    private fun voiceCandidate(voice: android.speech.tts.Voice): AndroidTtsVoiceCandidate =
+        AndroidTtsVoiceCandidate(
+            name = voice.name,
+            languageTag = voice.locale.toLanguageTag(),
+            quality = voice.quality,
+            latency = voice.latency,
+            networkRequired = voice.isNetworkConnectionRequired,
+            installed = TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED !in voice.features.orEmpty(),
+        )
     
     private fun splitText(text: String, maxLength: Int): List<String> {
         if (text.length <= maxLength) return listOf(text)

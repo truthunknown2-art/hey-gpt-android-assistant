@@ -3,11 +3,14 @@ package com.openclaw.assistant.node
 import android.app.Application
 import android.content.Context
 import com.openclaw.assistant.gateway.GatewaySession
+import com.openclaw.assistant.broker.AndroidContactCallResolutionV1
+import com.openclaw.assistant.broker.AndroidContactSmsResolutionV1
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 import org.junit.runner.RunWith
 import androidx.core.content.ContextCompat
@@ -51,13 +54,16 @@ class ContactsHandlerTest {
             ContactsContract.CommonDataKinds.Phone.CONTACT_ID
         ))
         cursor.addRow(arrayOf("John Doe", "123456", 1L))
+        cursor.addRow(arrayOf("John Smith", "654321", 2L))
 
         every { contentResolver.query(any(), any(), any(), any(), any()) } returns cursor
 
-        val result = handler.handleSearch("""{"query":"John"}""")
+        val result = handler.handleSearch("""{"query":"John","limit":1}""")
 
         assertEquals(true, result.ok)
         assertEquals(true, result.payloadJson?.contains("John Doe"))
+        assertFalse(result.payloadJson.orEmpty().contains("John Smith"))
+        assertEquals(true, result.payloadJson?.contains("\"truncated\":true"))
         unmockkStatic(ContextCompat::class)
     }
 
@@ -92,6 +98,86 @@ class ContactsHandlerTest {
         assertEquals(true, result.ok)
         assertEquals(true, selectionSlot.captured.contains("ESCAPE '\\'"))
         assertEquals("%100\\%\\_Cot\\\\ton%", selectionArgsSlot.captured[0])
+        unmockkStatic(ContextCompat::class)
+    }
+
+    @Test
+    fun `handleSearch rejects malformed limits and unknown arguments`() = runBlocking {
+        mockkStatic(ContextCompat::class)
+        every { ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) } returns PackageManager.PERMISSION_GRANTED
+
+        val stringLimit = handler.handleSearch("""{"query":"John","limit":"1"}""")
+        val booleanLimit = handler.handleSearch("""{"query":"John","limit":true}""")
+        val unknown = handler.handleSearch("""{"query":"John","extra":"value"}""")
+
+        assertEquals("INVALID_REQUEST", stringLimit.error?.code)
+        assertEquals("INVALID_REQUEST", booleanLimit.error?.code)
+        assertEquals("INVALID_REQUEST", unknown.error?.code)
+        unmockkStatic(ContextCompat::class)
+    }
+
+    @Test
+    fun `contact call resolver returns one private local target`() {
+        mockkStatic(ContextCompat::class)
+        every { context.contentResolver } returns contentResolver
+        every { ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) } returns
+            PackageManager.PERMISSION_GRANTED
+        val cursor = MatrixCursor(arrayOf(
+            ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+            ContactsContract.CommonDataKinds.Phone.NUMBER,
+            ContactsContract.CommonDataKinds.Phone.CONTACT_ID,
+        ))
+        cursor.addRow(arrayOf("Jen Thorndale", "+1 250 555 0100", 101L))
+        every { contentResolver.query(any(), any(), any(), any(), any()) } returns cursor
+
+        val result = handler.resolveAssistantContactCall("Jen")
+
+        val ready = result as AndroidContactCallResolutionV1.Ready
+        assertEquals("Jen Thorndale", ready.target.displayName)
+        assertEquals("+1 250 555 0100", ready.target.phoneNumber)
+        unmockkStatic(ContextCompat::class)
+    }
+
+    @Test
+    fun `contact call resolver rejects ambiguous matches`() {
+        mockkStatic(ContextCompat::class)
+        every { context.contentResolver } returns contentResolver
+        every { ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) } returns
+            PackageManager.PERMISSION_GRANTED
+        val cursor = MatrixCursor(arrayOf(
+            ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+            ContactsContract.CommonDataKinds.Phone.NUMBER,
+            ContactsContract.CommonDataKinds.Phone.CONTACT_ID,
+        ))
+        cursor.addRow(arrayOf("Jen Thorndale", "+1 250 555 0100", 101L))
+        cursor.addRow(arrayOf("Jennifer Test", "+1 250 555 0101", 102L))
+        every { contentResolver.query(any(), any(), any(), any(), any()) } returns cursor
+
+        val result = handler.resolveAssistantContactCall("Jen")
+
+        assertEquals(AndroidContactCallResolutionV1.Ambiguous, result)
+        unmockkStatic(ContextCompat::class)
+    }
+
+    @Test
+    fun `contact SMS resolver returns one private local target`() {
+        mockkStatic(ContextCompat::class)
+        every { context.contentResolver } returns contentResolver
+        every { ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) } returns
+            PackageManager.PERMISSION_GRANTED
+        val cursor = MatrixCursor(arrayOf(
+            ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+            ContactsContract.CommonDataKinds.Phone.NUMBER,
+            ContactsContract.CommonDataKinds.Phone.CONTACT_ID,
+        ))
+        cursor.addRow(arrayOf("Jen Thorndale", "+1 250 555 0100", 101L))
+        every { contentResolver.query(any(), any(), any(), any(), any()) } returns cursor
+
+        val result = handler.resolveAssistantContactSms("Jen")
+
+        val ready = result as AndroidContactSmsResolutionV1.Ready
+        assertEquals("Jen Thorndale", ready.target.displayName)
+        assertEquals("+1 250 555 0100", ready.target.phoneNumber)
         unmockkStatic(ContextCompat::class)
     }
 }

@@ -62,6 +62,7 @@ data class ChatUiState(
     val pendingToolCalls: List<String> = emptyList(),
     val isNodeChatMode: Boolean = false,
     val pendingGatewayTrust: com.openclaw.assistant.node.NodeRuntime.GatewayTrustPrompt? = null,
+    val pendingAssistantBrokerTrust: com.openclaw.assistant.node.NodeRuntime.AssistantBrokerTrustPrompt? = null,
     val displayName: String = "",
     val attachments: List<PendingFileAttachment> = emptyList(),
 )
@@ -246,6 +247,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             viewModelScope.launch {
                 nodeRuntime.pendingGatewayTrust.collect { prompt ->
                     _uiState.update { it.copy(pendingGatewayTrust = prompt) }
+                }
+            }
+            viewModelScope.launch {
+                nodeRuntime.pendingAssistantBrokerTrust.collect { prompt ->
+                    _uiState.update { it.copy(pendingAssistantBrokerTrust = prompt) }
                 }
             }
             viewModelScope.launch {
@@ -457,6 +463,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun declineGatewayTrust() {
         nodeRuntime.declineGatewayTrustPrompt()
+    }
+
+    fun acceptAssistantBrokerTrust() {
+        nodeRuntime.acceptAssistantBrokerTrustPrompt()
+    }
+
+    fun declineAssistantBrokerTrust() {
+        nodeRuntime.declineAssistantBrokerTrustPrompt()
     }
 
 

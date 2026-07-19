@@ -1,6 +1,7 @@
 package com.openclaw.assistant.node
 
 import android.Manifest
+import android.app.KeyguardManager
 import android.util.Log
 import android.content.Context
 import android.content.pm.PackageManager
@@ -21,6 +22,26 @@ import com.openclaw.assistant.chat.OutgoingAttachment
 import com.openclaw.assistant.chat.isCanonicalMainSessionKey
 import com.openclaw.assistant.chat.normalizeMainKey
 import com.openclaw.assistant.bridge.MobileBridgeConfig
+import com.openclaw.assistant.broker.AssistantBrokerPinResultV1
+import com.openclaw.assistant.broker.AssistantBrokerPublicKeyV1
+import com.openclaw.assistant.broker.AssistantBrokerTrustStoreV1
+import com.openclaw.assistant.broker.AssistantCapabilityExecutorV1
+import com.openclaw.assistant.broker.AndroidCalendarCreateResolverV1
+import com.openclaw.assistant.broker.AndroidCalendarCreateWriterV1
+import com.openclaw.assistant.broker.AndroidCalendarNextReaderV1
+import com.openclaw.assistant.broker.AndroidMessengerNotificationsReaderV1
+import com.openclaw.assistant.broker.AndroidContactCallLauncherV1
+import com.openclaw.assistant.broker.AndroidContactCallResolverV1
+import com.openclaw.assistant.broker.AndroidContactSmsResolverV1
+import com.openclaw.assistant.broker.AndroidContactSmsSenderV1
+import com.openclaw.assistant.broker.AssistantContactCallApprovalsV1
+import com.openclaw.assistant.broker.AssistantContactSmsApprovalsV1
+import com.openclaw.assistant.broker.AssistantCalendarCreateApprovalsV1
+import com.openclaw.assistant.broker.AssistantPresenceLeases
+import com.openclaw.assistant.broker.AssistantPrivateReadApprovals
+import com.openclaw.assistant.broker.AssistantPrivateReadGrants
+import com.openclaw.assistant.broker.AssistantPrivateResultsV1
+import com.openclaw.assistant.broker.AssistantProposalValidatorV1
 import com.openclaw.assistant.gateway.AgentInfo
 import com.openclaw.assistant.gateway.AgentListResult
 import com.openclaw.assistant.gateway.DeviceAuthStore
@@ -60,6 +81,8 @@ class NodeRuntime(context: Context) {
 
   val prefs = SecurePrefs(appContext)
   private val deviceAuthStore = DeviceAuthStore(prefs)
+  private val assistantBrokerTrustStore = AssistantBrokerTrustStoreV1(prefs)
+  private val keyguardManager = appContext.getSystemService(KeyguardManager::class.java)
   val canvas = CanvasController()
   val camera = CameraCaptureManager(appContext)
   val location = LocationCaptureManager(appContext)
@@ -199,6 +222,21 @@ class NodeRuntime(context: Context) {
     json = json,
   )
 
+  private val phoneHandler = PhoneHandler(
+    context = appContext,
+    json = json,
+    invokeErrorFromThrowable = { invokeErrorFromThrowable(it) },
+  )
+
+  private val mediaHandler = MediaHandler(
+    context = appContext,
+    json = json,
+    invokeErrorFromThrowable = { invokeErrorFromThrowable(it) },
+  )
+
+  @Volatile
+  private var assistantNodeHandler: AssistantNodeCommandHandlerV1? = null
+
   private val connectionManager: ConnectionManager = ConnectionManager(
     prefs = prefs,
     appContext = appContext,
@@ -232,9 +270,26 @@ class NodeRuntime(context: Context) {
     appUpdateHandler = appUpdateHandler,
     deviceHandler = deviceHandler,
     mobileBridgeHandler = mobileBridgeHandler,
+    phoneHandler = phoneHandler,
+    mediaHandler = mediaHandler,
     isForeground = { _isForeground.value },
     cameraEnabled = { cameraEnabled.value },
     locationEnabled = { locationMode.value != LocationMode.Off },
+    assistantHandler = { assistantNodeHandler },
+  )
+
+  /**
+   * Runs a declared Android node command through the same dispatcher used by
+   * authenticated Gateway invocations. This is the phone-local fast path used
+   * by deterministic wake commands when the Mini PC is unavailable.
+   */
+  suspend fun invokeLocalDeviceCommand(
+    command: String,
+    paramsJson: String? = null,
+  ): GatewaySession.InvokeResult = invokeDispatcher.handleInvoke(
+    command,
+    paramsJson,
+    InvocationOrigin.LOCAL_VOICE,
   )
 
   private lateinit var gatewayEventHandler: GatewayEventHandler
@@ -243,6 +298,14 @@ class NodeRuntime(context: Context) {
     val endpoint: GatewayEndpoint,
     val fingerprintSha256: String,
   )
+
+  data class AssistantBrokerTrustPrompt(
+    val candidateFingerprintSha256: String,
+    val currentFingerprintSha256: String? = null,
+  ) {
+    val changed: Boolean
+      get() = currentFingerprintSha256 != null
+  }
 
   private val _isConnected = MutableStateFlow(false)
   val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
@@ -255,6 +318,12 @@ class NodeRuntime(context: Context) {
 
   private val _pendingGatewayTrust = MutableStateFlow<GatewayTrustPrompt?>(null)
   val pendingGatewayTrust: StateFlow<GatewayTrustPrompt?> = _pendingGatewayTrust.asStateFlow()
+
+  private val _pendingAssistantBrokerTrust = MutableStateFlow<AssistantBrokerTrustPrompt?>(null)
+  val pendingAssistantBrokerTrust: StateFlow<AssistantBrokerTrustPrompt?> =
+    _pendingAssistantBrokerTrust.asStateFlow()
+  private var pendingAssistantBrokerKey: AssistantBrokerPublicKeyV1? = null
+  private val assistantTrustGeneration = AtomicLong(0)
 
   private val _mainSessionKey = MutableStateFlow("main")
   val mainSessionKey: StateFlow<String> = _mainSessionKey.asStateFlow()
@@ -325,6 +394,7 @@ class NodeRuntime(context: Context) {
         _serverVersion.value = version
         applyMainSessionKey(mainSessionKey)
         updateStatus()
+        scope.launch { refreshAssistantBrokerTrust() }
         scope.launch { refreshBrandingFromGateway() }
         scope.launch { gatewayEventHandler.refreshWakeWordsFromGateway() }
         scope.launch {
@@ -333,6 +403,7 @@ class NodeRuntime(context: Context) {
         }
       },
       onDisconnected = { message ->
+        clearAssistantExecutionState()
         operatorConnected = false
         operatorStatusText = message
         _serverName.value = null
@@ -945,6 +1016,121 @@ class NodeRuntime(context: Context) {
     _statusText.value = "Offline"
   }
 
+  fun acceptAssistantBrokerTrustPrompt() {
+    val prompt = _pendingAssistantBrokerTrust.value ?: return
+    val candidate = pendingAssistantBrokerKey ?: return
+    _pendingAssistantBrokerTrust.value = null
+    pendingAssistantBrokerKey = null
+    if (prompt.changed || !operatorConnected) return
+    when (assistantBrokerTrustStore.pin(candidate)) {
+      is AssistantBrokerPinResultV1.Pinned,
+      is AssistantBrokerPinResultV1.AlreadyPinned -> installAssistantNodeHandler()
+      is AssistantBrokerPinResultV1.Changed -> Unit
+    }
+  }
+
+  fun declineAssistantBrokerTrustPrompt() {
+    _pendingAssistantBrokerTrust.value = null
+    pendingAssistantBrokerKey = null
+  }
+
+  private suspend fun refreshAssistantBrokerTrust() {
+    val generation = assistantTrustGeneration.incrementAndGet()
+    assistantNodeHandler = null
+    pendingAssistantBrokerKey = null
+    _pendingAssistantBrokerTrust.value = null
+    val response = runCatching {
+      requestAssistantBrokerPublicKey(generation)
+    }.getOrElse { error ->
+      Log.w("NodeRuntime", "Assistant broker request unavailable: ${error.javaClass.simpleName}")
+      return
+    } ?: return
+    val candidate = runCatching {
+      AssistantBrokerTrustStoreV1.decodeGatewayResponse(response)
+    }.getOrElse { error ->
+      Log.e("NodeRuntime", "Assistant broker descriptor is invalid: ${error.javaClass.simpleName}")
+      return
+    }
+    if (!operatorConnected || assistantTrustGeneration.get() != generation) return
+    val current = runCatching { assistantBrokerTrustStore.load() }.getOrElse { error ->
+      Log.e("NodeRuntime", "Pinned assistant broker trust is invalid: ${error.javaClass.simpleName}")
+      return
+    }
+    if (current == candidate) {
+      installAssistantNodeHandler()
+      return
+    }
+    pendingAssistantBrokerKey = candidate
+    _pendingAssistantBrokerTrust.value = AssistantBrokerTrustPrompt(
+      candidateFingerprintSha256 = candidate.fingerprintSha256,
+      currentFingerprintSha256 = current?.fingerprintSha256,
+    )
+  }
+
+  private suspend fun requestAssistantBrokerPublicKey(generation: Long): String? {
+    var lastError: Throwable? = null
+    repeat(20) {
+      if (!operatorConnected || assistantTrustGeneration.get() != generation) return null
+      try {
+        return requestGateway("assistant.broker.publicKey")
+      } catch (error: Throwable) {
+        lastError = error
+        if (!error.message.orEmpty().contains("not connected", ignoreCase = true)) throw error
+        delay(250L)
+      }
+    }
+    throw IllegalStateException("Assistant broker request channel did not become ready", lastError)
+  }
+
+  private fun installAssistantNodeHandler() {
+    val verifier = runCatching { assistantBrokerTrustStore.signatureVerifier() }.getOrNull() ?: return
+    val leases = AssistantPresenceLeases.manager
+    val grants = AssistantPrivateReadGrants.manager
+    assistantNodeHandler = AssistantNodeCommandHandlerV1(
+      presenceLeases = leases,
+      executor = AssistantCapabilityExecutorV1(
+        validator = AssistantProposalValidatorV1(leases, verifier),
+        deviceStatusReader = deviceHandler::readAssistantStatus,
+        calendarNextReader = AndroidCalendarNextReaderV1(calendarHandler::readAssistantCalendarNext),
+        contactsSearchReader = contactsHandler::readAssistantContacts,
+        messengerNotificationsReader =
+          AndroidMessengerNotificationsReaderV1(notificationsHandler::readAssistantMessengerNotifications),
+        privateReadAuthorizer = grants,
+        contactCallResolver = AndroidContactCallResolverV1(contactsHandler::resolveAssistantContactCall),
+        contactCallLauncher = AndroidContactCallLauncherV1(phoneHandler::launchAssistantContactCall),
+        contactSmsResolver = AndroidContactSmsResolverV1(contactsHandler::resolveAssistantContactSms),
+        contactSmsSender = AndroidContactSmsSenderV1(sms::sendAssistantContactSms),
+        calendarCreateResolver = AndroidCalendarCreateResolverV1(calendarHandler::resolveAssistantCalendarCreate),
+        calendarCreateWriter = AndroidCalendarCreateWriterV1(calendarHandler::createAssistantCalendarEvent),
+      ),
+      privateReadGrants = grants,
+      privateReadApprovalGate = AndroidAssistantPrivateReadApprovalGateV1(appContext),
+      contactCallApprovalGate = AndroidAssistantContactCallApprovalGateV1(appContext),
+      contactSmsApprovalGate = AndroidAssistantContactSmsApprovalGateV1(appContext),
+      calendarCreateApprovalGate = AndroidAssistantCalendarCreateApprovalGateV1(appContext),
+      securityGate = ::assistantSecurityGate,
+      privateResultSink = AssistantPrivateResultSinkV1(AssistantPrivateResultsV1.router::deliver),
+    )
+  }
+
+  private fun assistantSecurityGate(): Boolean =
+    operatorConnected && nodeConnected && chat.healthOk.value && !keyguardManager.isDeviceLocked
+
+  private fun clearAssistantExecutionState() {
+    assistantTrustGeneration.incrementAndGet()
+    assistantNodeHandler = null
+    pendingAssistantBrokerKey = null
+    _pendingAssistantBrokerTrust.value = null
+    AssistantPrivateReadApprovals.registry.revokeAll()
+    AssistantContactCallApprovalsV1.registry.revokeAll()
+    AssistantContactSmsApprovalsV1.registry.revokeAll()
+    AssistantCalendarCreateApprovalsV1.registry.revokeAll()
+    AssistantSmsSentStatusesV1.registry.revokeAll()
+    AssistantPrivateReadGrants.manager.revokeAll()
+    AssistantPrivateResultsV1.router.revokeAll()
+    AssistantPresenceLeases.manager.revokeAll()
+  }
+
   private fun hasRecordAudioPermission(): Boolean {
     return (
       ContextCompat.checkSelfPermission(appContext, Manifest.permission.RECORD_AUDIO) ==
@@ -980,6 +1166,7 @@ class NodeRuntime(context: Context) {
   fun disconnect() {
     connectedEndpoint = null
     _pendingGatewayTrust.value = null
+    clearAssistantExecutionState()
     operatorSession.disconnect()
     nodeSession.disconnect()
     motionHandler.close()

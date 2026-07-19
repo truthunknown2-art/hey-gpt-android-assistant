@@ -1,0 +1,19 @@
+{
+  "name": "openclaw-plugin-voice-assistant-tools",
+  "version": "0.2.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node --test ./test/index.test.js"
+  },
+  "files": [
+    "dist",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  }
+}

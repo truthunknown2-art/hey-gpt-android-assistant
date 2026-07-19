@@ -1,0 +1,225 @@
+package com.openclaw.assistant.chatgpt
+
+import android.Manifest
+import android.app.KeyguardManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
+import android.util.Log
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+import com.openclaw.assistant.R
+
+/**
+ * Opens the official ChatGPT Android app without depending on private activities,
+ * deep links, web APIs, or a Platform API key.
+ *
+ * When ChatGPT is Android's selected digital assistant, the launcher invokes the
+ * platform Assist gesture. Background Conversations can then keep that official
+ * session active after the phone is locked.
+ */
+object ChatGptLiveLauncher {
+    const val CHATGPT_PACKAGE = "com.openai.chatgpt"
+
+    private const val TAG = "ChatGptLiveLauncher"
+    private const val CHANNEL_ID = "chatgpt_live_handoff"
+    private const val LOCKSCREEN_NOTIFICATION_ID = 5601
+    private const val PLAY_STORE_WEB_URL =
+        "https://play.google.com/store/apps/details?id=$CHATGPT_PACKAGE"
+
+    enum class Result {
+        LAUNCHED,
+        STORE_OPENED,
+        FAILED
+    }
+
+    fun launch(context: Context): Result {
+        val launchIntent = context.packageManager.getLaunchIntentForPackage(CHATGPT_PACKAGE)
+        if (launchIntent == null) {
+            return openStore(context)
+        }
+
+        // The current official ChatGPT VoiceInteractionService declares that it
+        // cannot launch from a secure keyguard. Fail immediately instead of
+        // waiting for a recorder that can never start. Smart Lock / Extend
+        // Unlock reports deviceLocked=false and may still use the official path.
+        val keyguardManager = context.getSystemService(KeyguardManager::class.java)
+        if (keyguardManager.isDeviceLocked) {
+            Log.i(TAG, "Secure keyguard blocks the official ChatGPT assistant")
+            postFallback(context, launchIntent, locked = true)
+            return Result.FAILED
+        }
+
+        // Newer ChatGPT builds expose an official Android digital-assistant
+        // service. When the user selected it, invoke Android's public Assist
+        // global action through our least-privilege accessibility service. This
+        // starts Voice without naming or automating a private ChatGPT activity.
+        if (isChatGptDefaultAssistant(context)) {
+            val isInteractive = context.getSystemService(PowerManager::class.java).isInteractive
+            if (
+                needsTrustedKeyguardHandoff(
+                    isDeviceLocked = keyguardManager.isDeviceLocked,
+                    isKeyguardLocked = keyguardManager.isKeyguardLocked,
+                    isInteractive = isInteractive,
+                )
+            ) {
+                return runCatching {
+                    context.startActivity(
+                        Intent(context, TrustedKeyguardHandoffActivity::class.java).addFlags(
+                            Intent.FLAG_ACTIVITY_NEW_TASK or
+                                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                                Intent.FLAG_ACTIVITY_SINGLE_TOP,
+                        ),
+                    )
+                    Log.i(TAG, "Waking trusted keyguard before ChatGPT assistant handoff")
+                    Result.LAUNCHED
+                }.getOrElse { error ->
+                    Log.e(TAG, "Unable to start trusted-keyguard handoff", error)
+                    postFallback(context, launchIntent, locked = false)
+                    Result.FAILED
+                }
+            }
+            if (AssistTriggerAccessibilityService.triggerSystemAssistant()) {
+                Log.i(TAG, "ChatGPT invoked through Android's assistant role")
+                return Result.LAUNCHED
+            }
+            Log.w(TAG, "ChatGPT is the default assistant, but the Hey GPT trigger is not enabled")
+            postFallback(context, launchIntent, locked = false)
+            return Result.FAILED
+        }
+
+        launchIntent.addFlags(
+            Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP
+        )
+
+        return try {
+            // Use the app's normal exported launcher activity. startVoiceActivity
+            // is intended for voice-compatible activities and is not a reliable
+            // universal launcher for third-party ACTION_MAIN activities.
+            context.startActivity(launchIntent)
+            if (keyguardManager.isKeyguardLocked) {
+                if (!postFallback(context, launchIntent, locked = true)) {
+                    Log.w(TAG, "ChatGPT launched while locked, but notification permission is unavailable")
+                }
+            }
+            Result.LAUNCHED
+        } catch (error: Exception) {
+            Log.e(TAG, "Unable to open the official ChatGPT app", error)
+            postFallback(context, launchIntent, locked = keyguardManager.isKeyguardLocked)
+            Result.FAILED
+        }
+    }
+
+    internal fun isChatGptDefaultAssistant(context: Context): Boolean {
+        val component = runCatching {
+            Settings.Secure.getString(context.contentResolver, "assistant")
+        }.getOrNull()
+        if (isChatGptAssistantComponent(component)) return true
+
+        val resolvedPackage = runCatching {
+            context.packageManager.resolveActivity(
+                Intent(Intent.ACTION_ASSIST),
+                android.content.pm.PackageManager.MATCH_DEFAULT_ONLY,
+            )?.activityInfo?.packageName
+        }.getOrNull()
+        return resolvedPackage == CHATGPT_PACKAGE
+    }
+
+    internal fun isChatGptAssistantComponent(component: String?): Boolean =
+        component?.startsWith("$CHATGPT_PACKAGE/") == true
+
+    internal fun needsTrustedKeyguardHandoff(
+        isDeviceLocked: Boolean,
+        isKeyguardLocked: Boolean,
+        isInteractive: Boolean,
+    ): Boolean = !isDeviceLocked && (isKeyguardLocked || !isInteractive)
+
+    /** Posts a user-controlled retry when Android accepted a launch but no recording appeared. */
+    fun postFallbackNotification(context: Context): Boolean {
+        val launchIntent = context.packageManager.getLaunchIntentForPackage(CHATGPT_PACKAGE)
+            ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            ?: Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$CHATGPT_PACKAGE"))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val locked = context.getSystemService(KeyguardManager::class.java).isKeyguardLocked
+        return postFallback(context, launchIntent, locked)
+    }
+
+    private fun postFallback(context: Context, launchIntent: Intent, locked: Boolean): Boolean {
+        if (
+            android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.w(TAG, "Cannot post ChatGPT fallback: notification permission is not granted")
+            return false
+        }
+        val notificationManager = context.getSystemService(NotificationManager::class.java)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            notificationManager.createNotificationChannel(
+                NotificationChannel(
+                    CHANNEL_ID,
+                    context.getString(R.string.chatgpt_handoff_channel),
+                    NotificationManager.IMPORTANCE_HIGH
+                )
+            )
+        }
+
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            0,
+            launchIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_mic)
+            .setContentTitle(context.getString(
+                if (locked) R.string.chatgpt_unlock_title else R.string.chatgpt_start_title
+            ))
+            .setContentText(context.getString(
+                if (locked) R.string.chatgpt_unlock_body else R.string.chatgpt_start_body
+            ))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .build()
+
+        return runCatching {
+            notificationManager.notify(LOCKSCREEN_NOTIFICATION_ID, notification)
+            true
+        }.getOrElse {
+            Log.w(TAG, "Unable to post ChatGPT lock-screen fallback", it)
+            false
+        }
+    }
+
+    private fun openStore(context: Context): Result {
+        val marketIntent = Intent(
+            Intent.ACTION_VIEW,
+            Uri.parse("market://details?id=$CHATGPT_PACKAGE")
+        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+        return try {
+            context.startActivity(marketIntent)
+            Result.STORE_OPENED
+        } catch (_: Exception) {
+            try {
+                context.startActivity(
+                    Intent(Intent.ACTION_VIEW, Uri.parse(PLAY_STORE_WEB_URL))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+                Result.STORE_OPENED
+            } catch (error: Exception) {
+                Log.e(TAG, "Unable to open ChatGPT or its Play Store page", error)
+                Result.FAILED
+            }
+        }
+    }
+}

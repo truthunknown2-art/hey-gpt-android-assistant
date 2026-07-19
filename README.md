@@ -1,5 +1,11 @@
 # WakeHermesClaw for Android 🦞
 
+> **This fork adds “Hey GPT” as a persistent OpenClaw-owned voice conversation
+> with memory and approved phone tools. A securely locked phone uses a separate,
+> persistent, tool-free OpenClaw lane instead of weakening the keyguard. Official
+> consumer ChatGPT Live remains an explicit secondary action.** See [the voice setup
+> guide](docs/chatgpt-live-assistant.md).
+
 > **A native Android voice client for OpenClaw and Hermes Agent.**
 >
 > WakeHermesClaw is the successor to *OpenClaw Assistant*. It keeps every
@@ -282,7 +288,7 @@ ngrok http 18789
 
 #### 6. Voice & Node Settings (Optional)
 
-- **Speech Speed**: Adjust TTS playback rate (default 1.2x)
+- **Speech Speed**: Adjust TTS playback rate (default 1.0x)
 - **TTS Engine**: Select from available engines on your device
 - **Continuous Mode**: Enable auto-resume listening after response
 - **Silence Timeout**: Configure how long to wait for speech input
@@ -530,7 +536,7 @@ Chat Completions APIが有効であることを `moltbot.json` で確認：
 
 #### 6. 音声・ノード設定（任意）
 
-- **読み上げ速度**: TTS再生速度を調整（デフォルト1.2倍）
+- **読み上げ速度**: TTS再生速度を調整（デフォルト1.0倍）
 - **TTSエンジン**: 端末上で利用可能なエンジンを選択
 - **連続会話モード**: 応答後に自動で聞き取り再開
 - **サイレンスタイムアウト**: 音声入力の待ち時間を設定

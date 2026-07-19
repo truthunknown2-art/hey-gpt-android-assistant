@@ -208,6 +208,7 @@ class PermissionRequester(private val activity: ComponentActivity) {
       Manifest.permission.READ_SMS -> "SMS (read)"
       Manifest.permission.READ_CONTACTS -> "Contacts (read)"
       Manifest.permission.WRITE_CONTACTS -> "Contacts (write)"
+      Manifest.permission.CALL_PHONE -> "Phone calls"
       Manifest.permission.READ_CALENDAR -> "Calendar (read)"
       Manifest.permission.WRITE_CALENDAR -> "Calendar (write)"
       Manifest.permission.READ_MEDIA_IMAGES -> "Photos"

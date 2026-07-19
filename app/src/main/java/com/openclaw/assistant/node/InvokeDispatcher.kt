@@ -19,8 +19,12 @@ import com.openclaw.assistant.protocol.OpenClawAppCommand
 import com.openclaw.assistant.protocol.OpenClawClipboardCommand
 import com.openclaw.assistant.protocol.OpenClawBridgeCommand
 import com.openclaw.assistant.protocol.OpenClawVoiceWakeCommand
+import com.openclaw.assistant.protocol.OpenClawPhoneCommand
+import com.openclaw.assistant.protocol.OpenClawMediaCommand
 
-class InvokeDispatcher(
+enum class InvocationOrigin { GATEWAY, LOCAL_VOICE }
+
+internal class InvokeDispatcher(
   private val canvas: CanvasController,
   private val cameraHandler: CameraHandler,
   private val locationHandler: LocationHandler,
@@ -41,11 +45,18 @@ class InvokeDispatcher(
   private val appUpdateHandler: AppUpdateHandler,
   private val deviceHandler: DeviceHandler,
   private val mobileBridgeHandler: MobileBridgeHandler,
+  private val phoneHandler: PhoneHandler,
+  private val mediaHandler: MediaHandler,
   private val isForeground: () -> Boolean,
   private val cameraEnabled: () -> Boolean,
   private val locationEnabled: () -> Boolean,
+  private val assistantHandler: () -> AssistantNodeCommandHandlerV1? = { null },
 ) {
-  suspend fun handleInvoke(command: String, paramsJson: String?): GatewaySession.InvokeResult {
+  suspend fun handleInvoke(
+    command: String,
+    paramsJson: String?,
+    origin: InvocationOrigin = InvocationOrigin.GATEWAY,
+  ): GatewaySession.InvokeResult {
     // Check foreground requirement for canvas/camera/screen commands
     if (
       command.startsWith(OpenClawCanvasCommand.NamespacePrefix) ||
@@ -189,9 +200,26 @@ class InvokeDispatcher(
       OpenClawSmsCommand.ReadLatest.rawValue -> smsHandler.handleSmsReadLatest()
       OpenClawSmsCommand.ReadUnread.rawValue -> smsHandler.handleSmsReadUnread()
 
-      // Notifications commands
-      OpenClawNotificationsCommand.List.rawValue -> notificationsHandler.handleList()
-      OpenClawNotificationsCommand.Actions.rawValue -> notificationsHandler.handleActions(paramsJson)
+      // Phone and media commands
+      OpenClawPhoneCommand.Call.rawValue -> {
+        if (origin != InvocationOrigin.LOCAL_VOICE) {
+          GatewaySession.InvokeResult.error(
+            code = "LOCAL_CONFIRMATION_REQUIRED",
+            message = "Phone calls are restricted to an on-device voice request",
+          )
+        } else {
+          phoneHandler.handleCall(paramsJson)
+        }
+      }
+      OpenClawMediaCommand.PlaySearch.rawValue -> mediaHandler.handlePlaySearch(paramsJson)
+
+      // Generic notification contents stay on-device. Gateway reads use the signed broker path.
+      OpenClawNotificationsCommand.List.rawValue -> localNotificationCommand(origin) {
+        notificationsHandler.handleList()
+      }
+      OpenClawNotificationsCommand.Actions.rawValue -> localNotificationCommand(origin) {
+        notificationsHandler.handleActions(paramsJson)
+      }
 
       // System command
       OpenClawSystemCommand.Notify.rawValue -> systemHandler.handleNotify(paramsJson)
@@ -242,11 +270,26 @@ class InvokeDispatcher(
       OpenClawDeviceCommand.Health.rawValue -> deviceHandler.handleHealth()
 
       // Mobile Bridge compatibility commands
-      OpenClawBridgeCommand.Status.rawValue -> mobileBridgeHandler.handleStatus()
-      OpenClawBridgeCommand.Manifest.rawValue -> mobileBridgeHandler.handleManifest()
-      OpenClawBridgeCommand.Execute.rawValue -> mobileBridgeHandler.handleExecute(paramsJson)
-      OpenClawBridgeCommand.Grants.rawValue -> mobileBridgeHandler.handleGrants()
-      OpenClawBridgeCommand.Revoke.rawValue -> mobileBridgeHandler.handleRevoke(paramsJson)
+      OpenClawBridgeCommand.Status.rawValue -> localBridgeCommand(origin) {
+        mobileBridgeHandler.handleStatus()
+      }
+      OpenClawBridgeCommand.Manifest.rawValue -> localBridgeCommand(origin) {
+        mobileBridgeHandler.handleManifest()
+      }
+      OpenClawBridgeCommand.Execute.rawValue -> localBridgeCommand(origin) {
+        mobileBridgeHandler.handleExecute(paramsJson)
+      }
+      OpenClawBridgeCommand.Grants.rawValue -> localBridgeCommand(origin) {
+        mobileBridgeHandler.handleGrants()
+      }
+      OpenClawBridgeCommand.Revoke.rawValue -> localBridgeCommand(origin) {
+        mobileBridgeHandler.handleRevoke(paramsJson)
+      }
+
+      AssistantNodeCommandHandlerV1.PRESENCE_COMMAND -> assistantHandler()?.handlePresence()
+        ?: assistantExecutorDisabled()
+      AssistantNodeCommandHandlerV1.EXECUTE_COMMAND -> assistantHandler()?.handleExecute(paramsJson)
+        ?: assistantExecutorDisabled()
 
       // Debug commands
       "debug.ed25519" -> debugHandler.handleEd25519()
@@ -262,4 +305,33 @@ class InvokeDispatcher(
         )
     }
   }
+
+  private suspend fun localNotificationCommand(
+    origin: InvocationOrigin,
+    invoke: suspend () -> GatewaySession.InvokeResult,
+  ): GatewaySession.InvokeResult = if (origin == InvocationOrigin.LOCAL_VOICE) {
+    invoke()
+  } else {
+    GatewaySession.InvokeResult.error(
+      code = "LOCAL_NOTIFICATION_ACCESS_REQUIRED",
+      message = "Generic notification access is restricted to the on-device assistant",
+    )
+  }
+
+  private suspend fun localBridgeCommand(
+    origin: InvocationOrigin,
+    invoke: suspend () -> GatewaySession.InvokeResult,
+  ): GatewaySession.InvokeResult = if (origin == InvocationOrigin.LOCAL_VOICE) {
+    invoke()
+  } else {
+    GatewaySession.InvokeResult.error(
+      code = "LOCAL_BRIDGE_ACCESS_REQUIRED",
+      message = "Mobile Bridge compatibility commands are not available through the Gateway",
+    )
+  }
+
+  private fun assistantExecutorDisabled(): GatewaySession.InvokeResult = GatewaySession.InvokeResult.error(
+    code = "ASSISTANT_EXECUTOR_DISABLED",
+    message = "The signed assistant executor is not provisioned",
+  )
 }

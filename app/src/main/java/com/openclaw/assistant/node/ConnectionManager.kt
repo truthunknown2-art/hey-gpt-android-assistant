@@ -18,17 +18,15 @@ import com.openclaw.assistant.protocol.OpenClawDeviceCommand
 import com.openclaw.assistant.protocol.OpenClawLocationCommand
 import com.openclaw.assistant.protocol.OpenClawScreenCommand
 import com.openclaw.assistant.protocol.OpenClawSmsCommand
-import com.openclaw.assistant.protocol.OpenClawNotificationsCommand
 import com.openclaw.assistant.protocol.OpenClawSystemCommand
 import com.openclaw.assistant.protocol.OpenClawPhotosCommand
 import com.openclaw.assistant.protocol.OpenClawContactsCommand
 import com.openclaw.assistant.protocol.OpenClawCalendarCommand
 import com.openclaw.assistant.protocol.OpenClawMotionCommand
 import com.openclaw.assistant.protocol.OpenClawCapability
-import com.openclaw.assistant.protocol.OpenClawBridgeCommand
+import com.openclaw.assistant.protocol.OpenClawMediaCommand
 import com.openclaw.assistant.LocationMode
 import com.openclaw.assistant.VoiceWakeMode
-import android.provider.Settings
 
 class ConnectionManager(
   private val prefs: SecurePrefs,
@@ -42,6 +40,24 @@ class ConnectionManager(
   private val deviceId: () -> String?,
 ) {
   companion object {
+    internal fun signedAssistantCommands(): List<String> = listOf(
+      AssistantNodeCommandHandlerV1.PRESENCE_COMMAND,
+      AssistantNodeCommandHandlerV1.EXECUTE_COMMAND,
+    )
+
+    internal fun assistantToolsDisplayName(configuredName: String?, deviceId: String?): String {
+      val base = configuredName
+        ?.trim()
+        ?.takeIf(String::isNotEmpty)
+        ?: deviceId?.trim()?.take(12)?.takeIf(String::isNotEmpty)
+        ?: "Android"
+      return if (base.endsWith("Assistant Tools", ignoreCase = true)) {
+        base
+      } else {
+        "$base Assistant Tools"
+      }
+    }
+
     internal fun resolveTlsParamsForEndpoint(
       endpoint: GatewayEndpoint,
       storedFingerprint: String?,
@@ -98,11 +114,6 @@ class ConnectionManager(
     return ContextCompat.checkSelfPermission(appContext, permission) == PackageManager.PERMISSION_GRANTED
   }
 
-  private fun isNotificationListenerEnabled(): Boolean {
-    val enabledPackages = Settings.Secure.getString(appContext.contentResolver, "enabled_notification_listeners")
-    return enabledPackages?.contains(appContext.packageName) == true
-  }
-
   fun buildInvokeCommands(): List<String> =
     buildList {
       add(OpenClawCanvasCommand.Present.rawValue)
@@ -113,7 +124,7 @@ class ConnectionManager(
       add(OpenClawCanvasA2UICommand.Push.rawValue)
       add(OpenClawCanvasA2UICommand.PushJSONL.rawValue)
       add(OpenClawCanvasA2UICommand.Reset.rawValue)
-      OpenClawBridgeCommand.entries.forEach { add(it.rawValue) }
+      addAll(signedAssistantCommands())
       add(OpenClawScreenCommand.Record.rawValue)
       OpenClawDeviceCommand.entries.forEach { add(it.rawValue) }
       if (cameraEnabled()) {
@@ -126,13 +137,13 @@ class ConnectionManager(
       }
       if (smsAvailable()) {
         add(OpenClawSmsCommand.Send.rawValue)
+        if (hasPermission(Manifest.permission.READ_SMS)) {
+          add(OpenClawSmsCommand.ReadLatest.rawValue)
+          add(OpenClawSmsCommand.ReadUnread.rawValue)
+        }
       }
 
-      // Notifications
-      if (isNotificationListenerEnabled()) {
-        add(OpenClawNotificationsCommand.List.rawValue)
-        add(OpenClawNotificationsCommand.Actions.rawValue)
-      }
+      add(OpenClawMediaCommand.PlaySearch.rawValue)
 
       // System
       add(OpenClawSystemCommand.Notify.rawValue)
@@ -181,11 +192,7 @@ class ConnectionManager(
       add(OpenClawCapability.Canvas.rawValue)
       add(OpenClawCapability.Screen.rawValue)
       add(OpenClawCapability.System.rawValue)
-      add(OpenClawCapability.Bridge.rawValue)
-
-      if (isNotificationListenerEnabled()) {
-        add(OpenClawCapability.Notifications.rawValue)
-      }
+      add(OpenClawCapability.Media.rawValue)
 
       val photosPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         Manifest.permission.READ_MEDIA_IMAGES
@@ -244,7 +251,7 @@ class ConnectionManager(
   fun buildClientInfo(clientId: String, clientMode: String): GatewayClientInfo {
     return GatewayClientInfo(
       id = clientId,
-      displayName = deviceId() ?: prefs.displayName.value,
+      displayName = assistantToolsDisplayName(prefs.displayName.value, deviceId()),
       version = resolvedVersionName(),
       platform = "android",
       mode = clientMode,
@@ -264,7 +271,6 @@ class ConnectionManager(
       OpenClawCapability.Canvas.rawValue,
       OpenClawCapability.Screen.rawValue,
       OpenClawCapability.System.rawValue,
-      OpenClawCapability.Bridge.rawValue,
     )
     val requestedScopes = caps.filterNot { it in alwaysOnCaps }.map { "node.$it" }
 

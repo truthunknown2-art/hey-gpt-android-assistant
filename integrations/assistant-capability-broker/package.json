@@ -1,0 +1,19 @@
+{
+  "name": "openclaw-plugin-assistant-capability-broker",
+  "version": "0.8.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node --test ./test/*.test.js"
+  },
+  "files": [
+    "dist",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  }
+}

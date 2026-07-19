@@ -70,6 +70,7 @@ import com.openclaw.assistant.data.SettingsRepository
 import com.openclaw.assistant.service.HotwordService
 import com.openclaw.assistant.service.NodeForegroundService
 import com.openclaw.assistant.service.OpenClawAssistantService
+import com.openclaw.assistant.ui.AssistantBrokerTrustDialog
 import com.openclaw.assistant.ui.GatewayTrustDialog
 import com.openclaw.assistant.speech.TTSUtils
 import com.openclaw.assistant.speech.diagnostics.DiagnosticStatus
@@ -347,8 +348,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     fun toggleHotwordService(enabled: Boolean) {
         if (enabled) {
-            // Check that a backend connection is configured before enabling wakeword.
-            // The voice interaction session needs a backend to communicate with the AI.
+            // Every wake target now requires a configured assistant backend.
             val runtime = (applicationContext as OpenClawApplication).nodeRuntime
             val isConnectionConfigured = if (settings.connectionType == SettingsRepository.CONNECTION_TYPE_GATEWAY) {
                 runtime.manualHost.value.isNotBlank()
@@ -428,6 +428,14 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     override fun onResume() {
         super.onResume()
+        // APK replacement stops foreground services while preserving preferences.
+        // Reopening the app must make an enabled wake-word switch truthful again.
+        if (settings.hotwordEnabled && settings.hasUsableWakeTarget() &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED) {
+            HotwordService.start(this)
+            NodeForegroundService.start(this)
+        }
         (applicationContext as OpenClawApplication).nodeRuntime.screenRecorder.attachScreenCaptureRequester(screenCaptureRequester)
         chatRefreshTrigger++
         refreshMissingPermissions()
@@ -658,6 +666,7 @@ fun MainScreen(
     val deviceId = runtime.deviceId
     val displayName by runtime.displayName.collectAsState()
     val pendingGatewayTrust by runtime.pendingGatewayTrust.collectAsState()
+    val pendingAssistantBrokerTrust by runtime.pendingAssistantBrokerTrust.collectAsState()
 
     val wakeWordDebugEnabled by remember { derivedStateOf { settings.wakeWordDebugEnabled } }
     val hotwordDebugLogs by com.openclaw.assistant.service.HotwordDebugLogger.logs.collectAsState()
@@ -681,6 +690,7 @@ fun MainScreen(
 
     // Check for updates on startup
     LaunchedEffect(Unit) {
+        if (BuildConfig.DEBUG) return@LaunchedEffect
         try {
             val versionName = context.packageManager.getPackageInfo(context.packageName, 0).versionName
             val info = com.openclaw.assistant.utils.UpdateChecker.checkUpdate(versionName ?: "")
@@ -739,6 +749,13 @@ fun MainScreen(
                     prompt = pendingGatewayTrust!!,
                     onAccept = { runtime.acceptGatewayTrustPrompt() },
                     onDecline = { runtime.declineGatewayTrustPrompt() }
+                )
+            }
+            if (pendingAssistantBrokerTrust != null) {
+                AssistantBrokerTrustDialog(
+                    prompt = pendingAssistantBrokerTrust!!,
+                    onAccept = { runtime.acceptAssistantBrokerTrustPrompt() },
+                    onDecline = { runtime.declineAssistantBrokerTrustPrompt() },
                 )
             }
             val displayStatusText = when (nodeStatusText) {
