@@ -427,6 +427,13 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     override fun onResume() {
         super.onResume()
+        // APK replacement stops foreground services while preserving preferences.
+        // Reopening the app must make an enabled wake-word switch truthful again.
+        if (settings.hotwordEnabled && settings.hasUsableWakeTarget() &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED) {
+            HotwordService.start(this)
+        }
         (applicationContext as OpenClawApplication).nodeRuntime.screenRecorder.attachScreenCaptureRequester(screenCaptureRequester)
         chatRefreshTrigger++
         refreshMissingPermissions()
