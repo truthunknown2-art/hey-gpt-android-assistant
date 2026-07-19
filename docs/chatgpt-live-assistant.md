@@ -287,6 +287,31 @@ not securely locked. A later transition to secure lock terminates the main lane.
 - The explicit Live button opens the official ChatGPT app exactly once.
 - Closing a session releases the mic and resumes wake-word detection.
 
+### Physical evidence (2026-07-19)
+
+- Exact-head full APK `d168059` was installed in place on the S10+ without
+  losing pairing or settings. Both unit-test variants and the full APK build
+  passed before installation.
+- Physical phone-speaker playback produced a real Vosk wake, Android STT
+  result, Luna turn, Pocket TTS response, bounded soft-error retries, clean
+  `idle_timeout`, and automatic return to `Hotword listening started`.
+- Process death and relaunch preserved pairing and restored both foreground
+  services and Vosk listening.
+- Windows filename search failed after the unlocked lease expired and succeeded
+  while the physical unlocked voice lease was live, returning metadata and one
+  opaque reference without content.
+- The first Windows read rendered the exact opaque reference and 16,384-byte
+  limit in the secure phone dialog. Denial returned only
+  `PRIVATE_READ_APPROVAL_DENIED`. A fresh request approved on the phone returned
+  492 bytes with `truncated=false`; its SHA-256 matched the source file exactly.
+- The Windows read request was submitted directly to the same persistent Luna
+  session while the physical voice lease was active because Samsung echo
+  cancellation removes command audio played by the phone to itself. A normal
+  spoken wake/STT/Luna/TTS turn is proven separately; a user-spoken Windows read
+  remains an open end-to-end acceptance run.
+- Mobile-data/Tailscale acceptance remains open because the test S10+ reported
+  Bell out of service and had no usable cellular underlay during the test.
+
 ## Build and smoke test
 
 ```powershell
