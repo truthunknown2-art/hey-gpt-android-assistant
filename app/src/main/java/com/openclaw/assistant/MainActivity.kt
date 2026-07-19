@@ -433,6 +433,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
                 PackageManager.PERMISSION_GRANTED) {
             HotwordService.start(this)
+            NodeForegroundService.start(this)
         }
         (applicationContext as OpenClawApplication).nodeRuntime.screenRecorder.attachScreenCaptureRequester(screenCaptureRequester)
         chatRefreshTrigger++

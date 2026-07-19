@@ -7,10 +7,12 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.openclaw.assistant.OpenClawApplication
 import com.openclaw.assistant.data.SettingsRepository
 import com.openclaw.assistant.service.HotwordService
+import com.openclaw.assistant.service.NodeForegroundService
 
-/** Restores hotword listening after a reboot or an in-place app update. */
+/** Restores hotword listening and its device-action node after reboot or app update. */
 class BootReceiver : BroadcastReceiver() {
 
     companion object {
@@ -24,17 +26,38 @@ class BootReceiver : BroadcastReceiver() {
 
         val settings = SettingsRepository.getInstance(context)
 
-        if (settings.hotwordEnabled && settings.hasUsableWakeTarget()) {
-            if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
-                == PackageManager.PERMISSION_GRANTED) {
-                Log.d(TAG, "Starting HotwordService")
-                HotwordService.start(context)
-            } else {
-                Log.w(TAG, "RECORD_AUDIO not granted, skipping HotwordService recovery")
-            }
+        val shouldRestore = shouldRestoreAssistantServices(
+            hotwordEnabled = settings.hotwordEnabled,
+            hasUsableWakeTarget = settings.hasUsableWakeTarget(),
+            hasRecordAudioPermission = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.RECORD_AUDIO,
+            ) == PackageManager.PERMISSION_GRANTED,
+        )
+        if (!shouldRestore) {
+            Log.w(TAG, "Assistant recovery requirements are not met; skipping services")
+            return
+        }
+
+        Log.d(TAG, "Starting HotwordService")
+        HotwordService.start(context)
+
+        // The helper node owns the narrow device-action commands. Initialize its
+        // paired runtime before starting the service so onCreate cannot race it.
+        runCatching {
+            (context.applicationContext as OpenClawApplication).ensureRuntime()
+            NodeForegroundService.start(context)
+        }.onFailure { error ->
+            Log.e(TAG, "Failed to restore assistant node service", error)
         }
     }
 
     internal fun isRecoveryAction(action: String?): Boolean =
         action == Intent.ACTION_BOOT_COMPLETED || action == Intent.ACTION_MY_PACKAGE_REPLACED
+
+    internal fun shouldRestoreAssistantServices(
+        hotwordEnabled: Boolean,
+        hasUsableWakeTarget: Boolean,
+        hasRecordAudioPermission: Boolean,
+    ): Boolean = hotwordEnabled && hasUsableWakeTarget && hasRecordAudioPermission
 }

@@ -19,4 +19,12 @@ class BootReceiverTest {
         assertFalse(receiver.isRecoveryAction(Intent.ACTION_PACKAGE_REPLACED))
         assertFalse(receiver.isRecoveryAction(null))
     }
+
+    @Test
+    fun `assistant services restore only for an enabled authorized wake target`() {
+        assertTrue(receiver.shouldRestoreAssistantServices(true, true, true))
+        assertFalse(receiver.shouldRestoreAssistantServices(false, true, true))
+        assertFalse(receiver.shouldRestoreAssistantServices(true, false, true))
+        assertFalse(receiver.shouldRestoreAssistantServices(true, true, false))
+    }
 }
