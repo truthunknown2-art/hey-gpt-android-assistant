@@ -1027,12 +1027,16 @@ class NodeRuntime(context: Context) {
     assistantNodeHandler = null
     pendingAssistantBrokerKey = null
     _pendingAssistantBrokerTrust.value = null
-    val candidate = runCatching {
-      AssistantBrokerTrustStoreV1.decodeGatewayResponse(
-        requestGateway("assistant.broker.publicKey"),
-      )
+    val response = runCatching {
+      requestAssistantBrokerPublicKey(generation)
     }.getOrElse { error ->
-      Log.w("NodeRuntime", "Assistant broker trust unavailable: ${error.javaClass.simpleName}")
+      Log.w("NodeRuntime", "Assistant broker request unavailable: ${error.javaClass.simpleName}")
+      return
+    } ?: return
+    val candidate = runCatching {
+      AssistantBrokerTrustStoreV1.decodeGatewayResponse(response)
+    }.getOrElse { error ->
+      Log.e("NodeRuntime", "Assistant broker descriptor is invalid: ${error.javaClass.simpleName}")
       return
     }
     if (!operatorConnected || assistantTrustGeneration.get() != generation) return
@@ -1049,6 +1053,21 @@ class NodeRuntime(context: Context) {
       candidateFingerprintSha256 = candidate.fingerprintSha256,
       currentFingerprintSha256 = current?.fingerprintSha256,
     )
+  }
+
+  private suspend fun requestAssistantBrokerPublicKey(generation: Long): String? {
+    var lastError: Throwable? = null
+    repeat(20) {
+      if (!operatorConnected || assistantTrustGeneration.get() != generation) return null
+      try {
+        return requestGateway("assistant.broker.publicKey")
+      } catch (error: Throwable) {
+        lastError = error
+        if (!error.message.orEmpty().contains("not connected", ignoreCase = true)) throw error
+        delay(250L)
+      }
+    }
+    throw IllegalStateException("Assistant broker request channel did not become ready", lastError)
   }
 
   private fun installAssistantNodeHandler() {
