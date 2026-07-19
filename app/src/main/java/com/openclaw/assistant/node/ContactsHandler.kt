@@ -7,12 +7,15 @@ import android.content.pm.PackageManager
 import android.provider.ContactsContract
 import androidx.core.content.ContextCompat
 import com.openclaw.assistant.PermissionRequester
+import com.openclaw.assistant.broker.AndroidContactMatchV1
+import com.openclaw.assistant.broker.AndroidContactsSearchReadV1
 import com.openclaw.assistant.gateway.GatewaySession
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 
 class ContactsHandler(private val appContext: Context) {
@@ -68,13 +71,53 @@ class ContactsHandler(private val appContext: Context) {
             }
         } ?: return GatewaySession.InvokeResult.error("INVALID_REQUEST", "Expected JSON object")
 
-        val query = (params["query"] as? JsonPrimitive)?.content ?: ""
-
-        if (query.isEmpty()) {
-            return GatewaySession.InvokeResult.error("INVALID_REQUEST", "Query is required")
+        if (params.keys.any { it !in setOf("query", "limit") }) {
+            return GatewaySession.InvokeResult.error("INVALID_REQUEST", "Unknown search argument")
+        }
+        val queryPrimitive = params["query"] as? JsonPrimitive
+        val query = queryPrimitive?.takeIf { it.isString }?.content?.trim().orEmpty()
+        val limitElement = params["limit"]
+        val limit = if (limitElement == null) {
+            10
+        } else {
+            (limitElement as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull
         }
 
-        val contacts = mutableListOf<JsonObject>()
+        if (query.isEmpty() || limit == null || limit !in 1..10) {
+            return GatewaySession.InvokeResult.error("INVALID_REQUEST", "Query and limit must be valid")
+        }
+
+        return when (val result = runCatching { readAssistantContacts(query, limit) }.getOrElse {
+            return GatewaySession.InvokeResult.error("CONTACTS_SEARCH_FAILED", "CONTACTS_SEARCH_FAILED")
+        }) {
+            AndroidContactsSearchReadV1.PermissionRequired -> GatewaySession.InvokeResult.error(
+                code = "CONTACTS_READ_PERMISSION_REQUIRED",
+                message = "CONTACTS_READ_PERMISSION_REQUIRED: grant Contacts read permission",
+            )
+            is AndroidContactsSearchReadV1.Success -> {
+                val payload = buildJsonObject {
+                    put("contacts", buildJsonArray {
+                        result.matches.forEach { match ->
+                            add(buildJsonObject {
+                                put("id", JsonPrimitive(match.contactId))
+                                put("name", JsonPrimitive(match.displayName))
+                                put("number", JsonPrimitive(match.phoneNumber))
+                            })
+                        }
+                    })
+                    put("truncated", JsonPrimitive(result.truncated))
+                }
+                GatewaySession.InvokeResult.ok(payload.toString())
+            }
+        }
+    }
+
+    internal fun readAssistantContacts(query: String, limit: Int): AndroidContactsSearchReadV1 {
+        if (!hasReadPermission()) return AndroidContactsSearchReadV1.PermissionRequired
+        require(query.isNotBlank() && query.length <= 100)
+        require(limit in 1..10)
+
+        val contacts = mutableListOf<AndroidContactMatchV1>()
         val projection = arrayOf(
             ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
             ContactsContract.CommonDataKinds.Phone.NUMBER,
@@ -88,39 +131,33 @@ class ContactsHandler(private val appContext: Context) {
                 projection,
                 selection,
                 selectionArgs,
-                null
+                "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} COLLATE LOCALIZED ASC",
             )
         } catch (e: SecurityException) {
-            return GatewaySession.InvokeResult.error(
-                code = "CONTACTS_READ_PERMISSION_REQUIRED",
-                message = "CONTACTS_READ_PERMISSION_REQUIRED: ${e.message}"
-            )
+            return AndroidContactsSearchReadV1.PermissionRequired
         }
 
         cursor?.use {
             val nameIndex = it.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
             val numberIndex = it.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.NUMBER)
             val idIndex = it.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.CONTACT_ID)
-            var count = 0
-            while (it.moveToNext() && count < 10) {
-                val name = it.getString(nameIndex)
-                val number = it.getString(numberIndex)
-                val id = it.getLong(idIndex)
-                contacts.add(buildJsonObject {
-                    put("id", JsonPrimitive(id))
-                    put("name", JsonPrimitive(name))
-                    put("number", JsonPrimitive(number))
-                })
-                count++
+            while (contacts.size <= limit && it.moveToNext()) {
+                val contactId = it.getLong(idIndex)
+                val displayName = it.getString(nameIndex).orEmpty().trim()
+                val phoneNumber = it.getString(numberIndex).orEmpty().trim()
+                if (contactId > 0 && displayName.isNotEmpty() && phoneNumber.isNotEmpty()) {
+                    contacts += AndroidContactMatchV1(
+                        contactId = contactId.toString(),
+                        displayName = displayName,
+                        phoneNumber = phoneNumber,
+                    )
+                }
             }
         }
-
-        val payload = buildJsonObject {
-            put("contacts", buildJsonArray {
-                contacts.forEach { add(it) }
-            })
-        }
-        return GatewaySession.InvokeResult.ok(payload.toString())
+        return AndroidContactsSearchReadV1.Success(
+            matches = contacts.take(limit),
+            truncated = contacts.size > limit,
+        )
     }
 
     suspend fun handleAdd(paramsJson: String?): GatewaySession.InvokeResult {

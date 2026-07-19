@@ -59,12 +59,15 @@ read-only foundations:
 Medium-risk capabilities still require the future private-read grant. They are
 defined here for validation but remain unavailable until that gate exists.
 
-The Android executor currently implements only `android.device.status`. It
-accepts the typed signed proposal internally, revalidates the exact device,
+The Android executor currently implements `android.device.status` and an
+internal `android.contacts.search` adapter. Both revalidate the exact device,
 voice session, live unlocked-presence lease, proposal lifetime, argument hash,
-risk, and pinned Ed25519 signature, then emits a privacy-minimized terminal
-receipt. The status summary contains only battery percentage, charging state,
-and screen-interactive state. No executor command or model tool is registered
+risk, and pinned Ed25519 signature. Contact lookup additionally requires a
+session/device-bound private-read authorization and Android Contacts permission.
+Names and phone numbers are returned only in the ephemeral execution outcome;
+the durable receipt stores only match count and truncation. The status receipt
+contains only battery percentage, charging state, and screen-interactive state.
+No executor command, private-read grant issuer, or model tool is registered
 until the Phase 0 physical and exact-head review gates close.
 
 The legacy Mobile Bridge now shares the same fail-closed confirmation posture:
