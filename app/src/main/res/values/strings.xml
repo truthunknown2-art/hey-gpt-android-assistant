@@ -512,6 +512,12 @@
     <string name="locked_conversation_timeout">OpenClaw did not answer. Unlock the phone to continue with ChatGPT Live.</string>
     <string name="permission_phone_calls">Phone calls</string>
     <string name="permission_phone_calls_desc">Allow hands-free calls. Without this permission, commands open the dialer for confirmation.</string>
+    <string name="assistant_contact_sms_channel">Assistant message approvals</string>
+    <string name="assistant_contact_sms_title">Send text message?</string>
+    <string name="assistant_contact_sms_message">To: %1$s\n%2$s\n\nMessage:\n%3$s</string>
+    <string name="assistant_contact_sms_notification">Unlock the phone to review the recipient and message.</string>
+    <string name="assistant_contact_sms_approve">Send</string>
+    <string name="assistant_contact_sms_deny">Cancel</string>
     <string name="local_command_channel">Local voice commands</string>
     <string name="local_command_needs_attention">Voice command needs attention</string>
     <string name="wake_word_phrase_label">Wake Word</string>

@@ -134,6 +134,9 @@ if ($brokerConfig.privateReadsEnabled -eq $true) {
 if ($brokerConfig.phoneCallsEnabled -eq $true) {
     $expected += "assistant_phone_call"
 }
+if ($brokerConfig.smsSendEnabled -eq $true) {
+    $expected += "assistant_sms_send"
+}
 $expected = @($expected | Sort-Object -Unique)
 $registrationMismatch =
     $registered.Count -ne $expected.Count -or

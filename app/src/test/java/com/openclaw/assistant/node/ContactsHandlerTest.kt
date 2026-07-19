@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import com.openclaw.assistant.gateway.GatewaySession
 import com.openclaw.assistant.broker.AndroidContactCallResolutionV1
+import com.openclaw.assistant.broker.AndroidContactSmsResolutionV1
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
@@ -155,6 +156,28 @@ class ContactsHandlerTest {
         val result = handler.resolveAssistantContactCall("Jen")
 
         assertEquals(AndroidContactCallResolutionV1.Ambiguous, result)
+        unmockkStatic(ContextCompat::class)
+    }
+
+    @Test
+    fun `contact SMS resolver returns one private local target`() {
+        mockkStatic(ContextCompat::class)
+        every { context.contentResolver } returns contentResolver
+        every { ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) } returns
+            PackageManager.PERMISSION_GRANTED
+        val cursor = MatrixCursor(arrayOf(
+            ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+            ContactsContract.CommonDataKinds.Phone.NUMBER,
+            ContactsContract.CommonDataKinds.Phone.CONTACT_ID,
+        ))
+        cursor.addRow(arrayOf("Jen Thorndale", "+1 250 555 0100", 101L))
+        every { contentResolver.query(any(), any(), any(), any(), any()) } returns cursor
+
+        val result = handler.resolveAssistantContactSms("Jen")
+
+        val ready = result as AndroidContactSmsResolutionV1.Ready
+        assertEquals("Jen Thorndale", ready.target.displayName)
+        assertEquals("+1 250 555 0100", ready.target.phoneNumber)
         unmockkStatic(ContextCompat::class)
     }
 }

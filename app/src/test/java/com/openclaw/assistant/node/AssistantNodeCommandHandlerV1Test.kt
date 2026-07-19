@@ -6,6 +6,11 @@ import com.openclaw.assistant.broker.AndroidContactCallResolutionV1
 import com.openclaw.assistant.broker.AndroidContactCallResolverV1
 import com.openclaw.assistant.broker.AndroidContactCallTargetV1
 import com.openclaw.assistant.broker.AndroidContactCallLauncherV1
+import com.openclaw.assistant.broker.AndroidContactSmsResolutionV1
+import com.openclaw.assistant.broker.AndroidContactSmsResolverV1
+import com.openclaw.assistant.broker.AndroidContactSmsSendV1
+import com.openclaw.assistant.broker.AndroidContactSmsSenderV1
+import com.openclaw.assistant.broker.AndroidContactSmsTargetV1
 import com.openclaw.assistant.broker.AndroidContactsSearchReadV1
 import com.openclaw.assistant.broker.AndroidContactsSearchReaderV1
 import com.openclaw.assistant.broker.AndroidDeviceStatusReaderV1
@@ -275,6 +280,95 @@ class AssistantNodeCommandHandlerV1Test {
         )
     }
 
+    @Test
+    fun `approved contact SMS resolves confirms and sends without serializing content`() = runTest {
+        val fixture = Fixture(smsApprovalAllowed = true)
+
+        val result = fixture.handler.handleExecute(
+            fixture.signedJson(AssistantCapabilityV1.ANDROID_SMS_SEND_CONTACT),
+        )
+
+        assertTrue(result.ok)
+        assertEquals(1, fixture.smsResolutions)
+        assertEquals(1, fixture.smsApprovalRequests)
+        assertEquals(1, fixture.smsSends)
+        assertFalse(result.payloadJson!!.contains("Jen Thorndale"))
+        assertFalse(result.payloadJson!!.contains("+1 250 555 0100"))
+        assertFalse(result.payloadJson!!.contains("I will be there at six."))
+        val payload = Json.parseToJsonElement(result.payloadJson!!).jsonObject
+        assertEquals("COMPLETED", payload["status"]?.jsonPrimitive?.content)
+        assertEquals("true", payload["resultSummary"]?.jsonObject?.get("sent")?.toString())
+    }
+
+    @Test
+    fun `denied contact SMS never sends`() = runTest {
+        val fixture = Fixture(smsApprovalAllowed = false)
+
+        val result = fixture.handler.handleExecute(
+            fixture.signedJson(AssistantCapabilityV1.ANDROID_SMS_SEND_CONTACT),
+        )
+
+        assertTrue(result.ok)
+        assertEquals(1, fixture.smsResolutions)
+        assertEquals(1, fixture.smsApprovalRequests)
+        assertEquals(0, fixture.smsSends)
+        assertEquals(
+            "SMS_APPROVAL_DENIED",
+            Json.parseToJsonElement(result.payloadJson!!).jsonObject["errorCode"]?.jsonPrimitive?.content,
+        )
+    }
+
+    @Test
+    fun `ambiguous contact SMS fails before approval or send`() = runTest {
+        val fixture = Fixture(ambiguousSms = true, smsApprovalAllowed = true)
+
+        val result = fixture.handler.handleExecute(
+            fixture.signedJson(AssistantCapabilityV1.ANDROID_SMS_SEND_CONTACT),
+        )
+
+        assertTrue(result.ok)
+        assertEquals(1, fixture.smsResolutions)
+        assertEquals(0, fixture.smsApprovalRequests)
+        assertEquals(0, fixture.smsSends)
+        assertEquals(
+            "CONTACT_AMBIGUOUS",
+            Json.parseToJsonElement(result.payloadJson!!).jsonObject["errorCode"]?.jsonPrimitive?.content,
+        )
+    }
+
+    @Test
+    fun `lock during SMS approval fails closed before send`() = runTest {
+        val fixture = Fixture(smsApprovalAllowed = true, lockDuringSmsApproval = true)
+
+        val result = fixture.handler.handleExecute(
+            fixture.signedJson(AssistantCapabilityV1.ANDROID_SMS_SEND_CONTACT),
+        )
+
+        assertTrue(result.ok)
+        assertEquals(0, fixture.smsSends)
+        assertEquals(
+            "UNLOCKED_PRESENCE_REQUIRED",
+            Json.parseToJsonElement(result.payloadJson!!).jsonObject["errorCode"]?.jsonPrimitive?.content,
+        )
+    }
+
+    @Test
+    fun `unknown SMS carrier status is never reported as success`() = runTest {
+        val fixture = Fixture(
+            smsApprovalAllowed = true,
+            smsResult = AndroidContactSmsSendV1.StatusUnknown,
+        )
+
+        val result = fixture.handler.handleExecute(
+            fixture.signedJson(AssistantCapabilityV1.ANDROID_SMS_SEND_CONTACT),
+        )
+
+        val payload = Json.parseToJsonElement(result.payloadJson!!).jsonObject
+        assertEquals("UNKNOWN", payload["status"]?.jsonPrimitive?.content)
+        assertEquals("SMS_SEND_STATUS_UNKNOWN", payload["errorCode"]?.jsonPrimitive?.content)
+        assertNull(payload["resultSummary"])
+    }
+
     private class Fixture(
         grantContacts: Boolean = false,
         private val sinkAccepts: Boolean = false,
@@ -284,6 +378,10 @@ class AssistantNodeCommandHandlerV1Test {
         private val callApprovalAllowed: Boolean = false,
         private val lockDuringCallApproval: Boolean = false,
         private val ambiguousCall: Boolean = false,
+        private val smsApprovalAllowed: Boolean = false,
+        private val lockDuringSmsApproval: Boolean = false,
+        private val ambiguousSms: Boolean = false,
+        private val smsResult: AndroidContactSmsSendV1 = AndroidContactSmsSendV1.Sent,
     ) {
         var unlocked = true
         var statusReads = 0
@@ -295,6 +393,9 @@ class AssistantNodeCommandHandlerV1Test {
         var callResolutions = 0
         var callApprovalRequests = 0
         var callLaunches = 0
+        var smsResolutions = 0
+        var smsApprovalRequests = 0
+        var smsSends = 0
         private var epochNow = NOW
         private var elapsedNow = 1_000L
         val leases = PresenceLeaseManager(
@@ -340,6 +441,20 @@ class AssistantNodeCommandHandlerV1Test {
                 callLaunches += 1
                 AndroidContactCallLaunchV1.Launched(placedCall = true, requiresTap = false)
             },
+            contactSmsResolver = AndroidContactSmsResolverV1 {
+                smsResolutions += 1
+                if (ambiguousSms) {
+                    AndroidContactSmsResolutionV1.Ambiguous
+                } else {
+                    AndroidContactSmsResolutionV1.Ready(
+                        AndroidContactSmsTargetV1("Jen Thorndale", "+1 250 555 0100"),
+                    )
+                }
+            },
+            contactSmsSender = AndroidContactSmsSenderV1 { _, _ ->
+                smsSends += 1
+                smsResult
+            },
             nowEpochMs = { epochNow },
             newReceiptId = { RECEIPT },
         )
@@ -356,6 +471,11 @@ class AssistantNodeCommandHandlerV1Test {
                 callApprovalRequests += 1
                 if (lockDuringCallApproval) unlocked = false
                 callApprovalAllowed
+            },
+            contactSmsApprovalGate = AssistantContactSmsApprovalGateV1 {
+                smsApprovalRequests += 1
+                if (lockDuringSmsApproval) unlocked = false
+                smsApprovalAllowed
             },
             securityGate = { unlocked },
             privateResultSink = AssistantPrivateResultSinkV1 { delivery ->
@@ -380,6 +500,10 @@ class AssistantNodeCommandHandlerV1Test {
                 }
                 AssistantCapabilityV1.ANDROID_PHONE_CALL_CONTACT -> buildJsonObject {
                     put("query", "Jen")
+                }
+                AssistantCapabilityV1.ANDROID_SMS_SEND_CONTACT -> buildJsonObject {
+                    put("query", "Jen")
+                    put("message", "I will be there at six.")
                 }
                 else -> buildJsonObject {}
             }

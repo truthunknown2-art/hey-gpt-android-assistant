@@ -107,6 +107,27 @@ class AssistantWireCodecV1Test {
         assertFails { AssistantWireCodecV1.encodeReceipt(private) }
     }
 
+    @Test
+    fun `SMS receipt accepts sent boolean but rejects recipient and message fields`() {
+        val encoded = AssistantWireCodecV1.encodeReceipt(
+            receipt(
+                AssistantCapabilityV1.ANDROID_SMS_SEND_CONTACT,
+                buildJsonObject { put("sent", true) },
+            ),
+        )
+        val private = receipt(
+            AssistantCapabilityV1.ANDROID_SMS_SEND_CONTACT,
+            buildJsonObject {
+                put("sent", true)
+                put("message", "I will be there at six.")
+            },
+        )
+
+        assertTrue(encoded.contains("\"sent\":true"))
+        assertTrue(!encoded.contains("message"))
+        assertFails { AssistantWireCodecV1.encodeReceipt(private) }
+    }
+
     private fun signed(): SignedAssistantProposalV1 {
         val arguments = buildJsonObject {}
         return SignedAssistantProposalV1(

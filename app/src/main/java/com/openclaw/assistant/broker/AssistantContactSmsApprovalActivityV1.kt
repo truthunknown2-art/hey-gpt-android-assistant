@@ -8,7 +8,7 @@ import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import com.openclaw.assistant.R
 
-internal class AssistantContactCallApprovalActivityV1 : ComponentActivity() {
+internal class AssistantContactSmsApprovalActivityV1 : ComponentActivity() {
     private val keyguardManager by lazy { getSystemService(KeyguardManager::class.java) }
     private var proposalId = ""
     private var responded = false
@@ -42,8 +42,8 @@ internal class AssistantContactCallApprovalActivityV1 : ComponentActivity() {
     private fun showProposal(intent: Intent?) {
         dialog?.dismiss()
         if (proposalId.isNotBlank() && !responded) {
-            AssistantContactCallApprovalsV1.registry.respond(proposalId, false)
-            AssistantContactCallApprovalPromptV1.cancel(this, proposalId)
+            AssistantContactSmsApprovalsV1.registry.respond(proposalId, false)
+            AssistantContactSmsApprovalPromptV1.cancel(this, proposalId)
         }
         proposalId = intent?.getStringExtra(EXTRA_PROPOSAL_ID).orEmpty()
         responded = false
@@ -51,22 +51,23 @@ internal class AssistantContactCallApprovalActivityV1 : ComponentActivity() {
             respond(false)
             return
         }
-        val pending = AssistantContactCallApprovalsV1.registry.snapshot(proposalId)
+        val pending = AssistantContactSmsApprovalsV1.registry.snapshot(proposalId)
         if (pending == null) {
             finish()
             return
         }
         dialog = AlertDialog.Builder(this)
-            .setTitle(R.string.assistant_contact_call_title)
+            .setTitle(R.string.assistant_contact_sms_title)
             .setMessage(
                 getString(
-                    R.string.assistant_contact_call_message,
+                    R.string.assistant_contact_sms_message,
                     pending.displayName,
                     pending.phoneNumber,
+                    pending.message,
                 ),
             )
-            .setPositiveButton(R.string.assistant_contact_call_approve) { _, _ -> respond(true) }
-            .setNegativeButton(R.string.assistant_contact_call_deny) { _, _ -> respond(false) }
+            .setPositiveButton(R.string.assistant_contact_sms_approve) { _, _ -> respond(true) }
+            .setNegativeButton(R.string.assistant_contact_sms_deny) { _, _ -> respond(false) }
             .setOnCancelListener { respond(false) }
             .create()
             .also { it.show() }
@@ -76,13 +77,13 @@ internal class AssistantContactCallApprovalActivityV1 : ComponentActivity() {
         if (responded) return
         responded = true
         if (proposalId.isNotBlank()) {
-            AssistantContactCallApprovalsV1.registry.respond(proposalId, approved)
-            AssistantContactCallApprovalPromptV1.cancel(this, proposalId)
+            AssistantContactSmsApprovalsV1.registry.respond(proposalId, approved)
+            AssistantContactSmsApprovalPromptV1.cancel(this, proposalId)
         }
         finish()
     }
 
     companion object {
-        const val EXTRA_PROPOSAL_ID = "assistant.contactCall.proposalId"
+        const val EXTRA_PROPOSAL_ID = "assistant.contactSms.proposalId"
     }
 }

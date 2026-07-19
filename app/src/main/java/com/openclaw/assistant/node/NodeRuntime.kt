@@ -28,7 +28,10 @@ import com.openclaw.assistant.broker.AssistantBrokerTrustStoreV1
 import com.openclaw.assistant.broker.AssistantCapabilityExecutorV1
 import com.openclaw.assistant.broker.AndroidContactCallLauncherV1
 import com.openclaw.assistant.broker.AndroidContactCallResolverV1
+import com.openclaw.assistant.broker.AndroidContactSmsResolverV1
+import com.openclaw.assistant.broker.AndroidContactSmsSenderV1
 import com.openclaw.assistant.broker.AssistantContactCallApprovalsV1
+import com.openclaw.assistant.broker.AssistantContactSmsApprovalsV1
 import com.openclaw.assistant.broker.AssistantPresenceLeases
 import com.openclaw.assistant.broker.AssistantPrivateReadApprovals
 import com.openclaw.assistant.broker.AssistantPrivateReadGrants
@@ -1087,10 +1090,13 @@ class NodeRuntime(context: Context) {
         privateReadAuthorizer = grants,
         contactCallResolver = AndroidContactCallResolverV1(contactsHandler::resolveAssistantContactCall),
         contactCallLauncher = AndroidContactCallLauncherV1(phoneHandler::launchAssistantContactCall),
+        contactSmsResolver = AndroidContactSmsResolverV1(contactsHandler::resolveAssistantContactSms),
+        contactSmsSender = AndroidContactSmsSenderV1(sms::sendAssistantContactSms),
       ),
       privateReadGrants = grants,
       privateReadApprovalGate = AndroidAssistantPrivateReadApprovalGateV1(appContext),
       contactCallApprovalGate = AndroidAssistantContactCallApprovalGateV1(appContext),
+      contactSmsApprovalGate = AndroidAssistantContactSmsApprovalGateV1(appContext),
       securityGate = ::assistantSecurityGate,
       privateResultSink = AssistantPrivateResultSinkV1(AssistantPrivateResultsV1.router::deliver),
     )
@@ -1106,6 +1112,8 @@ class NodeRuntime(context: Context) {
     _pendingAssistantBrokerTrust.value = null
     AssistantPrivateReadApprovals.registry.revokeAll()
     AssistantContactCallApprovalsV1.registry.revokeAll()
+    AssistantContactSmsApprovalsV1.registry.revokeAll()
+    AssistantSmsSentStatusesV1.registry.revokeAll()
     AssistantPrivateReadGrants.manager.revokeAll()
     AssistantPrivateResultsV1.router.revokeAll()
     AssistantPresenceLeases.manager.revokeAll()

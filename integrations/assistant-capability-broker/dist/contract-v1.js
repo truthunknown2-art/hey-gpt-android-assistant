@@ -14,6 +14,7 @@ export const CAPABILITIES = Object.freeze({
   "android.calendar.next": Object.freeze({ risk: "LOW" }),
   "android.contacts.search": Object.freeze({ risk: "MEDIUM" }),
   "android.phone.call_contact": Object.freeze({ risk: "HIGH" }),
+  "android.sms.send_contact": Object.freeze({ risk: "HIGH" }),
   "windows.files.search": Object.freeze({ risk: "LOW" }),
   "windows.files.read": Object.freeze({ risk: "MEDIUM" }),
 });
@@ -72,6 +73,12 @@ export function validateArguments(capability, args) {
     case "android.phone.call_contact":
       valid = exactKeys(args, ["query"])
         && requiredString(args, "query", 1, 100);
+      break;
+    case "android.sms.send_contact":
+      valid = exactKeys(args, ["query", "message"])
+        && requiredString(args, "query", 1, 100)
+        && requiredString(args, "message", 1, 1_000)
+        && args.message.length <= 1_000;
       break;
     case "windows.files.search":
       valid = exactKeys(args, ["query", "limit"])

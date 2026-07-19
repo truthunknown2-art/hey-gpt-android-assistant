@@ -10,6 +10,8 @@ import com.openclaw.assistant.PermissionRequester
 import com.openclaw.assistant.broker.AndroidContactMatchV1
 import com.openclaw.assistant.broker.AndroidContactCallResolutionV1
 import com.openclaw.assistant.broker.AndroidContactCallTargetV1
+import com.openclaw.assistant.broker.AndroidContactSmsResolutionV1
+import com.openclaw.assistant.broker.AndroidContactSmsTargetV1
 import com.openclaw.assistant.broker.AndroidContactsSearchReadV1
 import com.openclaw.assistant.gateway.GatewaySession
 import kotlinx.serialization.json.Json
@@ -173,6 +175,25 @@ class ContactsHandler(private val appContext: Context) {
                     val match = result.matches.single()
                     AndroidContactCallResolutionV1.Ready(
                         AndroidContactCallTargetV1(
+                            displayName = match.displayName,
+                            phoneNumber = match.phoneNumber,
+                        ),
+                    )
+                }
+            }
+        }
+
+    internal fun resolveAssistantContactSms(query: String): AndroidContactSmsResolutionV1 =
+        when (val result = readAssistantContacts(query, ASSISTANT_CALL_MATCH_LIMIT)) {
+            AndroidContactsSearchReadV1.PermissionRequired ->
+                AndroidContactSmsResolutionV1.PermissionRequired
+            is AndroidContactsSearchReadV1.Success -> when {
+                result.matches.isEmpty() -> AndroidContactSmsResolutionV1.NotFound
+                result.truncated || result.matches.size != 1 -> AndroidContactSmsResolutionV1.Ambiguous
+                else -> {
+                    val match = result.matches.single()
+                    AndroidContactSmsResolutionV1.Ready(
+                        AndroidContactSmsTargetV1(
                             displayName = match.displayName,
                             phoneNumber = match.phoneNumber,
                         ),

@@ -84,4 +84,28 @@ describe("assistant contract v1", () => {
       (error) => error instanceof ContractError && error.code === "PROPOSAL_TIME",
     );
   });
+
+  it("types contact SMS as high risk and bounds the complete message", () => {
+    const sms = createProposal({
+      capability: "android.sms.send_contact",
+      arguments: { query: "Jen", message: "I will be there at six." },
+      targetDeviceId: DEVICE_ID,
+      voiceSessionKey: SESSION_KEY,
+      presenceLeaseId: "lease-1",
+      nowMs: NOW,
+    });
+
+    assert.equal(sms.risk, "HIGH");
+    assert.throws(
+      () => createProposal({
+        capability: "android.sms.send_contact",
+        arguments: { query: "Jen", message: "x".repeat(1_001) },
+        targetDeviceId: DEVICE_ID,
+        voiceSessionKey: SESSION_KEY,
+        presenceLeaseId: "lease-1",
+        nowMs: NOW,
+      }),
+      (error) => error instanceof ContractError && error.code === "ARGUMENT_SCHEMA",
+    );
+  });
 });

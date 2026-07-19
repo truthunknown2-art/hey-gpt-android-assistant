@@ -11,6 +11,7 @@ $ErrorActionPreference = "Stop"
 $PluginId = "assistant-capability-broker"
 $ToolName = "assistant_contacts_search"
 $CallToolName = "assistant_phone_call"
+$SmsToolName = "assistant_sms_send"
 $PresenceCommand = "assistant.presence.v1"
 $ExecuteCommand = "assistant.execute.v1"
 $BaseVoiceTools = @(
@@ -104,6 +105,8 @@ function Set-ContactPolicy {
 - The first private read in a voice session requires approval on the phone. A `COMPLETED` receipt with `privateDelivery=spoken_on_phone` proves local speech finished; any other status means it was not delivered.
 - Use `assistant_phone_call` only when the user explicitly asks to call a named contact. The phone resolves the name privately and shows the real recipient and number in a fresh one-shot approval. Never ask for or invent the number.
 - A completed call receipt reports only whether the call was placed or the dialer requires a tap. It never reveals the contact or number.
+- Use `assistant_sms_send` only when the user explicitly asks to send a text to a named contact. Pass the exact intended message. The phone resolves the recipient privately and shows the real name, number, and complete message in a fresh one-shot approval.
+- An SMS receipt with `sent=true` confirms that Android reported successful carrier submission; it does not prove delivery. The recipient, number, and message are never returned in the receipt.
 - Never use generic node, contacts, filesystem, browser-control, or shell tools as a workaround.
 '@
         $current = $current.TrimEnd() + "`n`n$startMarker`n$($policy.Trim())`n$endMarker"
@@ -127,13 +130,14 @@ if ($agentIndex -lt 0) { throw "Agent '$AgentId' is missing from agents.list." }
 if ($Disable) {
     Invoke-OpenClaw config set "plugins.entries.$PluginId.config.privateReadsEnabled" false --strict-json | Out-Null
     Invoke-OpenClaw config set "plugins.entries.$PluginId.config.phoneCallsEnabled" false --strict-json | Out-Null
+    Invoke-OpenClaw config set "plugins.entries.$PluginId.config.smsSendEnabled" false --strict-json | Out-Null
     $nodeConfig = ((Invoke-OpenClaw config get gateway.nodes) -join "`n") | ConvertFrom-Json
     $allowCommands = @($nodeConfig.allowCommands | Where-Object { $_ -notin @($PresenceCommand, $ExecuteCommand) }) | Sort-Object -Unique
     Invoke-OpenClaw config set gateway.nodes.allowCommands ($allowCommands | ConvertTo-Json -Compress) --strict-json | Out-Null
     $existingAllow = @($configuredAgents[$agentIndex].tools.alsoAllow | ForEach-Object { [string]$_ })
     $existingDeny = @($configuredAgents[$agentIndex].tools.deny | ForEach-Object { [string]$_ })
-    $nextAllow = @($existingAllow | Where-Object { $_ -notin @($ToolName, $CallToolName) }) | Sort-Object -Unique
-    $nextDeny = @($existingDeny + $ToolName + $CallToolName) | Sort-Object -Unique
+    $nextAllow = @($existingAllow | Where-Object { $_ -notin @($ToolName, $CallToolName, $SmsToolName) }) | Sort-Object -Unique
+    $nextDeny = @($existingDeny + $ToolName + $CallToolName + $SmsToolName) | Sort-Object -Unique
     Invoke-OpenClaw config set "agents.list[$agentIndex].tools.alsoAllow" ($nextAllow | ConvertTo-Json -Compress) --strict-json | Out-Null
     Invoke-OpenClaw config set "agents.list[$agentIndex].tools.deny" ($nextDeny | ConvertTo-Json -Compress) --strict-json | Out-Null
 } else {
@@ -149,6 +153,7 @@ if ($Disable) {
     Invoke-OpenClaw config set "plugins.entries.$PluginId.config.privateReadAgentId" ('"' + $AgentId + '"') --strict-json | Out-Null
     Invoke-OpenClaw config set "plugins.entries.$PluginId.config.privateReadsEnabled" true --strict-json | Out-Null
     Invoke-OpenClaw config set "plugins.entries.$PluginId.config.phoneCallsEnabled" true --strict-json | Out-Null
+    Invoke-OpenClaw config set "plugins.entries.$PluginId.config.smsSendEnabled" true --strict-json | Out-Null
 }
 
 $agents = @((((Invoke-OpenClaw agents list --json) -join "`n") | ConvertFrom-Json) | ForEach-Object { $_ })
@@ -165,12 +170,14 @@ $runtime = ((Invoke-OpenClaw plugins inspect $PluginId --runtime --json) -join "
 $registered = @($runtime.plugin.toolNames | ForEach-Object { [string]$_ }) | Sort-Object -Unique
 if (-not $Disable -and $ToolName -notin $registered) { throw "Broker did not register '$ToolName'." }
 if (-not $Disable -and $CallToolName -notin $registered) { throw "Broker did not register '$CallToolName'." }
+if (-not $Disable -and $SmsToolName -notin $registered) { throw "Broker did not register '$SmsToolName'." }
 if ($Disable -and $ToolName -in $registered) { throw "Broker still registered '$ToolName' after disable." }
 if ($Disable -and $CallToolName -in $registered) { throw "Broker still registered '$CallToolName' after disable." }
+if ($Disable -and $SmsToolName -in $registered) { throw "Broker still registered '$SmsToolName' after disable." }
 
 if (-not $Disable) {
     $brokerVoiceTools = @($registered | Where-Object {
-        $_ -in @($ToolName, $CallToolName, "assistant_memory_remember", "assistant_memory_forget")
+        $_ -in @($ToolName, $CallToolName, $SmsToolName, "assistant_memory_remember", "assistant_memory_forget")
     })
     $registeredMemoryTools = @($brokerVoiceTools | Where-Object {
         $_ -in @("assistant_memory_remember", "assistant_memory_forget")
@@ -214,5 +221,5 @@ if ($status.modelToolsRegistered -ne $registered.Count) {
     throw "Broker status tool count does not match runtime registration."
 }
 $state = if ($Disable) { "disabled" } else { "enabled" }
-Write-Host "Signed private contact search and one-shot calling are $state for '$AgentId'."
+Write-Host "Signed private contact search, one-shot calling, and confirmed SMS are $state for '$AgentId'."
 Write-Host "Broker tools: $($registered -join ', ')."

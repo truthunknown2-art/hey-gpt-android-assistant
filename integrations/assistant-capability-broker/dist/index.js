@@ -132,6 +132,7 @@ export default {
       memoryAgentId: { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,63}$", default: "voice-main" },
       privateReadsEnabled: { type: "boolean", default: false },
       phoneCallsEnabled: { type: "boolean", default: false },
+      smsSendEnabled: { type: "boolean", default: false },
       privateReadAgentId: { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,63}$", default: "voice-main" },
       androidNodeId: { type: "string", pattern: "^[a-f0-9]{64}$" },
     },

@@ -215,6 +215,17 @@
             android:showWhenLocked="false"
             android:theme="@style/Theme.OpenClawAssistant" />
         <activity
+            android:name="com.openclaw.assistant.broker.AssistantContactSmsApprovalActivityV1"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:label="@string/assistant_contact_sms_title"
+            android:launchMode="singleTask"
+            android:showWhenLocked="false"
+            android:theme="@style/Theme.OpenClawAssistant" />
+        <receiver
+            android:name="com.openclaw.assistant.node.AssistantSmsSentReceiverV1"
+            android:exported="false" />
+        <activity
             android:name="com.openclaw.assistant.bridge.pairing.BridgePairingActivity"
             android:exported="false"
             android:theme="@style/Theme.OpenClawAssistant" />

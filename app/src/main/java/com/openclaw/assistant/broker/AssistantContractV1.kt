@@ -36,6 +36,7 @@ internal enum class AssistantCapabilityV1(
     ANDROID_CALENDAR_NEXT("android.calendar.next", AssistantRiskV1.LOW),
     ANDROID_CONTACTS_SEARCH("android.contacts.search", AssistantRiskV1.MEDIUM),
     ANDROID_PHONE_CALL_CONTACT("android.phone.call_contact", AssistantRiskV1.HIGH),
+    ANDROID_SMS_SEND_CONTACT("android.sms.send_contact", AssistantRiskV1.HIGH),
     WINDOWS_FILES_SEARCH("windows.files.search", AssistantRiskV1.LOW),
     WINDOWS_FILES_READ("windows.files.read", AssistantRiskV1.MEDIUM),
 }
@@ -285,6 +286,11 @@ private object AssistantArgumentsV1 {
         AssistantCapabilityV1.ANDROID_PHONE_CALL_CONTACT ->
             arguments.hasOnly("query") &&
                 arguments.requiredString("query", 1..100)
+        AssistantCapabilityV1.ANDROID_SMS_SEND_CONTACT ->
+            arguments.hasOnly("query", "message") &&
+                arguments.requiredString("query", 1..100) &&
+                arguments.requiredString("message", 1..1_000) &&
+                arguments.rawStringLength("message") in 1..1_000
         AssistantCapabilityV1.WINDOWS_FILES_SEARCH ->
             arguments.hasOnly("query", "limit") &&
                 arguments.requiredString("query", 1..200) &&
@@ -306,5 +312,10 @@ private object AssistantArgumentsV1 {
         val value = this[name] ?: return true
         val primitive = value as? JsonPrimitive ?: return false
         return !primitive.isString && primitive.booleanOrNull == null && primitive.longOrNull in range
+    }
+
+    private fun JsonObject.rawStringLength(name: String): Int {
+        val value = this[name] as? JsonPrimitive ?: return -1
+        return if (value.isString) value.content.length else -1
     }
 }

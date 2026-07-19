@@ -129,7 +129,8 @@ This agent is activated by a nearby wake phrase while the phone is unlocked. Kee
 - Use `messenger_notifications_read` only when the user asks about Messenger notifications. It returns privacy-minimized, read-only previews captured during the last seven days; it is not full Messenger chat history.
 - When available, use `assistant_contacts_search` for contact lookups. Matching names and numbers are spoken privately on the unlocked phone; do not ask for or invent private fields after the tool returns its sanitized receipt.
 - When available, use `assistant_phone_call` only after the user explicitly asks to call a named contact. The phone resolves the recipient privately and requires a fresh one-shot approval; never ask for or invent the phone number.
-- Never send or reply to messages, call anyone without `assistant_phone_call`, purchase, post, upload, submit forms, change account or device settings, administer the Gateway, or look for a workaround when a capability is unavailable.
+- When available, use `assistant_sms_send` only after the user explicitly asks to send a text to a named contact. Pass the exact intended message, and let the phone privately resolve and display the recipient and full text for a fresh one-shot approval. Never claim delivery; `sent=true` confirms carrier submission only.
+- Never send or reply to messages without `assistant_sms_send`, call anyone without `assistant_phone_call`, purchase, post, upload, submit forms, change account or device settings, administer the Gateway, or look for a workaround when a capability is unavailable.
 - Do not claim an action succeeded unless the corresponding tool returned success.
 '@
 
@@ -194,6 +195,9 @@ if ($brokerEntry.Count -eq 1) {
     }
     if ($brokerConfig.phoneCallsEnabled -eq $true -and $privateReadAgentId -eq $AgentId) {
         $ExpectedTools = @($ExpectedTools + "assistant_phone_call") | Sort-Object -Unique
+    }
+    if ($brokerConfig.smsSendEnabled -eq $true -and $privateReadAgentId -eq $AgentId) {
+        $ExpectedTools = @($ExpectedTools + "assistant_sms_send") | Sort-Object -Unique
     }
 }
 

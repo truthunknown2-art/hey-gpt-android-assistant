@@ -43,6 +43,16 @@ call (or opens the dialer when direct-call permission is unavailable). Only
 `placedCall`, `requiresTap`, status, and a terminal receipt return to OpenClaw;
 the resolved contact and number remain process-local on Android.
 
+When `smsSendEnabled` is explicitly set, the broker also registers
+`assistant_sms_send`. The model supplies a bounded contact query and the exact
+message the user dictated. The phone resolves the number locally and displays
+the real recipient, number, and complete message in a secure one-shot approval.
+After approval it revalidates the signed proposal and unlocked presence, waits
+for Android's per-part carrier submission callbacks, and returns only `sent`,
+status, and a terminal receipt. Recipient, number, and message are never stored
+in the durable ledger or returned in the receipt. A missing callback becomes
+`UNKNOWN` and is never retried automatically.
+
 The broker creates one Ed25519 identity in its private state directory and
 reuses it across restarts. `assistant.broker.publicKey` returns only the raw
 public key, stable key ID, and SHA-256 fingerprint to an authenticated

@@ -7,11 +7,13 @@ import {
 
 export const CONTACTS_TOOL_NAME = "assistant_contacts_search";
 export const CONTACT_CALL_TOOL_NAME = "assistant_phone_call";
+export const CONTACT_SMS_TOOL_NAME = "assistant_sms_send";
 export const PRESENCE_COMMAND = "assistant.presence.v1";
 export const EXECUTE_COMMAND = "assistant.execute.v1";
 
 const CONTACTS_CAPABILITY = "android.contacts.search";
 const CONTACT_CALL_CAPABILITY = "android.phone.call_contact";
+const CONTACT_SMS_CAPABILITY = "android.sms.send_contact";
 const NODE_ID_PATTERN = /^[a-f0-9]{64}$/;
 const MAX_NODE_PAYLOAD_BYTES = 16 * 1024;
 const NODE_COMMAND_TIMEOUT_MS = 120_000;
@@ -121,6 +123,15 @@ function parseContactCallSummary(value) {
   return summary;
 }
 
+function parseContactSmsSummary(value) {
+  const summary = asRecord(value, "RECEIPT_INVALID");
+  if (Object.keys(summary).sort().join("\0") !== ["sent"].sort().join("\0")) {
+    throw new PrivateReadToolError("RECEIPT_INVALID");
+  }
+  if (summary.sent !== true) throw new PrivateReadToolError("RECEIPT_INVALID");
+  return summary;
+}
+
 function parseReceipt(value, proposal) {
   const receipt = parseNodePayload(value);
   if (!exactKeys(receipt, RECEIPT_REQUIRED_KEYS, RECEIPT_ALLOWED_KEYS)) {
@@ -150,6 +161,8 @@ function parseReceipt(value, proposal) {
       receipt.resultSummary = parseContactsSummary(receipt.resultSummary);
     } else if (proposal.capability === CONTACT_CALL_CAPABILITY) {
       receipt.resultSummary = parseContactCallSummary(receipt.resultSummary);
+    } else if (proposal.capability === CONTACT_SMS_CAPABILITY) {
+      receipt.resultSummary = parseContactSmsSummary(receipt.resultSummary);
     } else {
       throw new PrivateReadToolError("RECEIPT_INVALID");
     }
@@ -199,7 +212,9 @@ function resultForModel(receipt) {
         placedCall: receipt.resultSummary.placedCall,
         requiresTap: receipt.resultSummary.requiresTap,
       }
-    : completed
+    : completed && receipt.capability === CONTACT_SMS_CAPABILITY
+      ? { sent: receipt.resultSummary.sent }
+      : completed
       ? {
           privateDelivery: "spoken_on_phone",
           matchCount: receipt.resultSummary.matchCount,
@@ -345,10 +360,73 @@ export async function callContactWithApproval({
   return resultForModel(receipt);
 }
 
+export async function sendContactSmsWithApproval({
+  api,
+  ledger,
+  signingIdentity,
+  nodeId,
+  voiceSessionKey,
+  request,
+}) {
+  const rawQuery = request?.query;
+  const query = typeof rawQuery === "string" ? rawQuery.trim() : undefined;
+  const message = request?.message;
+  if (typeof query !== "string" || query.length < 1 || query.length > 100) {
+    throw new PrivateReadToolError("ARGUMENT_SCHEMA");
+  }
+  if (typeof message !== "string" || message.trim().length < 1 || message.length > 1_000) {
+    throw new PrivateReadToolError("ARGUMENT_SCHEMA");
+  }
+  const { nodes } = await api.runtime.nodes.list({ connected: true });
+  selectNode(nodes, nodeId);
+  const presence = parsePresence(await api.runtime.nodes.invoke({
+    nodeId,
+    command: PRESENCE_COMMAND,
+    params: {},
+    timeoutMs: PRESENCE_TIMEOUT_MS,
+    idempotencyKey: randomUUID(),
+  }));
+  const planId = randomUUID();
+  const capabilitySnapshotHash = canonicalHash({
+    contractVersion: CONTRACT_VERSION,
+    capabilities: [CONTACT_SMS_CAPABILITY],
+    targetDeviceId: nodeId,
+  });
+  ledger.createPlan({ planId, voiceSessionKey, capabilitySnapshotHash });
+  const proposal = createProposal({
+    capability: CONTACT_SMS_CAPABILITY,
+    arguments: { query, message },
+    targetDeviceId: nodeId,
+    voiceSessionKey,
+    presenceLeaseId: presence.presenceLeaseId,
+    planId,
+    lifetimeMs: 60_000,
+  });
+  const signed = signingIdentity.sign(proposal);
+  ledger.recordProposal(signed);
+  const startedAtMs = Date.now();
+  let receipt;
+  try {
+    const response = await api.runtime.nodes.invoke({
+      nodeId,
+      command: EXECUTE_COMMAND,
+      params: signed,
+      timeoutMs: NODE_COMMAND_TIMEOUT_MS,
+      idempotencyKey: proposal.idempotencyKey,
+    });
+    receipt = parseReceipt(response, proposal);
+  } catch (error) {
+    receipt = unknownReceipt(proposal, startedAtMs, controlledUnknownCode(error));
+  }
+  ledger.recordReceipt(receipt);
+  return resultForModel(receipt);
+}
+
 export function registerPrivateReadTools(api, state) {
   const contactsEnabled = api.pluginConfig?.privateReadsEnabled === true;
   const callsEnabled = api.pluginConfig?.phoneCallsEnabled === true;
-  if (!contactsEnabled && !callsEnabled) return 0;
+  const smsEnabled = api.pluginConfig?.smsSendEnabled === true;
+  if (!contactsEnabled && !callsEnabled && !smsEnabled) return 0;
   const agentId = typeof api.pluginConfig?.privateReadAgentId === "string"
     ? api.pluginConfig.privateReadAgentId
     : "voice-main";
@@ -415,6 +493,36 @@ export function registerPrivateReadTools(api, state) {
         });
       },
     }, { names: [CONTACT_CALL_TOOL_NAME], optional: true });
+    registered += 1;
+  }
+  if (smsEnabled) {
+    api.registerTool({
+      name: CONTACT_SMS_TOOL_NAME,
+      label: "Send a text message with approval",
+      description: "Resolve one contact privately on the configured unlocked Android phone, show the real recipient and full message on-phone, and send only after a fresh one-shot approval. The phone number never returns to the model.",
+      parameters: {
+        type: "object",
+        required: ["query", "message"],
+        properties: {
+          query: { type: "string", minLength: 1, maxLength: 100 },
+          message: { type: "string", minLength: 1, maxLength: 1_000 },
+        },
+        additionalProperties: false,
+      },
+      execute: async (_toolCallId, request) => {
+        const ledger = state.ledger();
+        const signingIdentity = state.signingIdentity();
+        if (!ledger || !signingIdentity) throw new Error("assistant capability broker is unavailable");
+        return sendContactSmsWithApproval({
+          api,
+          ledger,
+          signingIdentity,
+          nodeId,
+          voiceSessionKey,
+          request,
+        });
+      },
+    }, { names: [CONTACT_SMS_TOOL_NAME], optional: true });
     registered += 1;
   }
   return registered;

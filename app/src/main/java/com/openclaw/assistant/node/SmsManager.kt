@@ -1,7 +1,9 @@
 package com.openclaw.assistant.node
 
 import android.Manifest
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.telephony.SmsManager as AndroidSmsManager
 import android.net.Uri
@@ -16,6 +18,8 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.encodeToString
 import com.openclaw.assistant.PermissionRequester
+import com.openclaw.assistant.broker.AndroidContactSmsSendV1
+import java.util.UUID
 
 /**
  * Sends and reads SMS messages via the Android SMS API and Telephony provider.
@@ -148,6 +152,72 @@ class SmsManager(private val context: Context) {
 
     fun canSendSms(): Boolean {
         return hasSmsPermission() && hasTelephonyFeature()
+    }
+
+    internal suspend fun sendAssistantContactSms(
+        phoneNumber: String,
+        message: String,
+    ): AndroidContactSmsSendV1 {
+        if (!hasTelephonyFeature()) return AndroidContactSmsSendV1.Unavailable
+        if (!hasSmsPermission()) return AndroidContactSmsSendV1.PermissionRequired
+        val normalizedNumber = SafePhoneNumber.normalizeOrNull(phoneNumber)
+            ?: return AndroidContactSmsSendV1.InvalidNumber
+        if (message.trim().isEmpty() || message.length > 1_000) {
+            return AndroidContactSmsSendV1.Failed
+        }
+        val smsManager = context.getSystemService(AndroidSmsManager::class.java)
+            ?: return AndroidContactSmsSendV1.Unavailable
+        val parts = smsManager.divideMessage(message).ifEmpty { arrayListOf(message) }
+        val operationId = UUID.randomUUID().toString()
+        val ticket = AssistantSmsSentStatusesV1.registry.register(operationId, parts.size)
+            ?: return AndroidContactSmsSendV1.Failed
+        val sentIntents = ArrayList(parts.indices.map { partIndex ->
+            assistantSentPendingIntent(operationId, partIndex)
+        })
+        try {
+            if (parts.size == 1) {
+                smsManager.sendTextMessage(
+                    normalizedNumber,
+                    null,
+                    message,
+                    sentIntents.single(),
+                    null,
+                )
+            } else {
+                smsManager.sendMultipartTextMessage(
+                    normalizedNumber,
+                    null,
+                    ArrayList(parts),
+                    sentIntents,
+                    null,
+                )
+            }
+        } catch (_: SecurityException) {
+            AssistantSmsSentStatusesV1.registry.cancel(ticket, AssistantSmsCarrierResultV1.FAILED)
+            return AndroidContactSmsSendV1.PermissionRequired
+        } catch (_: Throwable) {
+            AssistantSmsSentStatusesV1.registry.cancel(ticket, AssistantSmsCarrierResultV1.FAILED)
+            return AndroidContactSmsSendV1.Failed
+        }
+        return when (AssistantSmsSentStatusesV1.registry.await(ticket)) {
+            AssistantSmsCarrierResultV1.SENT -> AndroidContactSmsSendV1.Sent
+            AssistantSmsCarrierResultV1.FAILED -> AndroidContactSmsSendV1.Failed
+            AssistantSmsCarrierResultV1.UNKNOWN -> AndroidContactSmsSendV1.StatusUnknown
+        }
+    }
+
+    private fun assistantSentPendingIntent(operationId: String, partIndex: Int): PendingIntent {
+        val intent = Intent(context, AssistantSmsSentReceiverV1::class.java)
+            .setAction(AssistantSmsSentReceiverV1.ACTION)
+            .setData(Uri.parse("openclaw-assistant://sms-sent/$operationId/$partIndex"))
+            .putExtra(AssistantSmsSentReceiverV1.EXTRA_OPERATION_ID, operationId)
+            .putExtra(AssistantSmsSentReceiverV1.EXTRA_PART_INDEX, partIndex)
+        return PendingIntent.getBroadcast(
+            context,
+            0,
+            intent,
+            PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
     }
 
     fun hasTelephonyFeature(): Boolean {

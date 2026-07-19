@@ -69,6 +69,35 @@ internal fun interface AndroidContactCallLauncherV1 {
     fun launch(phoneNumber: String): AndroidContactCallLaunchV1
 }
 
+internal data class AndroidContactSmsTargetV1(
+    val displayName: String,
+    val phoneNumber: String,
+)
+
+internal sealed interface AndroidContactSmsResolutionV1 {
+    data class Ready(val target: AndroidContactSmsTargetV1) : AndroidContactSmsResolutionV1
+    data object NotFound : AndroidContactSmsResolutionV1
+    data object Ambiguous : AndroidContactSmsResolutionV1
+    data object PermissionRequired : AndroidContactSmsResolutionV1
+}
+
+internal fun interface AndroidContactSmsResolverV1 {
+    fun resolve(query: String): AndroidContactSmsResolutionV1
+}
+
+internal sealed interface AndroidContactSmsSendV1 {
+    data object Sent : AndroidContactSmsSendV1
+    data object InvalidNumber : AndroidContactSmsSendV1
+    data object PermissionRequired : AndroidContactSmsSendV1
+    data object Unavailable : AndroidContactSmsSendV1
+    data object Failed : AndroidContactSmsSendV1
+    data object StatusUnknown : AndroidContactSmsSendV1
+}
+
+internal fun interface AndroidContactSmsSenderV1 {
+    suspend fun send(phoneNumber: String, message: String): AndroidContactSmsSendV1
+}
+
 internal fun interface AssistantPrivateReadAuthorizerV1 {
     fun isAuthorized(
         capability: AssistantCapabilityV1,
@@ -91,6 +120,16 @@ internal sealed interface AssistantContactCallPreparationV1 {
     data class Terminal(val outcome: AssistantExecutionOutcomeV1) : AssistantContactCallPreparationV1
 }
 
+internal sealed interface AssistantContactSmsPreparationV1 {
+    data class Ready(
+        val proposal: AssistantProposalV1,
+        val target: AndroidContactSmsTargetV1,
+        val message: String,
+    ) : AssistantContactSmsPreparationV1
+
+    data class Terminal(val outcome: AssistantExecutionOutcomeV1) : AssistantContactSmsPreparationV1
+}
+
 /** Executes already typed proposals through fixed native capability handlers. */
 internal class AssistantCapabilityExecutorV1(
     private val validator: AssistantProposalValidatorV1,
@@ -102,6 +141,12 @@ internal class AssistantCapabilityExecutorV1(
     },
     private val contactCallLauncher: AndroidContactCallLauncherV1 = AndroidContactCallLauncherV1 {
         AndroidContactCallLaunchV1.Failed
+    },
+    private val contactSmsResolver: AndroidContactSmsResolverV1 = AndroidContactSmsResolverV1 {
+        AndroidContactSmsResolutionV1.PermissionRequired
+    },
+    private val contactSmsSender: AndroidContactSmsSenderV1 = AndroidContactSmsSenderV1 { _, _ ->
+        AndroidContactSmsSendV1.Failed
     },
     private val nowEpochMs: () -> Long = System::currentTimeMillis,
     private val newReceiptId: () -> String = { UUID.randomUUID().toString() },
@@ -174,6 +219,14 @@ internal class AssistantCapabilityExecutorV1(
                 status = AssistantReceiptStatusV1.DENIED,
                 startedAtMs = startedAtMs,
                 errorCode = "CALL_APPROVAL_REQUIRED",
+            ),
+        )
+        AssistantCapabilityV1.ANDROID_SMS_SEND_CONTACT -> AssistantExecutionOutcomeV1(
+            receipt = receipt(
+                proposal = proposal,
+                status = AssistantReceiptStatusV1.DENIED,
+                startedAtMs = startedAtMs,
+                errorCode = "SMS_APPROVAL_REQUIRED",
             ),
         )
         else -> AssistantExecutionOutcomeV1(
@@ -367,6 +420,164 @@ internal class AssistantCapabilityExecutorV1(
         ),
     )
 
+    fun prepareContactSms(
+        signed: SignedAssistantProposalV1,
+        expectedDeviceId: String,
+        expectedVoiceSessionKey: String,
+    ): AssistantContactSmsPreparationV1 {
+        val startedAtMs = safeNow()
+        val proposal = when (val validation = validate(signed, expectedDeviceId, expectedVoiceSessionKey)) {
+            is ProposalValidationV1.Accepted -> validation.proposal
+            is ProposalValidationV1.Rejected -> return AssistantContactSmsPreparationV1.Terminal(
+                AssistantExecutionOutcomeV1(
+                    receipt = receipt(
+                        proposal = signed.proposal,
+                        status = AssistantReceiptStatusV1.DENIED,
+                        startedAtMs = startedAtMs,
+                        errorCode = "PROPOSAL_${validation.reason.name}",
+                    ),
+                ),
+            )
+        }
+        if (proposal.capability != AssistantCapabilityV1.ANDROID_SMS_SEND_CONTACT) {
+            return contactSmsTerminal(proposal, startedAtMs, "CAPABILITY_NOT_IMPLEMENTED")
+        }
+        val query = proposal.arguments.getValue("query").jsonPrimitive.content.trim()
+        val message = proposal.arguments.getValue("message").jsonPrimitive.content
+        val resolution = runCatching { contactSmsResolver.resolve(query) }.getOrElse {
+            return contactSmsTerminal(proposal, startedAtMs, "CONTACT_RESOLUTION_FAILED")
+        }
+        return when (resolution) {
+            AndroidContactSmsResolutionV1.NotFound ->
+                contactSmsTerminal(proposal, startedAtMs, "CONTACT_NOT_FOUND")
+            AndroidContactSmsResolutionV1.Ambiguous ->
+                contactSmsTerminal(proposal, startedAtMs, "CONTACT_AMBIGUOUS")
+            AndroidContactSmsResolutionV1.PermissionRequired ->
+                contactSmsTerminal(proposal, startedAtMs, "CONTACTS_READ_PERMISSION_REQUIRED")
+            is AndroidContactSmsResolutionV1.Ready -> runCatching {
+                AssistantContactSmsPreparationV1.Ready(
+                    proposal = proposal,
+                    target = resolution.target.normalized(),
+                    message = message,
+                )
+            }.getOrElse {
+                contactSmsTerminal(proposal, startedAtMs, "CONTACT_RESULT_INVALID")
+            }
+        }
+    }
+
+    fun cancelPreparedContactSms(
+        prepared: AssistantContactSmsPreparationV1.Ready,
+        errorCode: String,
+    ): AssistantExecutionOutcomeV1 {
+        require(errorCode.matches(Regex("[A-Z0-9_]{1,64}")))
+        return AssistantExecutionOutcomeV1(
+            receipt = receipt(
+                proposal = prepared.proposal,
+                status = AssistantReceiptStatusV1.DENIED,
+                startedAtMs = safeNow(),
+                errorCode = errorCode,
+            ),
+        )
+    }
+
+    suspend fun executePreparedContactSms(
+        prepared: AssistantContactSmsPreparationV1.Ready,
+        signed: SignedAssistantProposalV1,
+        expectedDeviceId: String,
+        expectedVoiceSessionKey: String,
+    ): AssistantExecutionOutcomeV1 {
+        val startedAtMs = safeNow()
+        val validation = validate(signed, expectedDeviceId, expectedVoiceSessionKey)
+        if (validation is ProposalValidationV1.Rejected) {
+            return AssistantExecutionOutcomeV1(
+                receipt = receipt(
+                    proposal = signed.proposal,
+                    status = AssistantReceiptStatusV1.DENIED,
+                    startedAtMs = startedAtMs,
+                    errorCode = "PROPOSAL_${validation.reason.name}",
+                ),
+            )
+        }
+        val proposal = (validation as ProposalValidationV1.Accepted).proposal
+        val proposalMessage = proposal.arguments["message"]?.jsonPrimitive?.content
+        if (
+            proposal.capability != AssistantCapabilityV1.ANDROID_SMS_SEND_CONTACT ||
+            proposal.proposalId != prepared.proposal.proposalId ||
+            proposal.argumentsHash != prepared.proposal.argumentsHash ||
+            proposal.targetDeviceId != prepared.proposal.targetDeviceId ||
+            proposal.voiceSessionKey != prepared.proposal.voiceSessionKey ||
+            proposalMessage != prepared.message
+        ) {
+            return AssistantExecutionOutcomeV1(
+                receipt = receipt(
+                    proposal = proposal,
+                    status = AssistantReceiptStatusV1.DENIED,
+                    startedAtMs = startedAtMs,
+                    errorCode = "PREPARED_SMS_MISMATCH",
+                ),
+            )
+        }
+        return runCatching {
+            contactSmsSender.send(prepared.target.phoneNumber, prepared.message)
+        }.fold(
+            onSuccess = { result ->
+                when (result) {
+                    AndroidContactSmsSendV1.Sent -> AssistantExecutionOutcomeV1(
+                        receipt = receipt(
+                            proposal = proposal,
+                            status = AssistantReceiptStatusV1.COMPLETED,
+                            startedAtMs = startedAtMs,
+                            resultSummary = buildJsonObject { put("sent", JsonPrimitive(true)) },
+                        ),
+                    )
+                    AndroidContactSmsSendV1.InvalidNumber -> contactSmsOutcome(
+                        proposal, startedAtMs, AssistantReceiptStatusV1.DENIED, "CONTACT_NUMBER_INVALID",
+                    )
+                    AndroidContactSmsSendV1.PermissionRequired -> contactSmsOutcome(
+                        proposal, startedAtMs, AssistantReceiptStatusV1.DENIED, "SMS_SEND_PERMISSION_REQUIRED",
+                    )
+                    AndroidContactSmsSendV1.Unavailable -> contactSmsOutcome(
+                        proposal, startedAtMs, AssistantReceiptStatusV1.FAILED, "SMS_UNAVAILABLE",
+                    )
+                    AndroidContactSmsSendV1.Failed -> contactSmsOutcome(
+                        proposal, startedAtMs, AssistantReceiptStatusV1.FAILED, "SMS_SEND_FAILED",
+                    )
+                    AndroidContactSmsSendV1.StatusUnknown -> contactSmsOutcome(
+                        proposal, startedAtMs, AssistantReceiptStatusV1.UNKNOWN, "SMS_SEND_STATUS_UNKNOWN",
+                    )
+                }
+            },
+            onFailure = {
+                contactSmsOutcome(
+                    proposal, startedAtMs, AssistantReceiptStatusV1.FAILED, "SMS_SEND_FAILED",
+                )
+            },
+        )
+    }
+
+    private fun contactSmsTerminal(
+        proposal: AssistantProposalV1,
+        startedAtMs: Long,
+        errorCode: String,
+    ): AssistantContactSmsPreparationV1.Terminal = AssistantContactSmsPreparationV1.Terminal(
+        contactSmsOutcome(proposal, startedAtMs, AssistantReceiptStatusV1.DENIED, errorCode),
+    )
+
+    private fun contactSmsOutcome(
+        proposal: AssistantProposalV1,
+        startedAtMs: Long,
+        status: AssistantReceiptStatusV1,
+        errorCode: String,
+    ): AssistantExecutionOutcomeV1 = AssistantExecutionOutcomeV1(
+        receipt = receipt(
+            proposal = proposal,
+            status = status,
+            startedAtMs = startedAtMs,
+            errorCode = errorCode,
+        ),
+    )
+
     private fun executeContactsSearch(
         proposal: AssistantProposalV1,
         startedAtMs: Long,
@@ -499,6 +710,14 @@ private fun AndroidContactMatchV1.normalized(): AndroidContactMatchV1 {
 }
 
 private fun AndroidContactCallTargetV1.normalized(): AndroidContactCallTargetV1 {
+    val normalizedName = displayName.trim()
+    val normalizedNumber = phoneNumber.trim()
+    require(normalizedName.length in 1..200)
+    require(normalizedNumber.length in 1..100)
+    return copy(displayName = normalizedName, phoneNumber = normalizedNumber)
+}
+
+private fun AndroidContactSmsTargetV1.normalized(): AndroidContactSmsTargetV1 {
     val normalizedName = displayName.trim()
     val normalizedNumber = phoneNumber.trim()
     require(normalizedName.length in 1..200)
