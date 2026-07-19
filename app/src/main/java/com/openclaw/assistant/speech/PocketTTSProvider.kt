@@ -213,7 +213,9 @@ class PocketTTSProvider internal constructor(
 private const val PCM_FRAME_BYTES = 2L
 
 private fun speechAudioAttributes(): AudioAttributes = AudioAttributes.Builder()
-    .setUsage(AudioAttributes.USAGE_ASSISTANT)
+    // Samsung maps USAGE_ASSISTANT to a separate stream that may be muted even
+    // when media volume is audible. Voice replies should follow media volume.
+    .setUsage(AudioAttributes.USAGE_MEDIA)
     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
     .build()
 
