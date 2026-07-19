@@ -23,7 +23,8 @@ Deliver a production-usable assistant spanning the S10+ and Windows PC with:
 - [x] Explicit remember/forget is enabled in the unique `voice-main` workspace. Sensitive and automatically harvested memory is rejected.
 - [x] Spotify exact-track playback, bounded Messenger notification previews, and web search/fetch are available through named tools.
 - [x] Signed contact-based calling resolves the recipient on-phone and requires a fresh one-shot approval before launch.
-- [x] Exact installed Android build: `4e76bf3`, versionCode 494.
+- [x] Signed contact-based SMS resolves the recipient on-phone, displays the complete message in a secure one-shot approval, and waits for Android carrier submission callbacks.
+- [x] Exact installed Android build: `7432fd1`, versionCode 496.
 
 ## Acceptance Gates
 
@@ -40,7 +41,8 @@ Deliver a production-usable assistant spanning the S10+ and Windows PC with:
 - [ ] Reverify Spotify authorization and exact playback from voice, including unavailable-track failure.
 - [ ] Verify Messenger notification expiry and clearly disclose that read inbox history is not yet supported.
 - [ ] Physically verify signed contact-based calling, including ambiguity, denial, lock-during-approval, and successful launch.
-- [ ] Add signed SMS compose/send with recipient and body shown on-phone; sending always requires a fresh confirmation.
+- [x] Add signed SMS compose/send with recipient and body shown on-phone; sending always requires a fresh confirmation.
+- [ ] Physically verify signed SMS ambiguity, denial, lock-during-approval, successful carrier submission, and sent-message appearance.
 - [ ] Add calendar reads privately and calendar writes with a fresh confirmation.
 - [ ] Move Messenger reads to the same phone-private delivery boundary before supporting message history.
 
