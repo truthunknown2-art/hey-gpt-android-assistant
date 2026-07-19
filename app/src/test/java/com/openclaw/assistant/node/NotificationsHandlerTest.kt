@@ -13,6 +13,9 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import android.service.notification.StatusBarNotification
 import android.provider.Settings
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.runBlocking
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
@@ -135,6 +138,54 @@ class NotificationsHandlerTest {
 
         assertFalse(history.recent().any { it.sender == "Old sender" })
         assertFalse(preferences.all.values.joinToString().contains("Old sender"))
+        assertFalse(preferences.contains("previews"))
+    }
+
+    @Test
+    fun `Messenger history serializes writes across separate instances`() {
+        val now = 2_000_000_000_000L
+        val preferences = context.getSharedPreferences(
+            "messenger-history-concurrency-test",
+            Context.MODE_PRIVATE,
+        ).also { it.edit().clear().commit() }
+        val executor = Executors.newFixedThreadPool(8)
+        val start = CountDownLatch(1)
+        val complete = CountDownLatch(20)
+
+        try {
+            repeat(20) { index ->
+                executor.execute {
+                    try {
+                        start.await()
+                        MessengerNotificationHistory(preferences) { now }
+                            .record("Sender $index", "Preview $index", now + index)
+                    } finally {
+                        complete.countDown()
+                    }
+                }
+            }
+            start.countDown()
+
+            assertTrue(complete.await(10, TimeUnit.SECONDS))
+            val retained = MessengerNotificationHistory(preferences) { now }.recent(limit = 20)
+            assertEquals(20, retained.map { it.sender }.toSet().size)
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `Messenger history deletes malformed persisted content`() {
+        val preferences = context.getSharedPreferences(
+            "messenger-history-malformed-test",
+            Context.MODE_PRIVATE,
+        ).also {
+            it.edit().clear().putString("previews", "not valid json").commit()
+        }
+
+        MessengerNotificationHistory(preferences).pruneExpired()
+
+        assertFalse(preferences.contains("previews"))
     }
 
     private fun notification(
