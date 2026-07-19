@@ -1,15 +1,50 @@
-**Source**
-Upstream openclaw/openclaw commit `8790c54635`
+## Summary
 
-**Why**
-Gateway setup URLs or explicit manual endpoint inputs shouldn't enforce default ports blindly when displaying the connection UI or verifying connection security, particularly ensuring custom or cleartext implicit ports accurately reflect their configuration.
+- make unlocked `Hey GPT` a persistent OpenClaw-owned voice conversation on the S10+
+- keep secure-keyguard speech in a separate persistent zero-tool lane
+- use ChatGPT/Codex OAuth subscription access with `openai/gpt-5.6-luna`, never Terra
+- add signed, device-bound Android execution with live-presence leases, durable receipts, and phone approval
+- enable private phone-spoken contact search and explicit persistent memory without exposing generic node control
 
-**Adaptation**
-Ported the modified `displayUrl` string building logic from `GatewayConfigResolver.kt` (upstream) to `GatewayConfigUtils.kt` (this repo). Added tests covering various edge cases (bare domains vs default ports).
-Modified test parameters in `GatewayConfigUtilsTest` to use local `192.168.1.100` instead of `gateway.example` for cleartext, as `NetworkUtils.isUrlSecure` in this repo explicitly forbids public domains for WS/HTTP connections.
+## Current Luna Tool Surface
 
-**Excluded upstream behavior**
-N/A. This was a direct logic porting.
+`voice-main` exposes exactly:
 
-**Verification**
-Locally verified by running `./gradlew app:testStandardDebugUnitTest app:lintStandardDebug` ensuring all updated assertions succeed and no memory or regressions are flagged.
+- `android_media_play`
+- `assistant_contacts_search`
+- `assistant_memory_forget`
+- `assistant_memory_remember`
+- `memory_get`
+- `memory_search`
+- `messenger_notifications_read`
+- `web_fetch`
+- `web_search`
+
+Generic nodes, shell/exec, browser control, filesystem access, Gateway administration, messaging groups, and arbitrary Phone Link automation remain denied. The locked agent exposes zero tools. Memory search is pinned to provider `none`, so recall remains local and does not consume embedding API credits.
+
+## Security And Privacy Boundary
+
+The assistant capability broker owns a persistent Ed25519 signing identity, canonical argument hashing, exact node and stable voice-session binding, 60-second proposals, live unlocked-presence leases, durable SQLite plans/receipts, and terminal `UNKNOWN` handling for lost or malformed results.
+
+Contact names and phone numbers never return to Luna, tool content/details, chat history, or the durable ledger. The model supplies only a bounded query and limit. The configured S10+ performs the read, requires a scoped on-phone approval, speaks the result through the active unlocked voice session, and returns only status, match count, truncation, and private-delivery confirmation.
+
+Explicit memory writes only low-sensitivity facts after an explicit user request. It rejects credentials, payment data, security answers, contact records, raw message content, and automatic harvesting. The managed `MEMORY.md` section treats facts as data rather than instructions and is backed by a private per-workspace SQLite ledger.
+
+## Existing Actions And Limits
+
+Spotify exact-track support uses the official App Remote SDK after one-time authorization and verifies matching unpaused playback. Messenger currently reads bounded active-notification previews only; it does not claim inbox-history access. Selected calling, SMS, calendar, Messenger-history, and Windows actions remain roadmap work and will use named signed capabilities rather than generic automation.
+
+## Verification
+
+- installed S10+ APK: `openclaw-d9f60af-debug.apk`, versionCode 492
+- APK SHA-256: `A59D790E1C0A33A1E1A4AC857FDBC16547752810A3E84EDE872857212A01AC19`
+- S10+ helper: connected and approved as `d9f60af-dev` with both signed assistant commands
+- broker 0.3.3: 23 tests, 22 passed, 1 expected platform skip
+- live broker: three optional tools registered, zero pending proposals, zero terminal receipts before physical contact acceptance
+- full Android gate at the contact-delivery implementation commit: 392 tests across 71 suites, 0 failures/errors, 2 expected skips; lint and both debug assemblies passed
+- exact installed-head `assembleFullDebug`: passed
+- both deployed voice agents: `openai/gpt-5.6-luna`
+
+## Remaining Gates
+
+This PR remains draft pending physical unlocked contact approval/private-speech/cancellation tests, explicit memory recall/forget testing, secure-lock and barge-in regression tests, Spotify and Messenger expiry tests, cellular Tailscale verification, Windows firewall enforcement, reboot/endurance testing, selected call/SMS/calendar/desktop capability work, and blocker review in the existing GPT-5.6 Pro `Android Voice Assistant Review` conversation.

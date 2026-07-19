@@ -1,23 +1,65 @@
-1. **Explore the upstream repo**
-   - Use `git clone` or fetch to investigate recent commits in `apps/android`.
-   - Find candidate commits for porting (e.g., bug fixes, memory leaks).
-   - *Exploration complete*.
+# Agentic OpenClaw Assistant Roadmap
 
-2. **Choose a suitable improvement**
-   - Identified upstream commit `2909d8cd12` ("Android: fix Bitmap memory leaks in CanvasController snapshots").
-   - This prevents memory leaks caused by not recycling Bitmaps (`bmp` and `scaled`) during `snapshotPngBase64()` and `snapshotBase64()` in `CanvasController.kt`.
-   - Verified that `CanvasController.kt` in this repo has the exact same leak.
+## Target
 
-3. **Port the improvement**
-   - Modify `app/src/main/java/com/openclaw/assistant/node/CanvasController.kt`.
-   - Update `snapshotPngBase64()` and `snapshotBase64()` to wrap operations in `try...finally` blocks, ensuring `bmp` and `scaled` are correctly recycled if they differ.
-   - Use `replace_with_git_merge_diff` to modify the file.
+Deliver a production-usable assistant spanning the S10+ and Windows PC with:
 
-4. **Run Native Validation Commands**
-   - Run `app:lintStandardDebug` and `app:testStandardDebugUnitTest` with the `./gradlew` command to verify compilation and prevent regressions.
+- natural `Hey GPT` voice interaction using subscription-backed Luna;
+- persistent, explicit memory;
+- reliable native phone and selected desktop actions;
+- signed, risk-tiered execution with private results kept off the model path;
+- Tailscale-only remote connectivity away from home;
+- physical-device acceptance and review in the existing GPT-5.6 Pro conversation.
 
-5. **Complete pre-commit steps to ensure proper testing, verification, review, and reflection are done.**
-   - Run `pre_commit_instructions`.
+## Verified Baseline
 
-6. **Submit PR**
-   - Use the `submit` tool to create a PR named `🔄 Upstream Parity: Fix Bitmap memory leaks in CanvasController snapshots` detailing the source, why, adaptation, and verification.
+- [x] Unlocked `Hey GPT` uses a persistent `voice-main` OpenClaw conversation.
+- [x] Secure keyguard uses a separate persistent zero-tool lane.
+- [x] Both deployed voice agents are pinned to `openai/gpt-5.6-luna`, not Terra.
+- [x] Generic node, shell, browser-control, filesystem, and Gateway tools are denied to `voice-main`.
+- [x] The S10+ helper node is paired, connected, and advertises only fixed signed broker commands plus explicit legacy capabilities.
+- [x] Signed Ed25519 proposals, exact device/session binding, short-lived presence leases, durable plans/receipts, and one-shot approval primitives exist.
+- [x] Private contact search is enabled. Names and numbers are spoken only on the unlocked phone; Luna receives only a bounded terminal receipt.
+- [x] Explicit remember/forget is enabled in the unique `voice-main` workspace. Sensitive and automatically harvested memory is rejected.
+- [x] Spotify exact-track playback, bounded Messenger notification previews, and web search/fetch are available through named tools.
+- [x] Exact installed Android build: `d9f60af`, versionCode 492.
+
+## Acceptance Gates
+
+### 1. Voice And Privacy
+
+- [ ] Verify unlocked wake, multi-turn continuity, barge-in, and phone-only TTS on the physical S10+.
+- [ ] Verify first contact read prompts once, approval is scoped to 10 minutes, and the private result is spoken only on the phone.
+- [ ] Verify locking during approval, execution, or private TTS cancels delivery and revokes the session.
+- [ ] Verify secure-lock wake remains conversational but exposes zero tools and no sensitive memory.
+- [ ] Verify remember, recall after a fresh voice session, and forget using non-sensitive test data.
+
+### 2. Native Phone Actions
+
+- [ ] Reverify Spotify authorization and exact playback from voice, including unavailable-track failure.
+- [ ] Verify Messenger notification expiry and clearly disclose that read inbox history is not yet supported.
+- [ ] Add signed contact-based calling with a visible one-shot confirmation before dialing or calling.
+- [ ] Add signed SMS compose/send with recipient and body shown on-phone; sending always requires a fresh confirmation.
+- [ ] Add calendar reads privately and calendar writes with a fresh confirmation.
+- [ ] Move Messenger reads to the same phone-private delivery boundary before supporting message history.
+
+### 3. Selected Windows Actions
+
+- [ ] Define an allowlisted Windows companion protocol; do not expose generic shell, accessibility, or browser automation to Luna.
+- [ ] Implement named desktop capabilities only where the underlying app has a stable API or verifiable UI contract.
+- [ ] Treat Phone Link as a presentation surface, not as proof that Messenger inbox history has a supported automation API.
+- [ ] Add risk-tiered confirmations and durable receipts for every desktop write or outbound communication.
+
+### 4. Connectivity And Recovery
+
+- [ ] Verify Gateway, WSL, helper node, and hotword recovery after Windows and phone reboot.
+- [ ] Verify Tailscale Serve from the S10+ over cellular with Wi-Fi disabled.
+- [ ] Add and verify an administrator-approved Windows firewall rule blocking direct LAN access to TCP 18789 while preserving Tailscale access.
+- [ ] Confirm no public port forwarding, direct LAN listener exposure, or API-credit fallback is active.
+
+### 5. Release
+
+- [ ] Complete repeated and endurance physical tests with latency and failure evidence.
+- [ ] Obtain blocker review in the existing GPT-5.6 Pro `Android Voice Assistant Review` conversation.
+- [ ] Resolve all blocker findings and rerun exact-head Android, broker, Gateway, reboot, and mobile-data checks.
+- [ ] Keep PR #1 draft until every acceptance gate above has authoritative evidence.
