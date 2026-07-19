@@ -4,16 +4,16 @@ import com.openclaw.assistant.broker.AssistantCapabilityExecutorV1
 import com.openclaw.assistant.broker.AssistantCapabilityV1
 import com.openclaw.assistant.broker.AssistantExecutionOutcomeV1
 import com.openclaw.assistant.broker.AssistantPrivateReadGrantManagerV1
+import com.openclaw.assistant.broker.AssistantPrivateResultDeliveryV1
 import com.openclaw.assistant.broker.AssistantReceiptStatusV1
 import com.openclaw.assistant.broker.AssistantSignedProposalDecodeV1
 import com.openclaw.assistant.broker.AssistantWireCodecV1
 import com.openclaw.assistant.broker.PresenceLeaseManager
 import com.openclaw.assistant.broker.ProposalValidationV1
 import com.openclaw.assistant.gateway.GatewaySession
-import kotlinx.serialization.json.JsonObject
 
 internal fun interface AssistantPrivateResultSinkV1 {
-    fun deliver(capability: AssistantCapabilityV1, result: JsonObject): Boolean
+    suspend fun deliver(delivery: AssistantPrivateResultDeliveryV1): Boolean
 }
 
 internal fun interface AssistantPrivateReadApprovalGateV1 {
@@ -83,7 +83,7 @@ internal class AssistantNodeCommandHandlerV1(
             signed = signed,
             expectedDeviceId = expectedDeviceId,
             expectedVoiceSessionKey = expectedSessionKey,
-        ).deliverPrivateResultOrFail()
+        ).deliverPrivateResultOrFail(signed.proposal)
         return sanitizedResult(outcome)
     }
 
@@ -98,10 +98,19 @@ internal class AssistantNodeCommandHandlerV1(
         GatewaySession.InvokeResult.error("RECEIPT_POLICY_REJECTED", "Assistant receipt was rejected")
     }
 
-    private fun AssistantExecutionOutcomeV1.deliverPrivateResultOrFail(): AssistantExecutionOutcomeV1 {
+    private suspend fun AssistantExecutionOutcomeV1.deliverPrivateResultOrFail(
+        proposal: com.openclaw.assistant.broker.AssistantProposalV1,
+    ): AssistantExecutionOutcomeV1 {
         val private = privateResult ?: return this
         val delivered = securityGate() && runCatching {
-            privateResultSink.deliver(receipt.capability, private)
+            privateResultSink.deliver(
+                AssistantPrivateResultDeliveryV1(
+                    capability = receipt.capability,
+                    voiceSessionKey = proposal.voiceSessionKey,
+                    targetDeviceId = proposal.targetDeviceId,
+                    result = private,
+                ),
+            )
         }.getOrDefault(false)
         if (delivered) return copy(privateResult = null)
         return copy(

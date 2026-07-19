@@ -65,11 +65,15 @@ Invoke-OpenClaw gateway restart | Out-Null
 
 $runtime = ((Invoke-OpenClaw plugins inspect $PluginId --runtime --json) -join "`n") | ConvertFrom-Json
 $tools = @($runtime.plugin.toolNames | ForEach-Object { [string]$_ }) | Sort-Object -Unique
-$memoryTools = @("assistant_memory_forget", "assistant_memory_remember") | Sort-Object
+$knownTools = @(
+    "assistant_contacts_search",
+    "assistant_memory_forget",
+    "assistant_memory_remember"
+) | Sort-Object
 if ($runtime.plugin.status -ne "loaded") {
     throw "Plugin '$PluginId' did not load."
 }
-if ($tools.Count -ne 0 -and (Compare-Object $tools $memoryTools)) {
+if (@($tools | Where-Object { $_ -notin $knownTools }).Count -gt 0) {
     throw "Broker registered an unexpected tool surface: $($tools -join ', ')."
 }
 

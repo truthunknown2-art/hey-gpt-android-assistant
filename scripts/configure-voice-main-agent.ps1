@@ -9,6 +9,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $PluginId = "voice-assistant-tools"
+$BrokerPluginId = "assistant-capability-broker"
 $MediaCommand = "media.play_search"
 $MessengerCommand = "notifications.list_package"
 $ExpectedTools = @(
@@ -126,6 +127,7 @@ This agent is activated by a nearby wake phrase while the phone is unlocked. Kee
 - Use `web_search` and `web_fetch` for read-only web questions.
 - Use `android_media_play` for Spotify playback. For an exact track, first use `web_search` to find its public `open.spotify.com/track/` page, convert only the final 22-character ID to `spotify:track:ID`, and include `spotifyUri`, `title`, and `artist`. The tool owns the phone identity, command, and package selection. A launched request is not proof that playback started, so only say playback is confirmed when `playbackConfirmed` is true.
 - Use `messenger_notifications_read` only when the user asks about Messenger notifications. It returns privacy-minimized, read-only previews captured during the last seven days; it is not full Messenger chat history.
+- When available, use `assistant_contacts_search` for contact lookups. Matching names and numbers are spoken privately on the unlocked phone; do not ask for or invent private fields after the tool returns its sanitized receipt.
 - Never send or reply to messages, call anyone, purchase, post, upload, submit forms, change account or device settings, administer the Gateway, or look for a workaround when a capability is unavailable.
 - Do not claim an action succeeded unless the corresponding tool returned success.
 '@
@@ -170,6 +172,26 @@ $resolvedNodeId = Resolve-AssistantNodeId -RequestedNodeId $NodeId
 $quotedNodeId = '"' + $resolvedNodeId + '"'
 Invoke-OpenClaw config set "plugins.entries.$PluginId.config.nodeId" $quotedNodeId --strict-json | Out-Null
 Install-VoiceToolsPlugin
+
+# Preserve explicitly enabled broker tools when this base provisioning script is rerun.
+$pluginList = ((Invoke-OpenClaw plugins list --json) -join "`n") | ConvertFrom-Json
+$brokerEntry = @($pluginList.plugins | Where-Object id -eq $BrokerPluginId)
+if ($brokerEntry.Count -eq 1) {
+    $brokerConfig = ((Invoke-OpenClaw config get "plugins.entries.$BrokerPluginId.config") -join "`n") | ConvertFrom-Json
+    $memoryAgentId = if ([string]$brokerConfig.memoryAgentId) { [string]$brokerConfig.memoryAgentId } else { "voice-main" }
+    $privateReadAgentId = if ([string]$brokerConfig.privateReadAgentId) { [string]$brokerConfig.privateReadAgentId } else { "voice-main" }
+    if ($brokerConfig.memoryEnabled -eq $true -and $memoryAgentId -eq $AgentId) {
+        $ExpectedTools = @($ExpectedTools + @(
+            "assistant_memory_forget",
+            "assistant_memory_remember",
+            "memory_get",
+            "memory_search"
+        )) | Sort-Object -Unique
+    }
+    if ($brokerConfig.privateReadsEnabled -eq $true -and $privateReadAgentId -eq $AgentId) {
+        $ExpectedTools = @($ExpectedTools + "assistant_contacts_search") | Sort-Object -Unique
+    }
+}
 
 $parsedAgents = ((Invoke-OpenClaw agents list --json) -join "`n") | ConvertFrom-Json
 $agents = @($parsedAgents | ForEach-Object { $_ })
@@ -222,7 +244,10 @@ $deny = @(
     "sessions_yield",
     "subagents",
     "video_generate"
-) | Sort-Object -Unique
+) | Where-Object {
+    $_ -notin $ExpectedTools -and
+    -not ($_ -eq "group:memory" -and "memory_search" -in $ExpectedTools)
+} | Sort-Object -Unique
 
 Invoke-OpenClaw config set "agents.list[$agentIndex].model" $Model | Out-Null
 Invoke-OpenClaw config set "agents.list[$agentIndex].thinkingDefault" off | Out-Null

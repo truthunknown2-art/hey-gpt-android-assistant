@@ -5,7 +5,7 @@ import path from "node:path";
 import { it } from "node:test";
 import plugin from "../dist/index.js";
 
-it("registers durable infrastructure and no model tools", async () => {
+it("registers durable infrastructure and no model tools by default", async () => {
   let service;
   const gatewayMethods = new Map();
   const api = {

@@ -97,6 +97,8 @@ class AssistantNodeCommandHandlerV1Test {
         assertTrue(result.ok)
         assertEquals(1, fixture.contactsReads)
         assertEquals(1, fixture.privateDeliveries)
+        assertEquals(SESSION, fixture.deliveredSessionKey)
+        assertEquals(DEVICE, fixture.deliveredDeviceId)
         assertFalse(result.payloadJson!!.contains("Jen Thorndale"))
         assertFalse(result.payloadJson!!.contains("+1 250 555 0100"))
         assertEquals(
@@ -173,16 +175,41 @@ class AssistantNodeCommandHandlerV1Test {
         assertFalse(fixture.hasContactsGrant())
     }
 
+    @Test
+    fun `lock after provider read drops private result before local delivery`() = runTest {
+        val fixture = Fixture(
+            grantContacts = true,
+            sinkAccepts = true,
+            lockOnContactsRead = true,
+        )
+
+        val result = fixture.handler.handleExecute(
+            fixture.signedJson(AssistantCapabilityV1.ANDROID_CONTACTS_SEARCH),
+        )
+
+        assertTrue(result.ok)
+        assertEquals(1, fixture.contactsReads)
+        assertEquals(0, fixture.privateDeliveries)
+        assertEquals(
+            "PRIVATE_RESULT_DELIVERY_UNAVAILABLE",
+            Json.parseToJsonElement(result.payloadJson!!).jsonObject["errorCode"]?.jsonPrimitive?.content,
+        )
+        assertFalse(result.payloadJson!!.contains("Jen Thorndale"))
+    }
+
     private class Fixture(
         grantContacts: Boolean = false,
         private val sinkAccepts: Boolean = false,
         private val approvalAllowed: Boolean = false,
         private val lockDuringApproval: Boolean = false,
+        private val lockOnContactsRead: Boolean = false,
     ) {
         var unlocked = true
         var statusReads = 0
         var contactsReads = 0
         var privateDeliveries = 0
+        var deliveredSessionKey: String? = null
+        var deliveredDeviceId: String? = null
         var approvalRequests = 0
         private var epochNow = NOW
         private var elapsedNow = 1_000L
@@ -208,6 +235,7 @@ class AssistantNodeCommandHandlerV1Test {
             },
             contactsSearchReader = AndroidContactsSearchReaderV1 { _, _ ->
                 contactsReads += 1
+                if (lockOnContactsRead) unlocked = false
                 AndroidContactsSearchReadV1.Success(
                     listOf(AndroidContactMatchV1("101", "Jen Thorndale", "+1 250 555 0100")),
                     truncated = false,
@@ -227,8 +255,10 @@ class AssistantNodeCommandHandlerV1Test {
                 approvalAllowed
             },
             securityGate = { unlocked },
-            privateResultSink = AssistantPrivateResultSinkV1 { _, _ ->
+            privateResultSink = AssistantPrivateResultSinkV1 { delivery ->
                 privateDeliveries += 1
+                deliveredSessionKey = delivery.voiceSessionKey
+                deliveredDeviceId = delivery.targetDeviceId
                 sinkAccepts
             },
         )

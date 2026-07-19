@@ -1,9 +1,9 @@
 # Assistant Capability Broker
 
-This is the foundation for typed assistant plans, proposals, receipts, and
-explicit local memory. It always registers one operator-read Gateway status
-status method and one operator-read signing-public-key method. Model tools remain
-disabled by default.
+This is the foundation for typed assistant plans, proposals, receipts, private
+Android reads, and explicit local memory. It always registers one operator-read
+Gateway status method and one operator-read signing-public-key method. Model
+tools remain disabled by default.
 
 The service stores privacy-minimized operational state under the plugin state
 directory:
@@ -20,8 +20,16 @@ credential, token, and message fields.
 
 `contract-v1.js` mirrors the Android contract: fixed capability/risk ownership,
 strict argument schemas, canonical JSON, SHA-256 argument hashes, proposal
-lifetimes, and Ed25519 signing helpers. No capability becomes usable until a
-later phase registers its individual typed tool and executor route.
+lifetimes, and Ed25519 signing helpers.
+
+When `privateReadsEnabled` is explicitly set with one exact `androidNodeId`, the
+broker registers `assistant_contacts_search` only for the configured voice
+agent. The tool obtains a live unlocked-presence lease from that node, creates
+and durably records a short-lived proposal, signs it with the broker identity,
+and invokes only `assistant.execute.v1`. Contact names and phone numbers are
+spoken by the bound phone voice session; only match count, truncation, status,
+and a terminal receipt return to OpenClaw. Lost or malformed execution results
+become durable `UNKNOWN` receipts and are never retried automatically.
 
 The broker creates one Ed25519 identity in its private state directory and
 reuses it across restarts. `assistant.broker.publicKey` returns only the raw

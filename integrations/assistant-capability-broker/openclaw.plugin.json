@@ -2,7 +2,7 @@
   "id": "assistant-capability-broker",
   "name": "Assistant Capability Broker",
   "description": "Durable typed plans and receipts for the agentic assistant.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "configSchema": {
     "type": "object",
     "properties": {
@@ -14,6 +14,19 @@
         "type": "string",
         "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
         "default": "voice-main"
+      },
+      "privateReadsEnabled": {
+        "type": "boolean",
+        "default": false
+      },
+      "privateReadAgentId": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+        "default": "voice-main"
+      },
+      "androidNodeId": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
       }
     },
     "additionalProperties": false
@@ -24,7 +37,8 @@
   "contracts": {
     "tools": [
       "assistant_memory_remember",
-      "assistant_memory_forget"
+      "assistant_memory_forget",
+      "assistant_contacts_search"
     ]
   },
   "toolMetadata": {
@@ -32,6 +46,9 @@
       "optional": true
     },
     "assistant_memory_forget": {
+      "optional": true
+    },
+    "assistant_contacts_search": {
       "optional": true
     }
   }

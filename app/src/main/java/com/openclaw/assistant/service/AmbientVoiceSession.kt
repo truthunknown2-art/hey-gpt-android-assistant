@@ -10,6 +10,10 @@ import com.openclaw.assistant.OpenClawApplication
 import com.openclaw.assistant.R
 import com.openclaw.assistant.broker.AssistantPrivateReadGrants
 import com.openclaw.assistant.broker.AssistantPrivateReadApprovals
+import com.openclaw.assistant.broker.AssistantPrivateResultDeliveryV1
+import com.openclaw.assistant.broker.AssistantPrivateResultReceiverV1
+import com.openclaw.assistant.broker.AssistantPrivateResultSpeechRendererV1
+import com.openclaw.assistant.broker.AssistantPrivateResultsV1
 import com.openclaw.assistant.broker.AssistantPresenceLeases
 import com.openclaw.assistant.broker.PresenceLease
 import com.openclaw.assistant.broker.PresenceLeaseValidation
@@ -21,6 +25,7 @@ import com.openclaw.assistant.speech.TTSManager
 import com.openclaw.assistant.speech.TTSState
 import com.openclaw.assistant.speech.TTSUtils
 import java.util.concurrent.atomic.AtomicBoolean
+import java.io.Closeable
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -37,6 +42,9 @@ import kotlinx.coroutines.flow.produceIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 
 data class AmbientVoiceUiState(
@@ -70,6 +78,7 @@ internal class AmbientVoiceSession(
         private const val STT_TURN_TIMEOUT_MS = 35_000L
         private const val LOCK_MONITOR_MS = 250L
         private const val NEXT_TURN_DELAY_MS = 750L
+        private const val AGENTIC_TURN_TIMEOUT_MS = 150_000L
     }
 
     private val app = context.applicationContext as OpenClawApplication
@@ -89,8 +98,10 @@ internal class AmbientVoiceSession(
     private var sessionKey: String = ""
     private var targetDeviceId: String = ""
     private var presenceLease: PresenceLease? = null
+    private var privateResultBinding: Closeable? = null
     private var uiState = AmbientVoiceUiState()
     private var wakeLock: PowerManager.WakeLock? = null
+    private val speechMutex = Mutex()
 
     val isActive: Boolean
         get() = active.get()
@@ -112,6 +123,17 @@ internal class AmbientVoiceSession(
         if (settings.ttsEnabled && !ttsManager.initializeCurrentProvider()) {
             finish("tts_unavailable")
             return false
+        }
+        if (settings.ttsEnabled) {
+            privateResultBinding = AssistantPrivateResultsV1.router.bind(
+                voiceSessionKey = sessionKey,
+                targetDeviceId = targetDeviceId,
+                receiver = AssistantPrivateResultReceiverV1(::deliverPrivateResult),
+            )
+            if (privateResultBinding == null) {
+                finish("private_result_channel_unavailable")
+                return false
+            }
         }
         publish(state = AssistantState.PROCESSING)
         lockMonitorJob = scope.launch {
@@ -136,6 +158,7 @@ internal class AmbientVoiceSession(
                         sessionKey = sessionKey,
                         agentId = VoiceSessionKeys.VOICE_MAIN_AGENT_ID,
                         message = transcript,
+                        timeoutMs = AGENTIC_TURN_TIMEOUT_MS,
                         beforeSend = {
                             if (!ensureUnlocked("before_chat_send")) {
                                 throw CancellationException("Device became securely locked")
@@ -233,7 +256,7 @@ internal class AmbientVoiceSession(
             error(app.getString(R.string.error_no_recognition_result))
         }
 
-    private suspend fun speak(text: String) {
+    private suspend fun speak(text: String) = speechMutex.withLock {
         val cleanText = TTSUtils.stripMarkdownForSpeech(text)
         val maxLen = minOf(TTSUtils.getMaxInputLength(null), 1000)
         val chunks = TTSUtils.splitTextForTTS(cleanText, maxLen)
@@ -251,6 +274,25 @@ internal class AmbientVoiceSession(
             if (!complete) error(app.getString(R.string.tts_error_generic))
         }
     }
+
+    private suspend fun deliverPrivateResult(delivery: AssistantPrivateResultDeliveryV1): Boolean =
+        withContext(Dispatchers.Main.immediate) {
+            if (
+                !active.get() ||
+                delivery.voiceSessionKey != sessionKey ||
+                delivery.targetDeviceId != targetDeviceId ||
+                !settings.ttsEnabled ||
+                !ensureUnlocked("before_private_result")
+            ) {
+                return@withContext false
+            }
+            val speech = AssistantPrivateResultSpeechRendererV1.render(delivery)
+                ?: return@withContext false
+            runCatching {
+                speak(speech)
+                ensureUnlocked("after_private_result")
+            }.getOrDefault(false)
+        }
 
     private fun ensureUnlocked(reason: String): Boolean {
         if (keyguardManager.isDeviceLocked) {
@@ -308,6 +350,8 @@ internal class AmbientVoiceSession(
 
     private fun finish(reason: String) {
         if (!active.get() || !finishing.compareAndSet(false, true)) return
+        privateResultBinding?.close()
+        privateResultBinding = null
         AssistantPrivateReadApprovals.registry.revokeSession(sessionKey, targetDeviceId)
         AssistantPrivateReadGrants.manager.revokeSession(sessionKey, targetDeviceId)
         presenceLease?.let { AssistantPresenceLeases.manager.revoke(it.leaseId) }

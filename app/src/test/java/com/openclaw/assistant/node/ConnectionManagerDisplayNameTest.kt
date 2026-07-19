@@ -5,6 +5,14 @@ import org.junit.Test
 
 class ConnectionManagerDisplayNameTest {
     @Test
+    fun `node advertises only the fixed signed assistant commands`() {
+        assertEquals(
+            listOf("assistant.presence.v1", "assistant.execute.v1"),
+            ConnectionManager.signedAssistantCommands(),
+        )
+    }
+
+    @Test
     fun `configured node name is preferred over raw device id`() {
         assertEquals(
             "Kitchen S10 Assistant Tools",

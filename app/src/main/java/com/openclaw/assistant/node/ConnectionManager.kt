@@ -43,6 +43,11 @@ class ConnectionManager(
   private val deviceId: () -> String?,
 ) {
   companion object {
+    internal fun signedAssistantCommands(): List<String> = listOf(
+      AssistantNodeCommandHandlerV1.PRESENCE_COMMAND,
+      AssistantNodeCommandHandlerV1.EXECUTE_COMMAND,
+    )
+
     internal fun assistantToolsDisplayName(configuredName: String?, deviceId: String?): String {
       val base = configuredName
         ?.trim()
@@ -128,6 +133,7 @@ class ConnectionManager(
       add(OpenClawCanvasA2UICommand.PushJSONL.rawValue)
       add(OpenClawCanvasA2UICommand.Reset.rawValue)
       OpenClawBridgeCommand.entries.forEach { add(it.rawValue) }
+      addAll(signedAssistantCommands())
       add(OpenClawScreenCommand.Record.rawValue)
       OpenClawDeviceCommand.entries.forEach { add(it.rawValue) }
       if (cameraEnabled()) {

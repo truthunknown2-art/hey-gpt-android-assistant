@@ -1,10 +1,11 @@
 # Assistant Contract v1
 
-Status: internal foundation; not exposed to the model
+Status: Phase 1 signed private-read slice; disabled by default
 
-Contract v1 defines the envelope shared by the future Gateway capability broker
-and device executors. Adding these types does not register a tool or enable a
-capability.
+Contract v1 defines the envelope shared by the Gateway capability broker and
+device executors. Capabilities remain disabled unless their individual feature
+flag, exact agent policy, Gateway command allowlist, and device executor are all
+active.
 
 ## Presence lease
 
@@ -66,14 +67,22 @@ internal `android.contacts.search` adapter. Both revalidate the exact device,
 voice session, live unlocked-presence lease, proposal lifetime, argument hash,
 risk, and pinned Ed25519 signature. Contact lookup additionally requires a
 session/device-bound private-read authorization and Android Contacts permission.
-Names and phone numbers exist only in the Android-local execution outcome; the
-durable receipt stores only match count and truncation. OpenClaw 2026.7.1 has no
-private tool-result channel: tool `content` is model input and `details` is for
-logs/UI. Therefore private fields must not be returned in either field. The
-status receipt contains only battery percentage, charging state, and
-screen-interactive state. The fixed executor commands exist internally but are
-not advertised, and no private-read grant issuer or model tool is exposed until
-the Phase 0 physical and exact-head review gates close.
+Names and phone numbers exist only in the Android execution outcome and the
+bound voice session's transient speech call; the durable receipt stores only
+match count and truncation. OpenClaw 2026.7.1 has no private tool-result channel:
+tool `content` is model input and `details` is for logs/UI. Therefore private
+fields are returned in neither field and are never written to Android chat
+state. The configured TTS provider speaks the result synchronously. Local
+Android TTS keeps that text on the phone; Pocket TTS sends it to the user's
+authenticated HTTPS/Tailscale endpoint, whose server logs only timing and chunk
+counts. The model receives `COMPLETED` only after speech finishes. Lock, session
+replacement, TTS failure, malformed payload, or lost binding fails closed.
+
+The phone advertises only two fixed broker commands, `assistant.presence.v1`
+and `assistant.execute.v1`. They remain unusable until the Gateway allowlist and
+broker feature flag are explicitly enabled. Direct callers still cannot create
+a valid proposal because Android requires the exact live device, voice session,
+presence lease, argument hash, risk, expiry, and pinned broker signature.
 
 The legacy Mobile Bridge now shares the same fail-closed confirmation posture:
 `TRUSTED` cannot bypass high-risk or destructive actions, high-risk approvals
@@ -87,7 +96,7 @@ action from executing. These controls do not expose the bridge to `voice-main`.
 service. It creates WAL-backed `plans.sqlite` and `receipts.sqlite` ledgers,
 enforces immutable idempotency bindings, and reconciles terminal receipt state
 after restart. It registers only the operator-read `assistant.broker.status`
-Gateway method by default.
+and `assistant.broker.publicKey` Gateway methods by default.
 
 The broker also owns a persistent Ed25519 signing identity. Its private key is
 stored with restrictive permissions in plugin state and never returned or
@@ -95,6 +104,15 @@ logged. The authenticated `assistant.broker.publicKey` operator-read method
 returns only the stable key ID, raw public key, and SHA-256 fingerprint for an
 explicit phone-side trust decision. Invalid persisted key state fails closed
 instead of silently rotating the phone's trust root.
+
+With `privateReadsEnabled=true`, one exact `androidNodeId`, and one configured
+agent, the optional `assistant_contacts_search` tool obtains a live presence
+lease, signs and records a 60-second proposal, invokes the fixed Android
+executor, validates the strict receipt, and records it. The model supplies only
+`query` and a bounded `limit`; agent, session, node, command, risk, lease, IDs,
+and signature come from trusted runtime state. Malformed, oversized, or
+privacy-smuggling node results become terminal `UNKNOWN` receipts and are not
+retried automatically.
 
 The Android trust store validates that descriptor, stores it only in encrypted
 preferences after an explicit trust action, and treats a changed key as a hard

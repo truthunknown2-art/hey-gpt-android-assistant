@@ -2,6 +2,7 @@ import path from "node:path";
 import { BrokerLedger } from "./ledger.js";
 import { ExplicitMemoryStore } from "./memory.js";
 import { BrokerSigningIdentityV1 } from "./signing-identity-v1.js";
+import { registerPrivateReadTools } from "./private-read-tools.js";
 
 let ledger = null;
 let signingIdentity = null;
@@ -78,7 +79,10 @@ function registerMemoryTools(api) {
 }
 
 export function registerBroker(api) {
-  const modelToolsRegistered = registerMemoryTools(api);
+  const modelToolsRegistered = registerMemoryTools(api) + registerPrivateReadTools(api, {
+    ledger: () => ledger,
+    signingIdentity: () => signingIdentity,
+  });
   api.registerService({
     id: "assistant-capability-broker",
     start: async (ctx) => {
@@ -126,6 +130,9 @@ export default {
     properties: {
       memoryEnabled: { type: "boolean", default: false },
       memoryAgentId: { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,63}$", default: "voice-main" },
+      privateReadsEnabled: { type: "boolean", default: false },
+      privateReadAgentId: { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,63}$", default: "voice-main" },
+      androidNodeId: { type: "string", pattern: "^[a-f0-9]{64}$" },
     },
     additionalProperties: false,
   },

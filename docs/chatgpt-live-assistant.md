@@ -39,7 +39,7 @@ The no-Realtime architecture is therefore:
 Vosk wake word
   -> Android SpeechRecognizer
   -> correlated OpenClaw Gateway chat turn
-  -> isolated voice-main agent with four approved tools
+  -> isolated voice-main agent with four baseline tools plus gated signed tools
   -> Android TTS
   -> continuous listening
 ```
@@ -101,12 +101,25 @@ Create the curated unlocked voice agent and the secure-lock agent once:
 .\scripts\configure-locked-voice-agent.ps1
 ```
 
-The `voice-main` agent has exactly four tools: `web_search`, `web_fetch`,
+The baseline `voice-main` agent has exactly four tools: `web_search`, `web_fetch`,
 `android_media_play`, and `messenger_notifications_read`. The Android wrappers
 are bound to one configured node ID and own the command and package selection;
 the model cannot choose an arbitrary node command, notification action, or app.
 The agent cannot access generic browser, node, memory, shell/runtime, filesystem,
 messaging, Gateway administration, scheduling, or cross-session tools.
+
+After the signed contact slice is installed and physically trusted, enable it
+with:
+
+```powershell
+.\scripts\enable-assistant-contact-search.ps1
+```
+
+This adds exactly one semantic tool, `assistant_contacts_search`, while keeping
+generic `nodes` denied. The first lookup in an unlocked voice session presents
+an exact on-phone approval for a 10-minute, session-bound private-read grant.
+Matching names and numbers are spoken by the phone and never returned to the
+model, Gateway transcript, tool `details`, or durable receipt.
 
 The locked agent must retain an empty effective tool list. It cannot browse,
 execute shell commands, read private stores, send messages, or invoke Android
@@ -156,6 +169,9 @@ only Spotify's built-in remote-control authorization.
   for seven days; at most 20 are returned. Expired previews are deleted on read,
   notification-listener startup, and a scheduled next-expiry cleanup. Notification
   keys, package names, and actions never reach the model.
+- `assistant_contacts_search` invokes only the broker's signed presence and
+  execute commands. The broker fixes the phone identity and live voice session,
+  and the Android executor owns approval, provider access, and private speech.
 
 Read-only web requests use `web_search` and `web_fetch`. Hosted search is
 pinned to OpenClaw's managed `codex` provider and its bounded hosted-search

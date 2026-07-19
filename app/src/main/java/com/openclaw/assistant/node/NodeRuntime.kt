@@ -29,6 +29,7 @@ import com.openclaw.assistant.broker.AssistantCapabilityExecutorV1
 import com.openclaw.assistant.broker.AssistantPresenceLeases
 import com.openclaw.assistant.broker.AssistantPrivateReadApprovals
 import com.openclaw.assistant.broker.AssistantPrivateReadGrants
+import com.openclaw.assistant.broker.AssistantPrivateResultsV1
 import com.openclaw.assistant.broker.AssistantProposalValidatorV1
 import com.openclaw.assistant.gateway.AgentInfo
 import com.openclaw.assistant.gateway.AgentListResult
@@ -1085,8 +1086,7 @@ class NodeRuntime(context: Context) {
       privateReadGrants = grants,
       privateReadApprovalGate = AndroidAssistantPrivateReadApprovalGateV1(appContext),
       securityGate = ::assistantSecurityGate,
-      // Private payloads remain unavailable until an on-device voice result channel is ready.
-      privateResultSink = AssistantPrivateResultSinkV1 { _, _ -> false },
+      privateResultSink = AssistantPrivateResultSinkV1(AssistantPrivateResultsV1.router::deliver),
     )
   }
 
@@ -1100,6 +1100,7 @@ class NodeRuntime(context: Context) {
     _pendingAssistantBrokerTrust.value = null
     AssistantPrivateReadApprovals.registry.revokeAll()
     AssistantPrivateReadGrants.manager.revokeAll()
+    AssistantPrivateResultsV1.router.revokeAll()
     AssistantPresenceLeases.manager.revokeAll()
   }
 
