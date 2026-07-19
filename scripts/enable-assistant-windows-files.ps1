@@ -152,6 +152,14 @@ function Stop-AgenticWindowsNodeProcessesViaGatewayTask {
         & $getValidatedGatewayTask | Out-Null
         [IO.File]::WriteAllText($BootstrapPath, $temporaryContent, [Text.UTF8Encoding]::new($false))
         Stop-ScheduledTask -TaskPath $GatewayTaskPath -TaskName $GatewayTaskName -ErrorAction Stop
+        Wait-ScheduledTaskReadyForRestart `
+            -TaskLabel "$GatewayTaskPath$GatewayTaskName" `
+            -GetTaskState {
+                (Get-ScheduledTask `
+                    -TaskPath $GatewayTaskPath `
+                    -TaskName $GatewayTaskName `
+                    -ErrorAction Stop).State
+            }
         Start-ScheduledTask -TaskPath $GatewayTaskPath -TaskName $GatewayTaskName -ErrorAction Stop
         for ($attempt = 0; $attempt -lt 80 -and -not (Test-Path -LiteralPath $markerPath); $attempt++) {
             Start-Sleep -Milliseconds 250
@@ -313,6 +321,14 @@ if (-not $gatewayTaskAssessment.IsOwned -or $gatewayTaskAssessment.NeedsUpdate) 
 $gatewayBootstrapContent = [IO.File]::ReadAllText($gatewayBootstrapPath)
 if ($gatewayBootstrapContent -match '# hey-gpt-s4u-cleanup:[a-f0-9]{32}:') {
     Stop-ScheduledTask -TaskPath $gatewayTaskPath -TaskName $gatewayTaskName -ErrorAction Stop
+    Wait-ScheduledTaskReadyForRestart `
+        -TaskLabel "$gatewayTaskPath$gatewayTaskName" `
+        -GetTaskState {
+            (Get-ScheduledTask `
+                -TaskPath $gatewayTaskPath `
+                -TaskName $gatewayTaskName `
+                -ErrorAction Stop).State
+        }
     Start-ScheduledTask -TaskPath $gatewayTaskPath -TaskName $gatewayTaskName -ErrorAction Stop
     for ($attempt = 0; $attempt -lt 80; $attempt++) {
         if ([IO.File]::ReadAllText($gatewayBootstrapPath) -notmatch '# hey-gpt-s4u-cleanup:[a-f0-9]{32}:') {

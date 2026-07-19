@@ -33,6 +33,31 @@ try {
         $LASTEXITCODE | Should Be 0
     }
 
+    It "waits for a stopped task to become restartable" {
+        $script:restartStates = [Collections.Generic.Queue[string]]::new()
+        $script:restartStates.Enqueue("Running")
+        $script:restartStates.Enqueue("Ready")
+        $script:restartWaits = 0
+
+        Wait-ScheduledTaskReadyForRestart `
+            -TaskLabel "test task" `
+            -GetTaskState { $script:restartStates.Dequeue() } `
+            -Attempts 2 `
+            -Wait { $script:restartWaits += 1 }
+
+        $script:restartWaits | Should Be 1
+    }
+
+    It "fails instead of racing a task that never reaches Ready" {
+        {
+            Wait-ScheduledTaskReadyForRestart `
+                -TaskLabel "test task" `
+                -GetTaskState { "Running" } `
+                -Attempts 2 `
+                -Wait {}
+        } | Should Throw
+    }
+
     It "fails when task unregistration fails" {
         $script:rollbackTask = [pscustomobject]@{ Name = "changed" }
 

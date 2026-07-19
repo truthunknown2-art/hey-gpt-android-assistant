@@ -67,6 +67,23 @@ function Invoke-ExternalProcessWithTimeout {
     }
 }
 
+function Wait-ScheduledTaskReadyForRestart {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$TaskLabel,
+        [Parameter(Mandatory = $true)][scriptblock]$GetTaskState,
+        [int]$Attempts = 80,
+        [scriptblock]$Wait = { Start-Sleep -Milliseconds 250 }
+    )
+
+    for ($attempt = 0; $attempt -lt $Attempts; $attempt++) {
+        $state = [string](& $GetTaskState)
+        if ($state -eq "Ready") { return }
+        if ($attempt + 1 -lt $Attempts) { & $Wait }
+    }
+    throw "Scheduled task '$TaskLabel' did not reach Ready before restart."
+}
+
 function New-AgenticWindowsNodeSupervisorActionArguments {
     [CmdletBinding()]
     param(
