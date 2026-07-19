@@ -271,7 +271,11 @@ failure restores them before the node is restarted, then verifies restored file
 hashes, scheduled-task XML, and task absence when no prior task existed.
 Rollback is not successful until the restored topology starts with terminating
 error handling, remains `Running`, reacquires the supervisor lock, and reconnects
-the dedicated node with exactly `assistant.windows.execute.v1`.
+the dedicated node with a fresh post-start connection and exactly
+`assistant.windows.execute.v1`. If any runtime postcondition fails, rollback
+stops the interactive and owner tasks, terminates only the dedicated owned
+process tree, and verifies owner-task shutdown plus lock release before
+preserving every snapshot. A failed cleanup reports runtime state as unknown.
 If rollback itself fails, every available snapshot is preserved and the Windows
 node remains stopped until manual recovery.
 

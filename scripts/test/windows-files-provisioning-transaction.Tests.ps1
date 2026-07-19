@@ -90,47 +90,100 @@ Describe "Windows provisioner transaction restore" {
     }
 
     It "fails rollback when the restored task cannot start" {
+        $script:stopCalls = 0
         {
             Restore-WindowsNodeRuntimePostcondition `
                 -TaskLabel "test task" `
                 -StartTask { throw "injected task-start failure" } `
+                -StopRuntime { $script:stopCalls += 1 } `
                 -GetTaskState { "Running" } `
                 -TestLockHeld { $true } `
                 -TestNodeReady { $true } `
                 -Attempts 1 `
                 -Wait {}
         } | Should Throw
+        $script:stopCalls | Should Be 1
     }
 
     It "fails rollback when start returns but runtime postconditions never hold" {
         $script:startCalls = 0
+        $script:stopTaskCalls = 0
+        $script:stopProcessCalls = 0
+        $script:minimumConnectedAtMs = 0
+        $script:restoredTaskState = "Running"
+        $script:restoredLockHeld = $true
 
         {
             Restore-WindowsNodeRuntimePostcondition `
                 -TaskLabel "test task" `
                 -StartTask { $script:startCalls += 1 } `
-                -GetTaskState { "Ready" } `
-                -TestLockHeld { $false } `
-                -TestNodeReady { $false } `
+                -StopRuntime {
+                    Stop-WindowsNodeRuntimePostcondition `
+                        -TaskLabel "test task" `
+                        -StopTasks { $script:stopTaskCalls += 1; $script:restoredTaskState = "Ready" } `
+                        -StopProcesses { $script:stopProcessCalls += 1; $script:restoredLockHeld = $false } `
+                        -GetOwnerTaskState { $script:restoredTaskState } `
+                        -TestLockHeld { $script:restoredLockHeld } `
+                        -Attempts 1 `
+                        -Wait {}
+                } `
+                -GetTaskState { $script:restoredTaskState } `
+                -TestLockHeld { $script:restoredLockHeld } `
+                -TestNodeReady { param($MinimumConnectedAtMs) $script:minimumConnectedAtMs = $MinimumConnectedAtMs; $false } `
                 -Attempts 2 `
                 -Wait {}
         } | Should Throw
         $script:startCalls | Should Be 1
+        $script:stopTaskCalls | Should Be 1
+        $script:stopProcessCalls | Should Be 1
+        $script:restoredTaskState | Should Be "Ready"
+        $script:restoredLockHeld | Should Be $false
+        $script:minimumConnectedAtMs | Should BeGreaterThan 0
     }
 
     It "accepts rollback only after task, lock, and node postconditions hold" {
         $script:startCalls = 0
+        $script:stopCalls = 0
 
         Restore-WindowsNodeRuntimePostcondition `
             -TaskLabel "test task" `
             -StartTask { $script:startCalls += 1 } `
+            -StopRuntime { $script:stopCalls += 1 } `
             -GetTaskState { "Running" } `
             -TestLockHeld { $true } `
-            -TestNodeReady { $true } `
+            -TestNodeReady { param($MinimumConnectedAtMs) $MinimumConnectedAtMs -gt 0 } `
             -Attempts 1 `
             -Wait {}
 
         $script:startCalls | Should Be 1
+        $script:stopCalls | Should Be 0
+    }
+
+    It "reports when a failed restored runtime cannot be stopped again" {
+        {
+            Restore-WindowsNodeRuntimePostcondition `
+                -TaskLabel "test task" `
+                -StartTask {} `
+                -StopRuntime { throw "injected task-stop failure" } `
+                -GetTaskState { "Ready" } `
+                -TestLockHeld { $false } `
+                -TestNodeReady { param($MinimumConnectedAtMs) $false } `
+                -Attempts 1 `
+                -Wait {}
+        } | Should Throw
+    }
+
+    It "reports unknown cleanup state when the owner task or lock remains" {
+        {
+            Stop-WindowsNodeRuntimePostcondition `
+                -TaskLabel "test task" `
+                -StopTasks {} `
+                -StopProcesses {} `
+                -GetOwnerTaskState { "Running" } `
+                -TestLockHeld { $true } `
+                -Attempts 1 `
+                -Wait {}
+        } | Should Throw
     }
 }
 

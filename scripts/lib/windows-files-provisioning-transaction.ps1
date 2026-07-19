@@ -223,6 +223,7 @@ function Restore-WindowsNodeRuntimePostcondition {
     param(
         [Parameter(Mandatory = $true)][string]$TaskLabel,
         [Parameter(Mandatory = $true)][scriptblock]$StartTask,
+        [Parameter(Mandatory = $true)][scriptblock]$StopRuntime,
         [Parameter(Mandatory = $true)][scriptblock]$GetTaskState,
         [Parameter(Mandatory = $true)][scriptblock]$TestLockHeld,
         [Parameter(Mandatory = $true)][scriptblock]$TestNodeReady,
@@ -230,12 +231,73 @@ function Restore-WindowsNodeRuntimePostcondition {
         [scriptblock]$Wait = { Start-Sleep -Seconds 1 }
     )
 
-    & $StartTask
+    $minimumConnectedAtMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    try {
+        & $StartTask
+        for ($attempt = 0; $attempt -lt $Attempts; $attempt++) {
+            $taskState = [string](& $GetTaskState)
+            $lockHeld = [bool](& $TestLockHeld)
+            $nodeReady = [bool](& $TestNodeReady $minimumConnectedAtMs)
+            if ($taskState -eq "Running" -and $lockHeld -and $nodeReady) {
+                return
+            }
+            if ($attempt + 1 -lt $Attempts) {
+                & $Wait
+            }
+        }
+
+        throw "Restored task '$TaskLabel' did not remain running with the supervisor lock and a fresh exact node connection."
+    } catch {
+        $runtimeError = $_
+        try {
+            & $StopRuntime
+        } catch {
+            throw "Runtime restoration failed: $($runtimeError.Exception.Message) Failed-runtime cleanup could not prove a stopped state: $($_.Exception.Message)"
+        }
+        throw $runtimeError
+    }
+}
+
+function Stop-WindowsNodeRuntimePostcondition {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$TaskLabel,
+        [Parameter(Mandatory = $true)][scriptblock]$StopTasks,
+        [Parameter(Mandatory = $true)][scriptblock]$StopProcesses,
+        [Parameter(Mandatory = $true)][scriptblock]$GetOwnerTaskState,
+        [Parameter(Mandatory = $true)][scriptblock]$TestLockHeld,
+        [int]$Attempts = 20,
+        [scriptblock]$Wait = { Start-Sleep -Milliseconds 250 }
+    )
+
+    $cleanupErrors = [Collections.Generic.List[string]]::new()
+    try {
+        & $StopTasks
+    } catch {
+        $cleanupErrors.Add("task stop: $($_.Exception.Message)")
+    }
+    try {
+        & $StopProcesses
+    } catch {
+        $cleanupErrors.Add("process stop: $($_.Exception.Message)")
+    }
+
+    $taskState = "Unknown"
+    $lockHeld = $true
     for ($attempt = 0; $attempt -lt $Attempts; $attempt++) {
-        $taskState = [string](& $GetTaskState)
-        $lockHeld = [bool](& $TestLockHeld)
-        $nodeReady = [bool](& $TestNodeReady)
-        if ($taskState -eq "Running" -and $lockHeld -and $nodeReady) {
+        try {
+            $taskState = [string](& $GetOwnerTaskState)
+        } catch {
+            $taskState = "Unknown"
+            $cleanupErrors.Add("task state: $($_.Exception.Message)")
+        }
+        try {
+            $lockHeld = [bool](& $TestLockHeld)
+        } catch {
+            $lockHeld = $true
+            $cleanupErrors.Add("lock state: $($_.Exception.Message)")
+        }
+        if ($taskState -ne "Running" -and -not $lockHeld -and $cleanupErrors.Count -eq 0) {
             return
         }
         if ($attempt + 1 -lt $Attempts) {
@@ -243,7 +305,12 @@ function Restore-WindowsNodeRuntimePostcondition {
         }
     }
 
-    throw "Restored task '$TaskLabel' did not remain running with the supervisor lock and exact connected node."
+    $details = if ($cleanupErrors.Count -gt 0) {
+        $cleanupErrors -join "; "
+    } else {
+        "ownerState=$taskState lockHeld=$lockHeld"
+    }
+    throw "Failed runtime '$TaskLabel' could not be proven stopped; runtime state is unknown ($details)."
 }
 
 function New-AgenticWindowsNodeVbsContent {

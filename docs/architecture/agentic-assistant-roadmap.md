@@ -322,8 +322,11 @@ non-elevated provisioning pass. Canonical task/SID validation, persistent
 transaction backups, and rollback postcondition checks also pass their focused
 failure-injection suite and a live provision transaction. Extended boot-trigger
 drift and restored-runtime task/lock/node postconditions are also enforced. A
-cold Windows reboot with no login and follow-up Pro review remain open; Phase 1
-is not complete.
+fresh post-start node connection is required so stale Gateway state cannot satisfy
+rollback. A failed restored runtime is stopped again, its dedicated process tree
+is terminated, and owner-task shutdown plus lock release are required; otherwise
+runtime state is reported unknown. A cold Windows reboot with no login and
+follow-up Pro review remain open; Phase 1 is not complete.
 
 Vertical slice:
 

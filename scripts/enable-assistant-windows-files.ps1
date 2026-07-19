@@ -496,6 +496,7 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
                 }
         }
         $testDedicatedNodeReady = {
+            param($MinimumConnectedAtMs)
             try {
                 $rollbackStatus = ((Invoke-GatewayOpenClaw nodes status --json) -join "`n") | ConvertFrom-Json
                 $rollbackNode = @($rollbackStatus.nodes | Where-Object nodeId -eq $NodeId)
@@ -506,6 +507,7 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
                 }
                 return $rollbackNode.Count -eq 1 -and
                     $rollbackNode[0].connected -eq $true -and
+                    [long]$rollbackNode[0].connectedAtMs -ge [long]$MinimumConnectedAtMs -and
                     $rollbackCommands.Count -eq 1 -and
                     $rollbackCommands[0] -eq $WindowsCommand
             } catch {
@@ -521,6 +523,44 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
                         -TaskName $agenticTaskName `
                         -ErrorAction Stop
                     Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+                } `
+                -StopRuntime {
+                    Stop-WindowsNodeRuntimePostcondition `
+                        -TaskLabel "$agenticTaskPath$agenticTaskName" `
+                        -StopTasks {
+                            $fallbackTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+                            if ([string]$fallbackTask.State -eq "Running") {
+                                Stop-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+                            }
+                            $failedAgenticTask = Get-OptionalScheduledTaskExact `
+                                -TaskPath $agenticTaskPath `
+                                -TaskName $agenticTaskName
+                            if ($failedAgenticTask -and [string]$failedAgenticTask.State -eq "Running") {
+                                Stop-ScheduledTask `
+                                    -TaskPath $agenticTaskPath `
+                                    -TaskName $agenticTaskName `
+                                    -ErrorAction Stop
+                            }
+                            $fallbackAfterStop = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+                            if ([string]$fallbackAfterStop.State -eq "Running") {
+                                throw "The interactive node launcher is still running after cleanup."
+                            }
+                        } `
+                        -StopProcesses {
+                            Stop-OwnedWindowsNodeProcesses `
+                                -NodeCommandPath $nodeCommandPath `
+                                -SupervisorPath $supervisorPath `
+                                -StateDir $resolvedStateDir | Out-Null
+                        } `
+                        -GetOwnerTaskState {
+                            (Get-ScheduledTask `
+                                -TaskPath $agenticTaskPath `
+                                -TaskName $agenticTaskName `
+                                -ErrorAction Stop).State
+                        } `
+                        -TestLockHeld {
+                            Test-AgenticWindowsNodeSupervisorLockHeld -LockPath $lockPath
+                        }
                 } `
                 -GetTaskState {
                     (Get-ScheduledTask `
@@ -545,6 +585,45 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
                         -TaskName "OpenClaw Gateway Supervisor" `
                         -ErrorAction Stop
                 } `
+                -StopRuntime {
+                    Stop-WindowsNodeRuntimePostcondition `
+                        -TaskLabel "\OpenClaw\OpenClaw Gateway Supervisor" `
+                        -StopTasks {
+                            $fallbackTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+                            if ([string]$fallbackTask.State -eq "Running") {
+                                Stop-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+                            }
+                            $failedGatewayTask = Get-ScheduledTask `
+                                -TaskPath "\OpenClaw\" `
+                                -TaskName "OpenClaw Gateway Supervisor" `
+                                -ErrorAction Stop
+                            if ([string]$failedGatewayTask.State -eq "Running") {
+                                Stop-ScheduledTask `
+                                    -TaskPath "\OpenClaw\" `
+                                    -TaskName "OpenClaw Gateway Supervisor" `
+                                    -ErrorAction Stop
+                            }
+                            $fallbackAfterStop = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+                            if ([string]$fallbackAfterStop.State -eq "Running") {
+                                throw "The interactive node launcher is still running after cleanup."
+                            }
+                        } `
+                        -StopProcesses {
+                            Stop-OwnedWindowsNodeProcesses `
+                                -NodeCommandPath $nodeCommandPath `
+                                -SupervisorPath $supervisorPath `
+                                -StateDir $resolvedStateDir | Out-Null
+                        } `
+                        -GetOwnerTaskState {
+                            (Get-ScheduledTask `
+                                -TaskPath "\OpenClaw\" `
+                                -TaskName "OpenClaw Gateway Supervisor" `
+                                -ErrorAction Stop).State
+                        } `
+                        -TestLockHeld {
+                            Test-AgenticWindowsNodeSupervisorLockHeld -LockPath $lockPath
+                        }
+                } `
                 -GetTaskState {
                     (Get-ScheduledTask `
                         -TaskPath "\OpenClaw\" `
@@ -564,7 +643,7 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
 
     if ($rollbackError) {
         $rollbackFailed = $true
-        Write-Warning "Rollback failed. Scheduled task '$TaskName' and the owned S4U node task will remain stopped."
+        Write-Warning "Rollback failed. Runtime cleanup was attempted, but task/process state is unknown until verified."
         Write-Warning "Preserved local transaction backups: $transactionBackupDir"
         Write-Warning "Preserved local plugin rollback stage: $pluginPrevious"
         Write-Warning "Preserved Gateway config snapshot: ${Distro}:$gatewayConfigBackup"
