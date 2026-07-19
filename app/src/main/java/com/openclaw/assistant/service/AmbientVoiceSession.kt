@@ -5,6 +5,8 @@ import android.content.Context
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.PowerManager
+import android.os.SystemClock
+import android.speech.SpeechRecognizer
 import android.util.Log
 import com.openclaw.assistant.OpenClawApplication
 import com.openclaw.assistant.R
@@ -67,6 +69,21 @@ object AmbientVoiceSessionRegistry {
     }
 }
 
+internal object AmbientVoiceRecognitionPolicy {
+    const val RETRY_WINDOW_MS = 10_000L
+
+    fun shouldRetry(errorCode: Int?, elapsedMs: Long): Boolean {
+        val softError = errorCode == SpeechRecognizer.ERROR_NO_MATCH ||
+            errorCode == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
+        return softError && elapsedMs < RETRY_WINDOW_MS
+    }
+}
+
+private class RetryableSpeechRecognitionException(
+    message: String,
+    val errorCode: Int?,
+) : Exception(message)
+
 /** Owns one unlocked, continuous OpenClaw voice session inside HotwordService. */
 internal class AmbientVoiceSession(
     context: Context,
@@ -78,6 +95,7 @@ internal class AmbientVoiceSession(
         private const val STT_TURN_TIMEOUT_MS = 35_000L
         private const val LOCK_MONITOR_MS = 250L
         private const val NEXT_TURN_DELAY_MS = 750L
+        private const val STT_RETRY_DELAY_MS = 250L
         private const val AGENTIC_TURN_TIMEOUT_MS = 150_000L
     }
 
@@ -144,8 +162,30 @@ internal class AmbientVoiceSession(
         }
         sessionJob = scope.launch {
             try {
+                var listenWindowStartedAt = SystemClock.elapsedRealtime()
                 while (isActive && active.get()) {
-                    val transcript = listenForTurn()
+                    val transcript = try {
+                        listenForTurn()
+                    } catch (error: RetryableSpeechRecognitionException) {
+                        val elapsedMs = SystemClock.elapsedRealtime() - listenWindowStartedAt
+                        if (!AmbientVoiceRecognitionPolicy.shouldRetry(error.errorCode, elapsedMs)) {
+                            Log.i(
+                                TAG,
+                                "Ending ambient voice session after idle recognition timeout code=${error.errorCode}",
+                            )
+                            finish("idle_timeout")
+                            return@launch
+                        }
+                        Log.i(TAG, "Retrying ambient recognition after soft error code=${error.errorCode}")
+                        publish(
+                            state = AssistantState.PROCESSING,
+                            partialText = "",
+                            error = null,
+                            audioLevel = 0f,
+                        )
+                        delay(STT_RETRY_DELAY_MS)
+                        continue
+                    }
                     if (!ensureUnlocked("after_transcript")) return@launch
                     publish(
                         state = AssistantState.THINKING,
@@ -176,6 +216,7 @@ internal class AmbientVoiceSession(
                     )
                     if (settings.ttsEnabled) speak(response)
                     delay(NEXT_TURN_DELAY_MS)
+                    listenWindowStartedAt = SystemClock.elapsedRealtime()
                 }
             } catch (error: CancellationException) {
                 if (active.get()) finish("cancelled")
@@ -229,7 +270,7 @@ internal class AmbientVoiceSession(
                         toneGenerator.startTone(ToneGenerator.TONE_PROP_BEEP, 150)
                         return@withTimeout
                     }
-                    is SpeechResult.Error -> error(result.message)
+                    is SpeechResult.Error -> throwSpeechError(result)
                     else -> Unit
                 }
             }
@@ -249,12 +290,22 @@ internal class AmbientVoiceSession(
                         partialText = result.text,
                     )
                     is SpeechResult.Result -> return@withTimeout result.text
-                    is SpeechResult.Error -> error(result.message)
+                    is SpeechResult.Error -> throwSpeechError(result)
                     SpeechResult.Ready -> Unit
                 }
             }
             error(app.getString(R.string.error_no_recognition_result))
         }
+
+    private fun throwSpeechError(result: SpeechResult.Error): Nothing {
+        if (
+            result.code == SpeechRecognizer.ERROR_NO_MATCH ||
+            result.code == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
+        ) {
+            throw RetryableSpeechRecognitionException(result.message, result.code)
+        }
+        error(result.message)
+    }
 
     private suspend fun speak(text: String) = speechMutex.withLock {
         val cleanText = TTSUtils.stripMarkdownForSpeech(text)
