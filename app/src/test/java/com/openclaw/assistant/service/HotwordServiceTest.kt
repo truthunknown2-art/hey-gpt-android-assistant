@@ -9,6 +9,51 @@ import org.junit.Test
 class HotwordServiceTest {
 
     @Test
+    fun ambientFinish_revokesAuthorityBeforeOrderedVoskRecovery() = runTest {
+        val events = mutableListOf<String>()
+
+        val cleanup = beginAmbientVoiceFinish(
+            cleanupScope = this,
+            closePrivateResult = { events += "private_result_closed" },
+            revokeApprovals = { events += "approvals_revoked" },
+            revokeGrants = { events += "grants_revoked" },
+            revokePresence = { events += "presence_revoked" },
+            cancelAndJoinTurns = { events += "chat_abort_complete" },
+            releaseSpeech = { events += "stt_released" },
+            stopSpeechOutput = { events += "tts_released" },
+            publishInactive = { events += "inactive" },
+            restartHotword = { events += "vosk_restart_attempted" },
+            releaseWakeLock = { events += "wake_lock_released" },
+        )
+
+        assertEquals(
+            listOf(
+                "private_result_closed",
+                "approvals_revoked",
+                "grants_revoked",
+                "presence_revoked",
+            ),
+            events,
+        )
+        cleanup.join()
+        assertEquals(
+            listOf(
+                "private_result_closed",
+                "approvals_revoked",
+                "grants_revoked",
+                "presence_revoked",
+                "chat_abort_complete",
+                "stt_released",
+                "tts_released",
+                "inactive",
+                "vosk_restart_attempted",
+                "wake_lock_released",
+            ),
+            events,
+        )
+    }
+
+    @Test
     fun ambientTeardown_ordersAbortAudioRestartAndWakeLockRelease() = runTest {
         val events = mutableListOf<String>()
 

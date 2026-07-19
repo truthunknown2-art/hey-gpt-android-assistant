@@ -48,6 +48,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 
 data class AmbientVoiceUiState(
     val token: String? = null,
@@ -72,6 +73,15 @@ object AmbientVoiceSessionRegistry {
 internal object AmbientVoiceRecognitionPolicy {
     const val RETRY_WINDOW_MS = 20_000L
 
+    fun deadlineFrom(startedAtMs: Long): Long =
+        if (startedAtMs > Long.MAX_VALUE - RETRY_WINDOW_MS) Long.MAX_VALUE
+        else startedAtMs + RETRY_WINDOW_MS
+
+    fun remainingMs(deadlineMs: Long, nowMs: Long): Long =
+        (deadlineMs - nowMs).coerceAtLeast(0L)
+
+    fun isBeforeDeadline(deadlineMs: Long, nowMs: Long): Boolean = nowMs < deadlineMs
+
     fun shouldRetry(errorCode: Int?, elapsedMs: Long): Boolean {
         val softError = errorCode == SpeechRecognizer.ERROR_NO_MATCH ||
             errorCode == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
@@ -79,10 +89,65 @@ internal object AmbientVoiceRecognitionPolicy {
     }
 }
 
-private class RetryableSpeechRecognitionException(
+internal class RetryableSpeechRecognitionException(
     message: String,
     val errorCode: Int?,
 ) : Exception(message)
+
+internal enum class AmbientVoiceListenWindowResult {
+    TURN_COMPLETED,
+    IDLE_TIMEOUT,
+}
+
+internal suspend fun runAmbientVoiceListenWindow(
+    listenWindowStartedAtMs: Long,
+    nowMs: () -> Long,
+    listenForTurn: suspend () -> String,
+    onSoftRetry: suspend (errorCode: Int?) -> Unit,
+    onTranscriptAccepted: suspend (transcript: String, deadlineMs: Long) -> Unit,
+): AmbientVoiceListenWindowResult {
+    val deadlineMs = AmbientVoiceRecognitionPolicy.deadlineFrom(listenWindowStartedAtMs)
+    while (true) {
+        val remainingMs = AmbientVoiceRecognitionPolicy.remainingMs(deadlineMs, nowMs())
+        if (remainingMs == 0L) return AmbientVoiceListenWindowResult.IDLE_TIMEOUT
+
+        val transcript = try {
+            withTimeoutOrNull(remainingMs) { listenForTurn() }
+                ?: return AmbientVoiceListenWindowResult.IDLE_TIMEOUT
+        } catch (error: RetryableSpeechRecognitionException) {
+            val elapsedMs = (nowMs() - listenWindowStartedAtMs).coerceAtLeast(0L)
+            if (!AmbientVoiceRecognitionPolicy.shouldRetry(error.errorCode, elapsedMs)) {
+                return AmbientVoiceListenWindowResult.IDLE_TIMEOUT
+            }
+            val retryRemainingMs = AmbientVoiceRecognitionPolicy.remainingMs(deadlineMs, nowMs())
+            if (retryRemainingMs == 0L) return AmbientVoiceListenWindowResult.IDLE_TIMEOUT
+            val retryPrepared = withTimeoutOrNull(retryRemainingMs) {
+                onSoftRetry(error.errorCode)
+                true
+            } ?: false
+            if (!retryPrepared || !AmbientVoiceRecognitionPolicy.isBeforeDeadline(deadlineMs, nowMs())) {
+                return AmbientVoiceListenWindowResult.IDLE_TIMEOUT
+            }
+            continue
+        }
+
+        if (!AmbientVoiceRecognitionPolicy.isBeforeDeadline(deadlineMs, nowMs())) {
+            return AmbientVoiceListenWindowResult.IDLE_TIMEOUT
+        }
+        onTranscriptAccepted(transcript, deadlineMs)
+        return AmbientVoiceListenWindowResult.TURN_COMPLETED
+    }
+}
+
+internal fun requireAmbientVoiceBeforeDeadline(
+    deadlineMs: Long,
+    nowMs: Long,
+    onExpired: () -> Unit,
+) {
+    if (AmbientVoiceRecognitionPolicy.isBeforeDeadline(deadlineMs, nowMs)) return
+    onExpired()
+    throw CancellationException("Ambient listening deadline expired")
+}
 
 /** Owns one unlocked, continuous OpenClaw voice session inside HotwordService. */
 internal class AmbientVoiceSession(
@@ -164,57 +229,27 @@ internal class AmbientVoiceSession(
             try {
                 var listenWindowStartedAt = SystemClock.elapsedRealtime()
                 while (isActive && active.get()) {
-                    val transcript = try {
-                        listenForTurn()
-                    } catch (error: RetryableSpeechRecognitionException) {
-                        val elapsedMs = SystemClock.elapsedRealtime() - listenWindowStartedAt
-                        if (!AmbientVoiceRecognitionPolicy.shouldRetry(error.errorCode, elapsedMs)) {
-                            Log.i(
-                                TAG,
-                                "Ending ambient voice session after idle recognition timeout code=${error.errorCode}",
+                    val listenResult = runAmbientVoiceListenWindow(
+                        listenWindowStartedAtMs = listenWindowStartedAt,
+                        nowMs = SystemClock::elapsedRealtime,
+                        listenForTurn = ::listenForTurn,
+                        onSoftRetry = { errorCode ->
+                            Log.i(TAG, "Retrying ambient recognition after soft error code=$errorCode")
+                            publish(
+                                state = AssistantState.PROCESSING,
+                                partialText = "",
+                                error = null,
+                                audioLevel = 0f,
                             )
-                            finish("idle_timeout")
-                            return@launch
-                        }
-                        Log.i(TAG, "Retrying ambient recognition after soft error code=${error.errorCode}")
-                        publish(
-                            state = AssistantState.PROCESSING,
-                            partialText = "",
-                            error = null,
-                            audioLevel = 0f,
-                        )
-                        delay(STT_RETRY_DELAY_MS)
-                        continue
+                            delay(STT_RETRY_DELAY_MS)
+                        },
+                        onTranscriptAccepted = ::processTranscript,
+                    )
+                    if (listenResult == AmbientVoiceListenWindowResult.IDLE_TIMEOUT) {
+                        Log.i(TAG, "Ending ambient voice session after hard idle recognition deadline")
+                        finish("idle_timeout")
+                        return@launch
                     }
-                    if (!ensureUnlocked("after_transcript")) return@launch
-                    publish(
-                        state = AssistantState.THINKING,
-                        userText = transcript,
-                        assistantText = "",
-                        partialText = "",
-                    )
-                    toneGenerator.startTone(ToneGenerator.TONE_PROP_ACK, 150)
-                    val response = turns.ask(
-                        sessionKey = sessionKey,
-                        agentId = VoiceSessionKeys.VOICE_MAIN_AGENT_ID,
-                        message = transcript,
-                        timeoutMs = AGENTIC_TURN_TIMEOUT_MS,
-                        beforeSend = {
-                            if (!ensureUnlocked("before_chat_send")) {
-                                throw CancellationException("Device became securely locked")
-                            }
-                        },
-                    ) ?: error(app.getString(R.string.error_no_response))
-                    if (!ensureUnlocked("after_gateway_response")) return@launch
-                    publish(
-                        state = if (settings.ttsEnabled) {
-                            AssistantState.PREPARING_SPEECH
-                        } else {
-                            AssistantState.IDLE
-                        },
-                        assistantText = response,
-                    )
-                    if (settings.ttsEnabled) speak(response)
                     delay(NEXT_TURN_DELAY_MS)
                     listenWindowStartedAt = SystemClock.elapsedRealtime()
                 }
@@ -227,6 +262,47 @@ internal class AmbientVoiceSession(
             }
         }
         return true
+    }
+
+    private suspend fun processTranscript(transcript: String, listenDeadlineMs: Long) {
+        requireBeforeListenDeadline(listenDeadlineMs, "after_transcript")
+        if (!ensureUnlocked("after_transcript")) throw CancellationException("Device became securely locked")
+        publish(
+            state = AssistantState.THINKING,
+            userText = transcript,
+            assistantText = "",
+            partialText = "",
+        )
+        toneGenerator.startTone(ToneGenerator.TONE_PROP_ACK, 150)
+        val response = turns.ask(
+            sessionKey = sessionKey,
+            agentId = VoiceSessionKeys.VOICE_MAIN_AGENT_ID,
+            message = transcript,
+            timeoutMs = AGENTIC_TURN_TIMEOUT_MS,
+            beforeSend = {
+                requireBeforeListenDeadline(listenDeadlineMs, "before_chat_send")
+                if (!ensureUnlocked("before_chat_send")) {
+                    throw CancellationException("Device became securely locked")
+                }
+            },
+        ) ?: error(app.getString(R.string.error_no_response))
+        if (!ensureUnlocked("after_gateway_response")) throw CancellationException("Device became securely locked")
+        publish(
+            state = if (settings.ttsEnabled) {
+                AssistantState.PREPARING_SPEECH
+            } else {
+                AssistantState.IDLE
+            },
+            assistantText = response,
+        )
+        if (settings.ttsEnabled) speak(response)
+    }
+
+    private fun requireBeforeListenDeadline(deadlineMs: Long, reason: String) {
+        requireAmbientVoiceBeforeDeadline(deadlineMs, SystemClock.elapsedRealtime()) {
+            Log.i(TAG, "Ending ambient voice session after hard idle recognition deadline: $reason")
+            finish("idle_timeout")
+        }
     }
 
     fun stop(requestToken: String, reason: String) {
@@ -401,40 +477,43 @@ internal class AmbientVoiceSession(
 
     private fun finish(reason: String) {
         if (!active.get() || !finishing.compareAndSet(false, true)) return
-        privateResultBinding?.close()
+        val capturedPrivateResultBinding = privateResultBinding
         privateResultBinding = null
-        AssistantPrivateReadApprovals.registry.revokeVoiceSession(sessionKey)
-        AssistantPrivateReadGrants.manager.revokeVoiceSession(sessionKey)
-        presenceLease?.let { AssistantPresenceLeases.manager.revoke(it.leaseId) }
+        val capturedPresenceLeaseId = presenceLease?.leaseId
         presenceLease = null
         val capturedSessionJob = sessionJob
         val capturedMonitorJob = lockMonitorJob
         sessionJob = null
         lockMonitorJob = null
-        cleanupScope.launch {
-            performAmbientVoiceTeardown(
-                cancelAndJoinTurns = {
-                    capturedSessionJob?.cancel()
-                    capturedMonitorJob?.cancel()
-                    listOfNotNull(capturedSessionJob, capturedMonitorJob).joinAll()
-                    scope.cancel()
-                },
-                releaseSpeech = { speechManager.destroyAndAwait() },
-                stopSpeechOutput = {
-                    runCatching { ttsManager.stopAll() }
-                    runCatching { ttsManager.shutdown() }
-                    runCatching { toneGenerator.stopTone() }
-                    runCatching { toneGenerator.release() }
-                },
-                publishInactive = {
-                    active.set(false)
-                    uiState = uiState.copy(active = false, state = AssistantState.IDLE, partialText = "")
-                    AmbientVoiceSessionRegistry.publish(uiState)
-                },
-                restartHotword = { onEnded(token, reason) },
-                releaseWakeLock = ::releaseWakeLock,
-            )
-        }
+        beginAmbientVoiceFinish(
+            cleanupScope = cleanupScope,
+            closePrivateResult = { capturedPrivateResultBinding?.close() },
+            revokeApprovals = { AssistantPrivateReadApprovals.registry.revokeVoiceSession(sessionKey) },
+            revokeGrants = { AssistantPrivateReadGrants.manager.revokeVoiceSession(sessionKey) },
+            revokePresence = {
+                capturedPresenceLeaseId?.let { AssistantPresenceLeases.manager.revoke(it) }
+            },
+            cancelAndJoinTurns = {
+                capturedSessionJob?.cancel()
+                capturedMonitorJob?.cancel()
+                listOfNotNull(capturedSessionJob, capturedMonitorJob).joinAll()
+                scope.cancel()
+            },
+            releaseSpeech = { speechManager.destroyAndAwait() },
+            stopSpeechOutput = {
+                runCatching { ttsManager.stopAll() }
+                runCatching { ttsManager.shutdown() }
+                runCatching { toneGenerator.stopTone() }
+                runCatching { toneGenerator.release() }
+            },
+            publishInactive = {
+                active.set(false)
+                uiState = uiState.copy(active = false, state = AssistantState.IDLE, partialText = "")
+                AmbientVoiceSessionRegistry.publish(uiState)
+            },
+            restartHotword = { onEnded(token, reason) },
+            releaseWakeLock = ::releaseWakeLock,
+        )
     }
 
     private fun acquireWakeLock() {
@@ -448,6 +527,35 @@ internal class AmbientVoiceSession(
     private fun releaseWakeLock() {
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
+    }
+}
+
+internal fun beginAmbientVoiceFinish(
+    cleanupScope: CoroutineScope,
+    closePrivateResult: () -> Unit,
+    revokeApprovals: () -> Unit,
+    revokeGrants: () -> Unit,
+    revokePresence: () -> Unit,
+    cancelAndJoinTurns: suspend () -> Unit,
+    releaseSpeech: suspend () -> Unit,
+    stopSpeechOutput: () -> Unit,
+    publishInactive: () -> Unit,
+    restartHotword: suspend () -> Unit,
+    releaseWakeLock: () -> Unit,
+): Job {
+    closePrivateResult()
+    revokeApprovals()
+    revokeGrants()
+    revokePresence()
+    return cleanupScope.launch {
+        performAmbientVoiceTeardown(
+            cancelAndJoinTurns = cancelAndJoinTurns,
+            releaseSpeech = releaseSpeech,
+            stopSpeechOutput = stopSpeechOutput,
+            publishInactive = publishInactive,
+            restartHotword = restartHotword,
+            releaseWakeLock = releaseWakeLock,
+        )
     }
 }
 
