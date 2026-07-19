@@ -21,6 +21,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -29,6 +30,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.produceIn
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 
@@ -55,7 +57,7 @@ object AmbientVoiceSessionRegistry {
 /** Owns one unlocked, continuous OpenClaw voice session inside HotwordService. */
 internal class AmbientVoiceSession(
     context: Context,
-    private val onEnded: (token: String, reason: String) -> Unit,
+    private val onEnded: suspend (token: String, reason: String) -> Unit,
 ) {
     companion object {
         private const val TAG = "AmbientVoiceSession"
@@ -73,7 +75,9 @@ internal class AmbientVoiceSession(
     private val turns = GatewayVoiceTurnController(app.nodeRuntime::requestGateway)
     private val toneGenerator = ToneGenerator(AudioManager.STREAM_MUSIC, 100)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val active = AtomicBoolean(false)
+    private val finishing = AtomicBoolean(false)
     private var sessionJob: Job? = null
     private var lockMonitorJob: Job? = null
     private var token: String = ""
@@ -165,7 +169,7 @@ internal class AmbientVoiceSession(
             error = null,
             audioLevel = 0f,
         )
-        speechManager.destroy()
+        speechManager.destroyAndAwait()
         return kotlinx.coroutines.coroutineScope {
             val results = speechManager.startListening(
                 settings.speechLanguage.ifBlank { null },
@@ -176,7 +180,7 @@ internal class AmbientVoiceSession(
                 awaitTranscript(results)
             } finally {
                 results.cancel()
-                speechManager.destroy()
+                speechManager.destroyAndAwait()
             }
         }
     }
@@ -266,20 +270,35 @@ internal class AmbientVoiceSession(
     }
 
     private fun finish(reason: String) {
-        if (!active.compareAndSet(true, false)) return
-        sessionJob?.cancel()
+        if (!active.get() || !finishing.compareAndSet(false, true)) return
+        val capturedSessionJob = sessionJob
+        val capturedMonitorJob = lockMonitorJob
         sessionJob = null
-        lockMonitorJob?.cancel()
         lockMonitorJob = null
-        speechManager.destroy()
-        runCatching { ttsManager.stopAll() }
-        runCatching { ttsManager.shutdown() }
-        runCatching { toneGenerator.stopTone() }
-        runCatching { toneGenerator.release() }
-        releaseWakeLock()
-        uiState = uiState.copy(active = false, state = AssistantState.IDLE, partialText = "")
-        AmbientVoiceSessionRegistry.publish(uiState)
-        onEnded(token, reason)
+        cleanupScope.launch {
+            performAmbientVoiceTeardown(
+                cancelAndJoinTurns = {
+                    capturedSessionJob?.cancel()
+                    capturedMonitorJob?.cancel()
+                    listOfNotNull(capturedSessionJob, capturedMonitorJob).joinAll()
+                    scope.cancel()
+                },
+                releaseSpeech = { speechManager.destroyAndAwait() },
+                stopSpeechOutput = {
+                    runCatching { ttsManager.stopAll() }
+                    runCatching { ttsManager.shutdown() }
+                    runCatching { toneGenerator.stopTone() }
+                    runCatching { toneGenerator.release() }
+                },
+                publishInactive = {
+                    active.set(false)
+                    uiState = uiState.copy(active = false, state = AssistantState.IDLE, partialText = "")
+                    AmbientVoiceSessionRegistry.publish(uiState)
+                },
+                restartHotword = { onEnded(token, reason) },
+                releaseWakeLock = ::releaseWakeLock,
+            )
+        }
     }
 
     private fun acquireWakeLock() {
@@ -293,5 +312,24 @@ internal class AmbientVoiceSession(
     private fun releaseWakeLock() {
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
+    }
+}
+
+internal suspend fun performAmbientVoiceTeardown(
+    cancelAndJoinTurns: suspend () -> Unit,
+    releaseSpeech: suspend () -> Unit,
+    stopSpeechOutput: () -> Unit,
+    publishInactive: () -> Unit,
+    restartHotword: suspend () -> Unit,
+    releaseWakeLock: () -> Unit,
+) {
+    try {
+        cancelAndJoinTurns()
+        releaseSpeech()
+        stopSpeechOutput()
+        publishInactive()
+        restartHotword()
+    } finally {
+        releaseWakeLock()
     }
 }

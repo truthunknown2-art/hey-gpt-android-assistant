@@ -9,6 +9,32 @@ import org.junit.Test
 class HotwordServiceTest {
 
     @Test
+    fun ambientTeardown_ordersAbortAudioRestartAndWakeLockRelease() = runTest {
+        val events = mutableListOf<String>()
+
+        performAmbientVoiceTeardown(
+            cancelAndJoinTurns = { events += "chat_abort_complete" },
+            releaseSpeech = { events += "stt_released" },
+            stopSpeechOutput = { events += "tts_released" },
+            publishInactive = { events += "inactive" },
+            restartHotword = { events += "vosk_restart_attempted" },
+            releaseWakeLock = { events += "wake_lock_released" },
+        )
+
+        assertEquals(
+            listOf(
+                "chat_abort_complete",
+                "stt_released",
+                "tts_released",
+                "inactive",
+                "vosk_restart_attempted",
+                "wake_lock_released",
+            ),
+            events,
+        )
+    }
+
+    @Test
     fun secureResume_attemptsRecorderRestartBeforeCallerCanReleaseWakeLock() = runTest {
         val events = mutableListOf<String>()
 

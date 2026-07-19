@@ -9,14 +9,20 @@ import android.speech.RecognitionListener
 import android.speech.RecognitionService
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import java.util.IdentityHashMap
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.lang.ref.WeakReference
 import java.util.Locale
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 
 /**
  * Speech Recognition Manager
@@ -25,6 +31,9 @@ class SpeechRecognizerManager(private val context: Context) {
 
     private var recognizer: SpeechRecognizer? = null
     private var foregroundContextRef: WeakReference<Context>? = null
+    private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val cleanupLock = Any()
+    private val cleanupJobs = IdentityHashMap<SpeechRecognizer, Job>()
 
     fun attachForegroundContext(context: Context) {
         foregroundContextRef = WeakReference(context)
@@ -58,32 +67,27 @@ class SpeechRecognizerManager(private val context: Context) {
         
         android.util.Log.e("SpeechRecognizerManager", "startListening called, language=$targetLanguage, isAvailable=${isAvailable()}")
 
-        // Always destroy and recreate recognizer to avoid race condition
-        // between awaitClose cancel() and new startListening()
-        withContext(Dispatchers.Main) {
-            if (recognizer != null) {
-                android.util.Log.d("SpeechRecognizerManager", "Destroying previous recognizer before recreation")
-                try {
-                    recognizer?.destroy()
-                } catch (e: Exception) {
-                    android.util.Log.w("SpeechRecognizerManager", "Failed to destroy previous recognizer", e)
-                }
-                recognizer = null
-            }
+        // Never create a new recorder until every tracked teardown has completed.
+        destroyAndAwait()
+        val currentRecognizer = withContext(Dispatchers.Main.immediate) {
             val recognitionContext = recognitionContext()
             if (SpeechRecognizer.isRecognitionAvailable(recognitionContext)) {
-                recognizer = SpeechRecognizer.createSpeechRecognizer(recognitionContext)
+                val created = SpeechRecognizer.createSpeechRecognizer(recognitionContext).also {
+                    synchronized(cleanupLock) { recognizer = it }
+                }
                 android.util.Log.d("SpeechRecognizerManager", "Created new recognizer instance")
+                created
+            } else {
+                null
             }
         }
 
-        if (recognizer == null) {
+        if (currentRecognizer == null) {
             android.util.Log.e("SpeechRecognizerManager", "Failed to create recognizer, sending error")
             trySend(SpeechResult.Error(context.getString(com.openclaw.assistant.R.string.error_speech_client)))
             close()
             return@callbackFlow
         }
-        val currentRecognizer = recognizer!!
 
         android.util.Log.d("SpeechRecognizerManager", "Setting recognition listener on recognizer")
         currentRecognizer.setRecognitionListener(object : RecognitionListener {
@@ -191,18 +195,10 @@ class SpeechRecognizerManager(private val context: Context) {
 
         awaitClose {
             android.util.Log.d("SpeechRecognizerManager", "awaitClose: flow closing, destroying recognizer")
-            // Destroy recognizer immediately on close to ensure clean state
-            // Next startListening() will create a fresh instance
-            @OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
-            kotlinx.coroutines.GlobalScope.launch(Dispatchers.Main) {
-                try {
-                    currentRecognizer.cancel()
-                    currentRecognizer.destroy()
-                } catch (e: Exception) {
-                    android.util.Log.w("SpeechRecognizerManager", "awaitClose cleanup failed", e)
-                }
+            synchronized(cleanupLock) {
+                if (recognizer === currentRecognizer) recognizer = null
             }
-            recognizer = null
+            scheduleDestroy(currentRecognizer)
         }
     }
 
@@ -217,16 +213,46 @@ class SpeechRecognizerManager(private val context: Context) {
      * Completely destroy the recognizer resources
      */
     fun destroy() {
-        val currentRecognizer = recognizer
-        @OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
-        kotlinx.coroutines.GlobalScope.launch(Dispatchers.Main) {
-            try {
-                currentRecognizer?.destroy()
-            } catch (e: Exception) {
-                // Ignore
+        val currentRecognizer = synchronized(cleanupLock) {
+            recognizer.also { recognizer = null }
+        }
+        currentRecognizer?.let(::scheduleDestroy)
+    }
+
+    /** Waits until all Android recognizers owned by this manager are cancelled and destroyed. */
+    suspend fun destroyAndAwait() {
+        val currentRecognizer = synchronized(cleanupLock) {
+            recognizer.also { recognizer = null }
+        }
+        currentRecognizer?.let(::scheduleDestroy)
+        while (true) {
+            val pending = synchronized(cleanupLock) { cleanupJobs.values.toList() }
+            if (pending.isEmpty()) return
+            pending.joinAll()
+        }
+    }
+
+    private fun scheduleDestroy(target: SpeechRecognizer): Job = synchronized(cleanupLock) {
+        cleanupJobs[target]?.let { return@synchronized it }
+        lateinit var job: Job
+        job = cleanupScope.launch(start = CoroutineStart.LAZY) {
+            runCatching { target.cancel() }
+                .onFailure { error ->
+                    android.util.Log.w("SpeechRecognizerManager", "Recognizer cancellation failed", error)
+                }
+            runCatching { target.destroy() }
+                .onFailure { error ->
+                    android.util.Log.w("SpeechRecognizerManager", "Recognizer destruction failed", error)
+                }
+        }
+        cleanupJobs[target] = job
+        job.invokeOnCompletion {
+            synchronized(cleanupLock) {
+                if (cleanupJobs[target] === job) cleanupJobs.remove(target)
             }
         }
-        recognizer = null
+        job.start()
+        job
     }
 }
 

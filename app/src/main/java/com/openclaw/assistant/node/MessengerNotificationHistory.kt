@@ -1,6 +1,7 @@
 package com.openclaw.assistant.node
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.service.notification.StatusBarNotification
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
@@ -18,14 +19,21 @@ internal data class MessengerNotificationPreview(
 
 /** App-private, bounded history of Messenger notification previews. */
 internal class MessengerNotificationHistory(
-    context: Context,
+    private val preferences: SharedPreferences,
     private val now: () -> Long = System::currentTimeMillis,
 ) {
-    private val preferences = context.applicationContext.getSharedPreferences(
-        PREFERENCES_NAME,
-        Context.MODE_PRIVATE,
-    )
     private val json = Json { ignoreUnknownKeys = true }
+
+    constructor(
+        context: Context,
+        now: () -> Long = System::currentTimeMillis,
+    ) : this(
+        preferences = context.applicationContext.getSharedPreferences(
+            PREFERENCES_NAME,
+            Context.MODE_PRIVATE,
+        ),
+        now = now,
+    )
 
     fun record(notification: StatusBarNotification) {
         if (notification.packageName != NotificationsHandler.MESSENGER_PACKAGE) return
@@ -60,11 +68,23 @@ internal class MessengerNotificationHistory(
 
     @Synchronized
     fun recent(limit: Int = MAX_RETURNED_ENTRIES): List<MessengerNotificationPreview> {
-        val retained = readStored()
-            .filter { it.timestamp >= retentionCutoff() }
+        val retained = pruneExpired()
             .sortedByDescending { it.timestamp }
         return retained.take(limit.coerceIn(0, MAX_RETURNED_ENTRIES))
     }
+
+    /** Removes expired previews from disk and returns the retained entries. */
+    @Synchronized
+    fun pruneExpired(): List<MessengerNotificationPreview> {
+        val stored = readStored()
+        val retained = stored.filter { it.timestamp >= retentionCutoff() }
+        if (retained.size != stored.size) writeStored(retained.take(MAX_HISTORY_ENTRIES))
+        return retained
+    }
+
+    @Synchronized
+    fun nextExpiryAtMs(): Long? = pruneExpired()
+        .minOfOrNull { it.timestamp + RETENTION_MS }
 
     private fun readStored(): List<MessengerNotificationPreview> {
         val raw = preferences.getString(HISTORY_KEY, null) ?: return emptyList()

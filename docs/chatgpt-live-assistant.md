@@ -143,8 +143,9 @@ connected Android node:
 - `messenger_notifications_read` invokes only `notifications.list_package`.
   Android filters to `com.facebook.orca` before returning sender, a bounded text
   preview, and timestamp. Up to 100 previews are retained in app-private storage
-  for seven days; at most 20 are returned. Notification keys, package names, and
-  actions never reach the model.
+  for seven days; at most 20 are returned. Expired previews are deleted on read,
+  notification-listener startup, and a scheduled next-expiry cleanup. Notification
+  keys, package names, and actions never reach the model.
 
 Read-only web requests use `web_search` and `web_fetch`. Hosted search is
 pinned to OpenClaw's managed `codex` provider and its bounded hosted-search
@@ -172,9 +173,11 @@ after final recognition, immediately before `chat.send`, before each TTS chunk,
 after screen-off settling, and with an active-session monitor.
 
 If a secure lock appears, the app discards captured speech, cancels listening
-and TTS, aborts an in-flight correlated Gateway run, stops the foreground voice
-session, releases its wake lock, and resumes hotword detection. It never forwards
-that speech into the locked agent because doing so would change both context and
+and TTS, aborts and joins the in-flight correlated Gateway run, then waits for
+Android STT and TTS audio resources to be released. It publishes the voice session
+as inactive, performs the bounded synchronous hotword-restart attempt while the
+wake lock is still held, and releases the wake lock last. It never forwards that
+speech into the locked agent because doing so would change both context and
 authorization policy.
 
 Trusted-unlocked screen-off remains valid while Android reports the device as

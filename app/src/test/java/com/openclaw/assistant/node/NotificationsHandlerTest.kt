@@ -121,11 +121,20 @@ class NotificationsHandlerTest {
 
     @Test
     fun `Messenger history drops previews older than seven days`() {
-        val now = 2_000_000_000_000L
-        val history = MessengerNotificationHistory(context) { now }
-        history.record("Old sender", "Old preview", now - 8L * 24 * 60 * 60 * 1000)
+        var now = 2_000_000_000_000L
+        val preferences = context.getSharedPreferences(
+            "messenger-history-prune-test",
+            Context.MODE_PRIVATE,
+        ).also { it.edit().clear().commit() }
+        val history = MessengerNotificationHistory(preferences) { now }
+        history.record("Old sender", "Old preview", now)
+        assertTrue(preferences.all.values.joinToString().contains("Old sender"))
+
+        now += 8L * 24 * 60 * 60 * 1000
+        history.pruneExpired()
 
         assertFalse(history.recent().any { it.sender == "Old sender" })
+        assertFalse(preferences.all.values.joinToString().contains("Old sender"))
     }
 
     private fun notification(

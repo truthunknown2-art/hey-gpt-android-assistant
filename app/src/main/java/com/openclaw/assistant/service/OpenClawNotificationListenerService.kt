@@ -1,5 +1,7 @@
 package com.openclaw.assistant.service
 
+import android.os.Handler
+import android.os.Looper
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
@@ -13,8 +15,11 @@ import com.openclaw.assistant.node.NotificationManager
 class OpenClawNotificationListenerService : NotificationListenerService() {
 
     private val messengerHistory by lazy { MessengerNotificationHistory(applicationContext) }
+    private val historyHandler = Handler(Looper.getMainLooper())
+    private val historyPrune = Runnable { scheduleHistoryPrune() }
 
     companion object {
+        private const val PRUNE_SETTLE_MS = 1_000L
         @Volatile var manager: NotificationManager? = null
         @Volatile var instance: OpenClawNotificationListenerService? = null
 
@@ -30,9 +35,11 @@ class OpenClawNotificationListenerService : NotificationListenerService() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        scheduleHistoryPrune()
     }
 
     override fun onDestroy() {
+        historyHandler.removeCallbacks(historyPrune)
         super.onDestroy()
         if (instance == this) instance = null
     }
@@ -42,6 +49,7 @@ class OpenClawNotificationListenerService : NotificationListenerService() {
         sbn?.let {
             manager?.onNotificationPosted(it)
             messengerHistory.record(it)
+            scheduleHistoryPrune()
         }
         Log.d("OpenClawNotification", "Notification posted from ${sbn?.packageName}")
     }
@@ -59,10 +67,20 @@ class OpenClawNotificationListenerService : NotificationListenerService() {
             manager?.onNotificationPosted(sbn)
             messengerHistory.record(sbn)
         }
+        scheduleHistoryPrune()
     }
 
     override fun onListenerDisconnected() {
         super.onListenerDisconnected()
+        historyHandler.removeCallbacks(historyPrune)
         if (instance == this) instance = null
+    }
+
+    private fun scheduleHistoryPrune() {
+        historyHandler.removeCallbacks(historyPrune)
+        val nextExpiryAt = messengerHistory.nextExpiryAtMs() ?: return
+        val delayMs = (nextExpiryAt - System.currentTimeMillis() + PRUNE_SETTLE_MS)
+            .coerceAtLeast(PRUNE_SETTLE_MS)
+        historyHandler.postDelayed(historyPrune, delayMs)
     }
 }

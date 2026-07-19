@@ -927,7 +927,7 @@ class HotwordService : Service(), VoskRecognitionListener {
                     }
                     AmbientUiTimeoutDecision.END_SESSION -> {
                         ambientVoiceLaunchPending = false
-                        finishAmbientVoiceSession(token, "ui_and_session_start_failed")
+                        ambientVoiceSession?.stop(token, "ui_and_session_start_failed")
                     }
                 }
             }
@@ -939,7 +939,7 @@ class HotwordService : Service(), VoskRecognitionListener {
         }
     }
 
-    private fun finishAmbientVoiceSession(token: String, reason: String) {
+    private suspend fun finishAmbientVoiceSession(token: String, reason: String) {
         if (token != ambientVoiceSessionToken) return
         Log.i(TAG, "Ambient voice session ended: $reason")
         ambientVoiceLaunchPending = false
@@ -956,7 +956,12 @@ class HotwordService : Service(), VoskRecognitionListener {
         )
         isSessionActive = false
         isListeningForCommand = false
-        resumeHotwordDetection()
+        updateNotification()
+        restartHotwordBeforeWakeLockRelease(
+            settleDelayMs = HOTWORD_RESUME_SETTLE_MS,
+            shouldRestart = { !isDestroying && !isSessionActive && speechService == null },
+            restart = { startHotwordListening() },
+        )
     }
 
     private fun launchAssistantSession(intent: Intent) {
