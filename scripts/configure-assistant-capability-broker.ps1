@@ -64,18 +64,19 @@ Invoke-OpenClaw config validate | Out-Null
 Invoke-OpenClaw gateway restart | Out-Null
 
 $runtime = ((Invoke-OpenClaw plugins inspect $PluginId --runtime --json) -join "`n") | ConvertFrom-Json
-$tools = @($runtime.plugin.toolNames)
+$tools = @($runtime.plugin.toolNames | ForEach-Object { [string]$_ }) | Sort-Object -Unique
+$memoryTools = @("assistant_memory_forget", "assistant_memory_remember") | Sort-Object
 if ($runtime.plugin.status -ne "loaded") {
     throw "Plugin '$PluginId' did not load."
 }
-if ($tools.Count -ne 0) {
-    throw "Broker foundation unexpectedly registered model tools: $($tools -join ', ')."
+if ($tools.Count -ne 0 -and (Compare-Object $tools $memoryTools)) {
+    throw "Broker registered an unexpected tool surface: $($tools -join ', ')."
 }
 
 $status = ((Invoke-OpenClaw gateway call assistant.broker.status --json) -join "`n") | ConvertFrom-Json
-if ($status.modelToolsRegistered -ne 0) {
-    throw "Broker status reported an unexpected model tool count."
+if ($status.modelToolsRegistered -ne $tools.Count) {
+    throw "Broker status tool count does not match its runtime registration."
 }
 
-Write-Host "Assistant capability broker is active on $Distro with durable ledgers and zero model tools."
+Write-Host "Assistant capability broker is active on $Distro with durable ledgers and $($tools.Count) optional memory tools registered."
 Write-Host "Plans: $($status.plans); pending proposals: $($status.pendingProposals); receipts: $($status.terminalReceipts)."

@@ -286,14 +286,14 @@ export class BrokerLedger {
     return rows.length;
   }
 
-  status() {
+  status(modelToolsRegistered = 0) {
     return {
       plans: this.plans.prepare("SELECT COUNT(*) AS count FROM plans").get().count,
       pendingProposals: this.plans.prepare(
         "SELECT COUNT(*) AS count FROM proposals WHERE state = 'PENDING'",
       ).get().count,
       terminalReceipts: this.receipts.prepare("SELECT COUNT(*) AS count FROM receipts").get().count,
-      modelToolsRegistered: 0,
+      modelToolsRegistered,
     };
   }
 

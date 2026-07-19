@@ -37,3 +37,56 @@ it("registers durable infrastructure and no model tools", async () => {
     rmSync(stateDir, { recursive: true, force: true });
   }
 });
+
+it("registers agent-bound optional memory tools only when explicitly enabled", async () => {
+  let service;
+  let gatewayMethod;
+  let toolFactory;
+  let toolOptions;
+  const api = {
+    pluginConfig: { memoryEnabled: true, memoryAgentId: "voice-main" },
+    registerService(value) { service = value; },
+    registerGatewayMethod(name, handler, options) {
+      gatewayMethod = { name, handler, options };
+    },
+    registerTool(factory, options) {
+      toolFactory = factory;
+      toolOptions = options;
+    },
+  };
+  plugin.register(api);
+
+  assert.deepEqual(toolOptions, {
+    names: ["assistant_memory_remember", "assistant_memory_forget"],
+    optional: true,
+  });
+  assert.equal(toolFactory({ agentId: "locked-voice", workspaceDir: "unused" }), null);
+  assert.equal(toolFactory({ agentId: "voice-main", workspaceDir: "unused", senderIsOwner: false }), null);
+
+  const stateDir = mkdtempSync(path.join(tmpdir(), "assistant-broker-state-"));
+  const workspaceDir = mkdtempSync(path.join(tmpdir(), "assistant-broker-memory-"));
+  try {
+    await service.start({ stateDir });
+    const tools = toolFactory({ agentId: "voice-main", workspaceDir });
+    assert.deepEqual(tools.map((tool) => tool.name), [
+      "assistant_memory_remember",
+      "assistant_memory_forget",
+    ]);
+    const result = await tools[0].execute("tool-call", {
+      category: "preference",
+      fact: "Use Luna for voice.",
+    });
+    assert.equal(result.details.status, "COMPLETED");
+    assert.equal(Object.hasOwn(result.details, "fact"), false);
+
+    let response;
+    await gatewayMethod.handler({
+      respond(ok, payload) { response = { ok, payload }; },
+    });
+    assert.equal(response.payload.modelToolsRegistered, 2);
+    await service.stop();
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+    rmSync(workspaceDir, { recursive: true, force: true });
+  }
+});

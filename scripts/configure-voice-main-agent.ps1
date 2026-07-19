@@ -228,6 +228,7 @@ Invoke-OpenClaw config set "agents.list[$agentIndex].model" $Model | Out-Null
 Invoke-OpenClaw config set "agents.list[$agentIndex].thinkingDefault" off | Out-Null
 Invoke-OpenClaw config set "agents.list[$agentIndex].reasoningDefault" off | Out-Null
 Invoke-OpenClaw config set "agents.list[$agentIndex].fastModeDefault" true --strict-json | Out-Null
+Invoke-OpenClaw config set "agents.list[$agentIndex].memorySearch.provider" '"none"' --strict-json | Out-Null
 Invoke-OpenClaw config set "agents.list[$agentIndex].tools.profile" minimal | Out-Null
 Invoke-OpenClaw config set "agents.list[$agentIndex].tools.alsoAllow" $alsoAllowJson --strict-json | Out-Null
 Invoke-OpenClaw config set "agents.list[$agentIndex].tools.deny" ($deny | ConvertTo-Json -Compress) --strict-json | Out-Null

@@ -79,4 +79,17 @@ action from executing. These controls do not expose the bridge to `voice-main`.
 service. It creates WAL-backed `plans.sqlite` and `receipts.sqlite` ledgers,
 enforces immutable idempotency bindings, and reconciles terminal receipt state
 after restart. It registers only the operator-read `assistant.broker.status`
-Gateway method. Contract v1 intentionally registers zero model tools.
+Gateway method by default.
+
+Explicit durable memory is implemented behind `memoryEnabled=false`. When the
+release gates are closed and an operator enables it, the broker registers only
+the optional `assistant_memory_remember` and `assistant_memory_forget` tools for
+the configured agent. Memory facts and privacy-minimized operation receipts are
+transactional in a per-workspace SQLite ledger; a managed `MEMORY.md` section is
+rendered atomically for OpenClaw startup recall. The renderer preserves all
+unmanaged content, escapes marker/fence characters, treats stored facts as data
+rather than instructions, rejects known credential/payment/security material,
+and never harvests ordinary conversation or private phone content automatically.
+The locked agent never receives these tools. Activation explicitly selects the
+OpenClaw `none` memory provider, which keeps keyword recall local and prevents
+embedding API charges; Codex OAuth is used only for Luna conversation turns.

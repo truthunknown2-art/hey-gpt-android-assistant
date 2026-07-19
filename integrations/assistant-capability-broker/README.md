@@ -1,8 +1,8 @@
 # Assistant Capability Broker
 
-This is the non-model-facing foundation for typed assistant plans, proposals,
-and receipts. It currently registers one operator-read Gateway status method and
-zero model tools.
+This is the foundation for typed assistant plans, proposals, receipts, and
+explicit local memory. It always registers one operator-read Gateway status
+method. Model tools remain disabled by default.
 
 The service stores privacy-minimized operational state under the plugin state
 directory:
@@ -21,3 +21,19 @@ credential, token, and message fields.
 strict argument schemas, canonical JSON, SHA-256 argument hashes, proposal
 lifetimes, and Ed25519 signing helpers. No capability becomes usable until a
 later phase registers its individual typed tool and executor route.
+
+When `memoryEnabled` is explicitly set, the plugin registers two optional tools
+only for the configured agent (default `voice-main`):
+
+- `assistant_memory_remember` stores one user-requested, low-sensitivity fact;
+- `assistant_memory_forget` removes one fact by its exact receipt ID.
+
+Memory entries and privacy-minimized receipts are transactionally stored in
+`.assistant-memory/memory.sqlite` inside that agent's trusted workspace. A
+managed section of `MEMORY.md` is rendered atomically so OpenClaw can load it at
+session start. Unmanaged `MEMORY.md` content is preserved. Credentials, tokens,
+payment data, and security answers are rejected, and ordinary conversation or
+private notification content is never harvested automatically. Both tools are
+optional and must also be explicitly allowlisted for the target agent.
+The activation script pins `memorySearch.provider` to `none`, retaining local
+SQLite FTS recall without embedding API calls or API-credit usage.
