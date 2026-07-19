@@ -213,6 +213,7 @@
     <string name="av_approval_intro">An external agent is requesting permission to run:</string>
     <string name="av_approval_args">Arguments:</string>
     <string name="av_approval_destructive_warning">This action looks DESTRUCTIVE. Every invocation prompts — grants are not honoured.</string>
+    <string name="av_approval_one_shot_warning">This action can change external state. It requires a fresh, one-time approval and never reuses a grant.</string>
     <string name="av_approval_deny">Deny</string>
     <string name="av_approval_once">Approve once</string>
     <string name="av_approval_10min">Approve · 10 min</string>

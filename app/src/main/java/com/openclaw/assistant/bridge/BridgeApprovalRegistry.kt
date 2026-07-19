@@ -1,7 +1,6 @@
 package com.openclaw.assistant.bridge
 
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import java.util.concurrent.ConcurrentHashMap
@@ -20,20 +19,27 @@ object BridgeApprovalRegistry {
         val requestId: String,
         val capability: String,
         val arguments: JsonObject,
+        val riskLevel: RiskLevel,
         internal val deferred: CompletableDeferred<Boolean>,
     )
 
     private val pending = ConcurrentHashMap<String, Pending>()
 
     /** Suspends until the user responds or [timeoutMs] elapses. Defaults to denied on timeout. */
-    suspend fun await(requestId: String, capability: String, arguments: JsonObject, timeoutMs: Long = 30_000L): Boolean {
+    suspend fun await(
+        requestId: String,
+        capability: String,
+        arguments: JsonObject,
+        riskLevel: RiskLevel,
+        timeoutMs: Long = 30_000L,
+    ): Boolean {
         val deferred = CompletableDeferred<Boolean>()
-        val entry = Pending(requestId, capability, arguments, deferred)
-        pending[requestId] = entry
+        val entry = Pending(requestId, capability, arguments, riskLevel, deferred)
+        if (pending.putIfAbsent(requestId, entry) != null) return false
         return try {
             withTimeoutOrNull(timeoutMs) { deferred.await() } ?: false
         } finally {
-            pending.remove(requestId)
+            pending.remove(requestId, entry)
         }
     }
 

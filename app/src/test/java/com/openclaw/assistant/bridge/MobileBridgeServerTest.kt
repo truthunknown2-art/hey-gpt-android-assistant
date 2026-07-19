@@ -76,7 +76,12 @@ class MobileBridgeServerTest {
 
     @Test fun `medium-risk capability is denied when approval gate denies`() = runBlocking {
         val server = object : MobileBridgeServer(context, config, BridgeRegistry(listOf(StubMediumCap))) {
-            override suspend fun approvalGate(requestId: String, capability: String, arguments: JsonObject) = false
+            override suspend fun approvalGate(
+                requestId: String,
+                capability: String,
+                arguments: JsonObject,
+                riskLevel: RiskLevel,
+            ) = false
         }
         config.setAllowedCapabilityGroups(setOf("medium"))
         val token = config.tokenOrNull()!!
@@ -86,8 +91,18 @@ class MobileBridgeServerTest {
     }
 
     @Test fun `medium-risk capability runs when approval gate approves`() = runBlocking {
-        val server = object : MobileBridgeServer(context, config, BridgeRegistry(listOf(StubMediumCap))) {
-            override suspend fun approvalGate(requestId: String, capability: String, arguments: JsonObject) = true
+        val server = object : MobileBridgeServer(
+            context,
+            config,
+            BridgeRegistry(listOf(StubMediumCap)),
+            isDeviceUnlocked = { true },
+        ) {
+            override suspend fun approvalGate(
+                requestId: String,
+                capability: String,
+                arguments: JsonObject,
+                riskLevel: RiskLevel,
+            ) = true
         }
         config.setAllowedCapabilityGroups(setOf("medium"))
         val token = config.tokenOrNull()!!
@@ -131,6 +146,64 @@ class MobileBridgeServerTest {
         val resp = server.dispatch(MobileBridgeServer.HttpRequest("POST", "/execute", mapOf("authorization" to "Bearer $token"), body))
         assertTrue(resp.body.contains("\"status\":\"completed\""))
     }
+
+    @Test fun `trusted mode cannot bypass high-risk approval`() = runBlocking {
+        config.setApprovalMode(BridgeApprovalMode.TRUSTED)
+        config.setAllowedCapabilityGroups(setOf("high"))
+        var approvalCalls = 0
+        val server = object : MobileBridgeServer(
+            context,
+            config,
+            BridgeRegistry(listOf(StubHighCap)),
+            isDeviceUnlocked = { true },
+        ) {
+            override suspend fun approvalGate(
+                requestId: String,
+                capability: String,
+                arguments: JsonObject,
+                riskLevel: RiskLevel,
+            ): Boolean {
+                approvalCalls += 1
+                return false
+            }
+        }
+        val token = config.tokenOrNull()!!
+        val body = """{"requestId":"r6","capability":"calendar.create","arguments":{}}"""
+
+        val resp = server.dispatch(
+            MobileBridgeServer.HttpRequest("POST", "/execute", mapOf("authorization" to "Bearer $token"), body),
+        )
+
+        assertEquals(1, approvalCalls)
+        assertTrue(resp.body.contains("\"code\":\"approval_denied\""))
+    }
+
+    @Test fun `locking after high-risk approval prevents execution`() = runBlocking {
+        config.setAllowedCapabilityGroups(setOf("high"))
+        val highCap = CountingHighCap()
+        val server = object : MobileBridgeServer(
+            context,
+            config,
+            BridgeRegistry(listOf(highCap)),
+            isDeviceUnlocked = { false },
+        ) {
+            override suspend fun approvalGate(
+                requestId: String,
+                capability: String,
+                arguments: JsonObject,
+                riskLevel: RiskLevel,
+            ) = true
+        }
+        val token = config.tokenOrNull()!!
+        val body = """{"requestId":"r7","capability":"calendar.create","arguments":{}}"""
+
+        val resp = server.dispatch(
+            MobileBridgeServer.HttpRequest("POST", "/execute", mapOf("authorization" to "Bearer $token"), body),
+        )
+
+        assertEquals(0, highCap.executeCount)
+        assertTrue(resp.body.contains("\"code\":\"device_locked\""))
+    }
 }
 
 private object StubDeviceCap : BridgeCapability {
@@ -148,4 +221,25 @@ private object StubMediumCap : BridgeCapability {
     override val group = "medium"
     override val riskLevel = RiskLevel.MEDIUM
     override suspend fun execute(context: Context, arguments: JsonObject) = buildJsonObject {}
+}
+
+private object StubHighCap : BridgeCapability {
+    override val name = "calendar.create"
+    override val description = "stub"
+    override val group = "high"
+    override val riskLevel = RiskLevel.HIGH
+    override suspend fun execute(context: Context, arguments: JsonObject) = buildJsonObject {}
+}
+
+private class CountingHighCap : BridgeCapability {
+    override val name = "calendar.create"
+    override val description = "stub"
+    override val group = "high"
+    override val riskLevel = RiskLevel.HIGH
+    var executeCount = 0
+
+    override suspend fun execute(context: Context, arguments: JsonObject): JsonObject {
+        executeCount += 1
+        return buildJsonObject {}
+    }
 }

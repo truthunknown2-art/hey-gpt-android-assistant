@@ -1,5 +1,6 @@
 package com.openclaw.assistant.bridge
 
+import android.app.KeyguardManager
 import android.content.Context
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -47,6 +48,12 @@ open class MobileBridgeServer(
     private val registry: BridgeRegistry = BridgeRegistry(),
     private val json: Json = Json { ignoreUnknownKeys = true; isLenient = true },
     internal val rateLimiter: RateLimiter = RateLimiter(),
+    private val isDeviceUnlocked: () -> Boolean = {
+        runCatching {
+            val keyguard = context.getSystemService(KeyguardManager::class.java)
+            keyguard != null && !keyguard.isDeviceLocked
+        }.getOrDefault(false)
+    },
 ) {
     private var serverSocket: ServerSocket? = null
     private var scope: CoroutineScope? = null
@@ -232,11 +239,16 @@ open class MobileBridgeServer(
             return HttpResponse(200, errorEnvelope(requestId, "unsupported_capability", "Capability is not supported"))
         }
 
-        if (requiresApproval(cap)) {
-            val approved = approvalGate(requestId, capabilityName, arguments)
+        val approvalRequired = requiresApproval(cap)
+        if (approvalRequired) {
+            val approved = approvalGate(requestId, capabilityName, arguments, cap.riskLevel)
             if (!approved) {
                 BridgeActivityLog.record(context, capabilityName, cap.riskLevel, "denied", "User denied or approval timed out")
                 return HttpResponse(200, errorEnvelope(requestId, "approval_denied", "User denied or approval timed out"))
+            }
+            if (!isDeviceUnlocked()) {
+                BridgeActivityLog.record(context, capabilityName, cap.riskLevel, "denied", "Device locked after approval")
+                return HttpResponse(200, errorEnvelope(requestId, "device_locked", "Unlock the phone and approve again"))
             }
         }
 
@@ -265,20 +277,24 @@ open class MobileBridgeServer(
      * launches the notification approval Activity and suspends on
      * [BridgeApprovalRegistry]; tests substitute a deterministic gate.
      */
-    internal open suspend fun approvalGate(requestId: String, capability: String, arguments: kotlinx.serialization.json.JsonObject): Boolean {
-        // Honour outstanding grants with user-chosen TTLs. A destructive verb
-        // forces a fresh prompt regardless of the grant.
-        val destructive = com.openclaw.assistant.bridge.grants.DestructiveVerbs.isDestructive(capability)
-        if (!destructive && com.openclaw.assistant.bridge.grants.BridgeGrants.isGranted(capability)) return true
+    internal open suspend fun approvalGate(
+        requestId: String,
+        capability: String,
+        arguments: kotlinx.serialization.json.JsonObject,
+        riskLevel: RiskLevel,
+    ): Boolean {
+        if (
+            BridgeApprovalPolicy.allowsReusableGrant(riskLevel, capability) &&
+            com.openclaw.assistant.bridge.grants.BridgeGrants.isGranted(capability)
+        ) {
+            return true
+        }
         runCatching { BridgeApprovalNotifier.notify(context, requestId, capability) }
-        return BridgeApprovalRegistry.await(requestId, capability, arguments)
+        return BridgeApprovalRegistry.await(requestId, capability, arguments, riskLevel)
     }
 
-    private fun requiresApproval(cap: BridgeCapability): Boolean = when (config.approvalMode.value) {
-        BridgeApprovalMode.ALWAYS_CONFIRM -> true
-        BridgeApprovalMode.CONFIRM_MEDIUM_HIGH -> cap.riskLevel != RiskLevel.LOW
-        BridgeApprovalMode.TRUSTED -> false
-    }
+    private fun requiresApproval(cap: BridgeCapability): Boolean =
+        BridgeApprovalPolicy.requiresPrompt(config.approvalMode.value, cap.riskLevel, cap.name)
 
     private fun errorJson(code: String, message: String) = buildJsonObject {
         put("error", buildJsonObject { put("code", code); put("message", message) })

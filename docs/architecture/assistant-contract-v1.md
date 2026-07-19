@@ -67,6 +67,12 @@ receipt. The status summary contains only battery percentage, charging state,
 and screen-interactive state. No executor command or model tool is registered
 until the Phase 0 physical and exact-head review gates close.
 
+The legacy Mobile Bridge now shares the same fail-closed confirmation posture:
+`TRUSTED` cannot bypass high-risk or destructive actions, high-risk approvals
+are always one-shot, duplicate pending request IDs are rejected, canonical
+arguments are rendered by the phone, and locking after approval prevents the
+action from executing. These controls do not expose the bridge to `voice-main`.
+
 ## Gateway foundation
 
 `integrations/assistant-capability-broker` runs as an OpenClaw background

@@ -19,6 +19,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.openclaw.assistant.broker.CanonicalJsonV1
 
 class BridgeApprovalActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -27,15 +28,21 @@ class BridgeApprovalActivity : ComponentActivity() {
         val pending = BridgeApprovalRegistry.snapshot(requestId)
         val capability = pending?.capability ?: "(unknown)"
         val destructive = com.openclaw.assistant.bridge.grants.DestructiveVerbs.isDestructive(capability)
+        val highRisk = pending?.riskLevel == RiskLevel.HIGH
+        val allowsReusableGrant = pending?.let {
+            BridgeApprovalPolicy.allowsReusableGrant(it.riskLevel, it.capability)
+        } == true
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     ApprovalPane(
                         capability = capability,
-                        argumentsJson = pending?.arguments?.toString() ?: "{}",
+                        argumentsJson = pending?.arguments?.let(CanonicalJsonV1::encode) ?: "{}",
                         destructive = destructive,
+                        highRisk = highRisk,
+                        allowsReusableGrant = allowsReusableGrant,
                         onApprove = { ttlMs ->
-                            if (ttlMs > 0L && !destructive) {
+                            if (ttlMs > 0L && allowsReusableGrant) {
                                 com.openclaw.assistant.bridge.grants.BridgeGrants.grant(capability, ttlMs)
                             }
                             BridgeApprovalRegistry.respond(requestId, true); finish()
@@ -57,15 +64,23 @@ private fun ApprovalPane(
     capability: String,
     argumentsJson: String,
     destructive: Boolean,
+    highRisk: Boolean,
+    allowsReusableGrant: Boolean,
     onApprove: (ttlMs: Long) -> Unit,
     onDeny: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
         Text("WakeHermesClaw - " + androidx.compose.ui.res.stringResource(com.openclaw.assistant.R.string.mobile_bridge_title), style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(8.dp))
-        if (destructive) {
+        if (destructive || highRisk) {
             Text(
-                "⚠ " + androidx.compose.ui.res.stringResource(com.openclaw.assistant.R.string.av_approval_destructive_warning),
+                androidx.compose.ui.res.stringResource(
+                    if (highRisk) {
+                        com.openclaw.assistant.R.string.av_approval_one_shot_warning
+                    } else {
+                        com.openclaw.assistant.R.string.av_approval_destructive_warning
+                    },
+                ),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.error,
             )
@@ -82,7 +97,7 @@ private fun ApprovalPane(
             OutlinedButton(onClick = onDeny) { Text(androidx.compose.ui.res.stringResource(com.openclaw.assistant.R.string.av_approval_deny)) }
             Button(onClick = { onApprove(0L) }) { Text(androidx.compose.ui.res.stringResource(com.openclaw.assistant.R.string.av_approval_once)) }
         }
-        if (!destructive) {
+        if (allowsReusableGrant) {
             Spacer(Modifier.height(8.dp))
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { onApprove(10 * 60_000L) }) { Text(androidx.compose.ui.res.stringResource(com.openclaw.assistant.R.string.av_approval_10min)) }
