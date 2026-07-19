@@ -213,9 +213,13 @@ internal class InvokeDispatcher(
       }
       OpenClawMediaCommand.PlaySearch.rawValue -> mediaHandler.handlePlaySearch(paramsJson)
 
-      // Notifications commands
-      OpenClawNotificationsCommand.List.rawValue -> notificationsHandler.handleList()
-      OpenClawNotificationsCommand.Actions.rawValue -> notificationsHandler.handleActions(paramsJson)
+      // Generic notification contents stay on-device. Gateway reads use the signed broker path.
+      OpenClawNotificationsCommand.List.rawValue -> localNotificationCommand(origin) {
+        notificationsHandler.handleList()
+      }
+      OpenClawNotificationsCommand.Actions.rawValue -> localNotificationCommand(origin) {
+        notificationsHandler.handleActions(paramsJson)
+      }
 
       // System command
       OpenClawSystemCommand.Notify.rawValue -> systemHandler.handleNotify(paramsJson)
@@ -290,6 +294,18 @@ internal class InvokeDispatcher(
           message = "INVALID_REQUEST: unknown command",
         )
     }
+  }
+
+  private suspend fun localNotificationCommand(
+    origin: InvocationOrigin,
+    invoke: suspend () -> GatewaySession.InvokeResult,
+  ): GatewaySession.InvokeResult = if (origin == InvocationOrigin.LOCAL_VOICE) {
+    invoke()
+  } else {
+    GatewaySession.InvokeResult.error(
+      code = "LOCAL_NOTIFICATION_ACCESS_REQUIRED",
+      message = "Generic notification access is restricted to the on-device assistant",
+    )
   }
 
   private fun assistantExecutorDisabled(): GatewaySession.InvokeResult = GatewaySession.InvokeResult.error(

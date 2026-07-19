@@ -14,6 +14,7 @@ import com.openclaw.assistant.broker.AssistantWireCodecV1
 import com.openclaw.assistant.broker.PresenceLeaseManager
 import com.openclaw.assistant.broker.ProposalValidationV1
 import com.openclaw.assistant.broker.requiresPrivateReadGrantV1
+import com.openclaw.assistant.broker.privateReadScopeV1
 import com.openclaw.assistant.gateway.GatewaySession
 
 internal fun interface AssistantPrivateResultSinkV1 {
@@ -89,6 +90,7 @@ internal class AssistantNodeCommandHandlerV1(
                 signed.proposal.capability,
                 expectedSessionKey,
                 expectedDeviceId,
+                signed.proposal.privateReadScopeV1(),
             )
         ) {
             val initialValidation = executor.validate(signed, expectedDeviceId, expectedSessionKey)
@@ -111,6 +113,7 @@ internal class AssistantNodeCommandHandlerV1(
                         signed.proposal.capability,
                         expectedSessionKey,
                         expectedDeviceId,
+                        signed.proposal.privateReadScopeV1(),
                     )
                 }
             }
@@ -145,6 +148,7 @@ internal class AssistantNodeCommandHandlerV1(
                 proposal.capability,
                 expectedSessionKey,
                 proposal.targetDeviceId,
+                proposal.privateReadScopeV1(),
             )
         ) {
             val approved = runCatching { privateReadApprovalGate.request(signed) }.getOrDefault(false)
@@ -178,6 +182,7 @@ internal class AssistantNodeCommandHandlerV1(
                 proposal.capability,
                 expectedSessionKey,
                 proposal.targetDeviceId,
+                proposal.privateReadScopeV1(),
             )
         }
         return windowsReadAuthorization(proposal, authorized = true)

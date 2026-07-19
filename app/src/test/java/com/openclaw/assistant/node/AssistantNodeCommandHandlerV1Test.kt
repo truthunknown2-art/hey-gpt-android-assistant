@@ -182,6 +182,36 @@ class AssistantNodeCommandHandlerV1Test {
     }
 
     @Test
+    fun `Messenger sender change requires a new approval`() = runTest {
+        val fixture = Fixture(grantMessenger = true, approvalAllowed = false)
+
+        fixture.handler.handleExecute(
+            fixture.signedJson(
+                AssistantCapabilityV1.ANDROID_MESSENGER_NOTIFICATIONS_READ,
+                messengerSender = "Alex",
+            ),
+        )
+
+        assertEquals(1, fixture.approvalRequests)
+        assertEquals(0, fixture.messengerReads)
+    }
+
+    @Test
+    fun `Messenger larger limit requires a new approval`() = runTest {
+        val fixture = Fixture(grantMessenger = true, approvalAllowed = false)
+
+        fixture.handler.handleExecute(
+            fixture.signedJson(
+                AssistantCapabilityV1.ANDROID_MESSENGER_NOTIFICATIONS_READ,
+                messengerLimit = 4,
+            ),
+        )
+
+        assertEquals(1, fixture.approvalRequests)
+        assertEquals(0, fixture.messengerReads)
+    }
+
+    @Test
     fun `unavailable private sink fails without serializing private data`() = runTest {
         val fixture = Fixture(grantContacts = true, sinkAccepts = false)
 
@@ -691,11 +721,16 @@ class AssistantNodeCommandHandlerV1Test {
                     AssistantCapabilityV1.ANDROID_MESSENGER_NOTIFICATIONS_READ,
                     SESSION,
                     DEVICE,
+                    com.openclaw.assistant.broker.AssistantPrivateReadScopeV1.Messenger("jen", 3),
                 )
             }
         }
 
-        fun signedJson(capability: AssistantCapabilityV1): String {
+        fun signedJson(
+            capability: AssistantCapabilityV1,
+            messengerSender: String = "Jen",
+            messengerLimit: Int = 1,
+        ): String {
             val arguments = when (capability) {
                 AssistantCapabilityV1.ANDROID_CONTACTS_SEARCH -> buildJsonObject {
                     put("query", "Jen")
@@ -719,8 +754,8 @@ class AssistantNodeCommandHandlerV1Test {
                     put("allDay", false)
                 }
                 AssistantCapabilityV1.ANDROID_MESSENGER_NOTIFICATIONS_READ -> buildJsonObject {
-                    put("sender", "Jen")
-                    put("limit", 1)
+                    put("sender", messengerSender)
+                    put("limit", messengerLimit)
                 }
                 AssistantCapabilityV1.WINDOWS_FILES_READ -> buildJsonObject {
                     put("path", "documents:private.txt")

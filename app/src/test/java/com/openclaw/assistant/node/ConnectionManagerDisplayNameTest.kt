@@ -1,8 +1,22 @@
 package com.openclaw.assistant.node
 
+import android.provider.Settings
+import com.openclaw.assistant.LocationMode
+import com.openclaw.assistant.SecurePrefs
+import com.openclaw.assistant.VoiceWakeMode
+import com.openclaw.assistant.protocol.OpenClawNotificationsCommand
+import com.openclaw.assistant.protocol.OpenClawCapability
+import io.mockk.mockk
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.annotation.Config
 
+@RunWith(RobolectricTestRunner::class)
+@Config(application = android.app.Application::class)
 class ConnectionManagerDisplayNameTest {
     @Test
     fun `node advertises only the fixed signed assistant commands`() {
@@ -10,6 +24,33 @@ class ConnectionManagerDisplayNameTest {
             listOf("assistant.presence.v1", "assistant.execute.v1"),
             ConnectionManager.signedAssistantCommands(),
         )
+    }
+
+    @Test
+    fun `custom node never advertises generic notification commands`() {
+        val context = RuntimeEnvironment.getApplication()
+        Settings.Secure.putString(
+            context.contentResolver,
+            "enabled_notification_listeners",
+            context.packageName,
+        )
+        val manager = ConnectionManager(
+            prefs = mockk<SecurePrefs>(relaxed = true),
+            appContext = context,
+            cameraEnabled = { false },
+            locationMode = { LocationMode.Off },
+            voiceWakeMode = { VoiceWakeMode.Off },
+            smsAvailable = { false },
+            hasRecordAudioPermission = { false },
+            manualTls = { false },
+            deviceId = { "device" },
+        )
+
+        val commands = manager.buildInvokeCommands()
+
+        assertFalse(OpenClawNotificationsCommand.List.rawValue in commands)
+        assertFalse(OpenClawNotificationsCommand.Actions.rawValue in commands)
+        assertFalse(OpenClawCapability.Notifications.rawValue in manager.buildCapabilities())
     }
 
     @Test

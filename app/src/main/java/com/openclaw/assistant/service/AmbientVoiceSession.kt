@@ -383,14 +383,23 @@ internal class AmbientVoiceSession(
         error(result.message)
     }
 
-    private suspend fun speak(text: String) = speechMutex.withLock {
+    private suspend fun speak(text: String) = speakWithPolicy(text, privateSpeech = false)
+
+    private suspend fun speakPrivate(text: String) = speakWithPolicy(text, privateSpeech = true)
+
+    private suspend fun speakWithPolicy(text: String, privateSpeech: Boolean) = speechMutex.withLock {
         val cleanText = TTSUtils.stripMarkdownForSpeech(text)
         val maxLen = minOf(TTSUtils.getMaxInputLength(null), 1000)
         val chunks = TTSUtils.splitTextForTTS(cleanText, maxLen)
         for (chunk in chunks) {
             if (!ensureUnlocked("before_tts_chunk")) throw CancellationException("Secure lock")
             var complete = false
-            ttsManager.speakWithProgress(chunk).collect { state ->
+            val states = if (privateSpeech) {
+                ttsManager.speakPrivateWithProgress(chunk)
+            } else {
+                ttsManager.speakWithProgress(chunk)
+            }
+            states.collect { state ->
                 when (state) {
                     is TTSState.Preparing -> publish(state = AssistantState.PREPARING_SPEECH)
                     is TTSState.Speaking -> publish(state = AssistantState.SPEAKING)
@@ -416,7 +425,7 @@ internal class AmbientVoiceSession(
             val speech = AssistantPrivateResultSpeechRendererV1.render(delivery)
                 ?: return@withContext false
             runCatching {
-                speak(speech)
+                speakPrivate(speech)
                 ensureUnlocked("after_private_result")
             }.getOrDefault(false)
         }

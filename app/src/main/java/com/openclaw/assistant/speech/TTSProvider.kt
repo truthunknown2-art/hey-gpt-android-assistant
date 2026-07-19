@@ -56,6 +56,11 @@ interface TTSProvider {
     }
 }
 
+/** A provider that can prove speech synthesis does not require a network voice. */
+interface PrivateTTSProvider {
+    fun speakPrivateWithProgress(text: String): Flow<TTSState>
+}
+
 /**
  * TTS State for progress tracking
  */

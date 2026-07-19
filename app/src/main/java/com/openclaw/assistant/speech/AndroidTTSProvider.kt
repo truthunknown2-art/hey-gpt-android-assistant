@@ -26,7 +26,7 @@ private val COMMA_ENDERS = listOf("。", "，", ", ")
 /**
  * Android native TTS provider (wrapper around TextToSpeech)
  */
-class AndroidTTSProvider(private val context: Context) : TTSProvider {
+class AndroidTTSProvider(private val context: Context) : TTSProvider, PrivateTTSProvider {
     
     private var tts: TextToSpeech? = null
     private var isInitialized = false
@@ -91,8 +91,8 @@ class AndroidTTSProvider(private val context: Context) : TTSProvider {
         pendingSpeak = null
     }
     
-    private fun setupVoice() {
-        val tts = this.tts ?: return
+    private fun setupVoice(requireOffline: Boolean = false): Boolean {
+        val tts = this.tts ?: return false
         
         val languageTag = settings.speechLanguage
         val locale = if (languageTag.isNotEmpty()) {
@@ -125,8 +125,10 @@ class AndroidTTSProvider(private val context: Context) : TTSProvider {
                     )
                 },
                 targetLocale = tts.language ?: locale,
+                allowNetworkRequired = !requireOffline,
             )
             val selectedVoice = voices.firstOrNull { it.name == selectedName }
+            if (requireOffline && selectedVoice == null) return false
             selectedVoice?.let {
                 tts.voice = it
                 Log.i(
@@ -137,7 +139,9 @@ class AndroidTTSProvider(private val context: Context) : TTSProvider {
             }
         } catch (e: Exception) {
             Log.w(TAG, "Error selecting voice: ${e.message}")
+            if (requireOffline) return false
         }
+        return true
     }
     
     override suspend fun speak(text: String): Boolean {
@@ -223,7 +227,13 @@ class AndroidTTSProvider(private val context: Context) : TTSProvider {
     
     override fun getConfigurationError(): String? = null
     
-    override fun speakWithProgress(text: String): Flow<TTSState> = callbackFlow {
+    override fun speakWithProgress(text: String): Flow<TTSState> =
+        speakWithProgressInternal(text, requireOffline = false)
+
+    override fun speakPrivateWithProgress(text: String): Flow<TTSState> =
+        speakWithProgressInternal(text, requireOffline = true)
+
+    private fun speakWithProgressInternal(text: String, requireOffline: Boolean): Flow<TTSState> = callbackFlow {
         val utteranceId = UUID.randomUUID().toString()
         
         val listener = object : UtteranceProgressListener() {
@@ -245,7 +255,11 @@ class AndroidTTSProvider(private val context: Context) : TTSProvider {
         }
 
         if (isInitialized) {
-            setupVoice()
+            if (!setupVoice(requireOffline)) {
+                trySend(TTSState.Error(context.getString(R.string.tts_error_private_offline_unavailable)))
+                close()
+                return@callbackFlow
+            }
             trySend(TTSState.Preparing)
             tts?.setOnUtteranceProgressListener(listener)
             tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)

@@ -322,7 +322,7 @@ class AssistantCapabilityExecutorV1Test {
                     )
                 }
             },
-            privateReadAuthorizer = AssistantPrivateReadAuthorizerV1 { capability, sessionKey, deviceId ->
+            privateReadAuthorizer = AssistantPrivateReadAuthorizerV1 { capability, sessionKey, deviceId, _ ->
                 ((privateReadGranted && capability == AssistantCapabilityV1.ANDROID_CONTACTS_SEARCH) ||
                     (calendarReadGranted && capability == AssistantCapabilityV1.ANDROID_CALENDAR_NEXT) ||
                     (messengerReadGranted &&

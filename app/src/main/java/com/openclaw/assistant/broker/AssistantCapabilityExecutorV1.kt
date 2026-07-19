@@ -179,6 +179,7 @@ internal fun interface AssistantPrivateReadAuthorizerV1 {
         capability: AssistantCapabilityV1,
         voiceSessionKey: String,
         targetDeviceId: String,
+        scope: AssistantPrivateReadScopeV1?,
     ): Boolean
 }
 
@@ -874,6 +875,7 @@ internal class AssistantCapabilityExecutorV1(
                 capability = proposal.capability,
                 voiceSessionKey = proposal.voiceSessionKey,
                 targetDeviceId = proposal.targetDeviceId,
+                scope = proposal.privateReadScopeV1(),
             )
         }.getOrDefault(false)
         if (!authorized) {
@@ -950,6 +952,7 @@ internal class AssistantCapabilityExecutorV1(
                 capability = proposal.capability,
                 voiceSessionKey = proposal.voiceSessionKey,
                 targetDeviceId = proposal.targetDeviceId,
+                scope = proposal.privateReadScopeV1(),
             )
         }.getOrDefault(false)
         if (!authorized) {
@@ -1026,6 +1029,7 @@ internal class AssistantCapabilityExecutorV1(
                 capability = proposal.capability,
                 voiceSessionKey = proposal.voiceSessionKey,
                 targetDeviceId = proposal.targetDeviceId,
+                scope = proposal.privateReadScopeV1(),
             )
         }.getOrDefault(false)
         if (!authorized) {

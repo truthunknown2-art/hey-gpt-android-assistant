@@ -1,12 +1,24 @@
 package com.openclaw.assistant.broker
 
 import android.os.SystemClock
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import java.util.Locale
+
+internal sealed interface AssistantPrivateReadScopeV1 {
+    data class Messenger(
+        val normalizedSender: String?,
+        val maxLimit: Int,
+    ) : AssistantPrivateReadScopeV1
+}
 
 internal data class AssistantPrivateReadGrantV1(
     val contractVersion: Int = AssistantContractV1.VERSION,
     val capability: AssistantCapabilityV1,
     val voiceSessionKey: String,
     val targetDeviceId: String,
+    val scope: AssistantPrivateReadScopeV1?,
     val issuedAtElapsedMs: Long,
     val expiresAtElapsedMs: Long,
 )
@@ -36,8 +48,10 @@ internal class AssistantPrivateReadGrantManagerV1(
         capability: AssistantCapabilityV1,
         voiceSessionKey: String,
         targetDeviceId: String,
+        scope: AssistantPrivateReadScopeV1? = null,
     ): AssistantPrivateReadGrantV1 {
         require(capability.requiresPrivateReadGrantV1())
+        require(capability.acceptsPrivateReadScopeV1(scope))
         val session = voiceSessionKey.trim()
         val device = targetDeviceId.trim()
         require(session.isNotEmpty())
@@ -49,6 +63,7 @@ internal class AssistantPrivateReadGrantManagerV1(
             capability = capability,
             voiceSessionKey = session,
             targetDeviceId = device,
+            scope = scope,
             issuedAtElapsedMs = now,
             expiresAtElapsedMs = now + ttlMs,
         )
@@ -63,12 +78,22 @@ internal class AssistantPrivateReadGrantManagerV1(
         capability: AssistantCapabilityV1,
         voiceSessionKey: String,
         targetDeviceId: String,
+        scope: AssistantPrivateReadScopeV1?,
     ): Boolean = synchronized(lock) {
         val now = nowElapsedMs()
         removeExpiredLocked(now)
-        val key = GrantKey(capability, voiceSessionKey, targetDeviceId)
-        grants[key]?.let { now < it.expiresAtElapsedMs } == true
+        if (!capability.acceptsPrivateReadScopeV1(scope)) return@synchronized false
+        val key = GrantKey(capability, voiceSessionKey.trim(), targetDeviceId.trim())
+        grants[key]?.let { grant ->
+            now < grant.expiresAtElapsedMs && grant.scope.authorizesPrivateReadScopeV1(scope)
+        } == true
     }
+
+    fun isAuthorized(
+        capability: AssistantCapabilityV1,
+        voiceSessionKey: String,
+        targetDeviceId: String,
+    ): Boolean = isAuthorized(capability, voiceSessionKey, targetDeviceId, null)
 
     fun revokeSession(voiceSessionKey: String, targetDeviceId: String) {
         synchronized(lock) {
@@ -121,6 +146,44 @@ internal fun AssistantCapabilityV1.requiresPrivateReadGrantV1(): Boolean = when 
     -> true
     else -> false
 }
+
+internal fun AssistantProposalV1.privateReadScopeV1(): AssistantPrivateReadScopeV1? = when (capability) {
+    AssistantCapabilityV1.ANDROID_MESSENGER_NOTIFICATIONS_READ ->
+        AssistantPrivateReadScopeV1.Messenger(
+            normalizedSender = (arguments["sender"] as? JsonPrimitive)?.contentOrNull
+                ?.let(::normalizePrivateReadSenderV1),
+            maxLimit = (arguments["limit"] as? JsonPrimitive)?.intOrNull ?: DEFAULT_MESSENGER_LIMIT,
+        )
+    else -> null
+}
+
+internal fun normalizePrivateReadSenderV1(sender: String): String = sender
+    .trim()
+    .lowercase(Locale.ROOT)
+    .split(Regex("\\s+"))
+    .filter(String::isNotEmpty)
+    .joinToString(" ")
+
+private fun AssistantCapabilityV1.acceptsPrivateReadScopeV1(scope: AssistantPrivateReadScopeV1?): Boolean =
+    when (this) {
+        AssistantCapabilityV1.ANDROID_MESSENGER_NOTIFICATIONS_READ ->
+            scope is AssistantPrivateReadScopeV1.Messenger &&
+                scope.maxLimit in 1..MAX_MESSENGER_LIMIT &&
+                scope.normalizedSender?.isNotEmpty() != false
+        else -> scope == null
+    }
+
+private fun AssistantPrivateReadScopeV1?.authorizesPrivateReadScopeV1(
+    requested: AssistantPrivateReadScopeV1?,
+): Boolean = when {
+    this == null || requested == null -> this == null && requested == null
+    this is AssistantPrivateReadScopeV1.Messenger && requested is AssistantPrivateReadScopeV1.Messenger ->
+        normalizedSender == requested.normalizedSender && maxLimit >= requested.maxLimit
+    else -> false
+}
+
+private const val DEFAULT_MESSENGER_LIMIT = 3
+private const val MAX_MESSENGER_LIMIT = 10
 
 internal object AssistantPrivateReadGrants {
     val manager = AssistantPrivateReadGrantManagerV1()

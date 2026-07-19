@@ -12,7 +12,11 @@ $PluginId = "assistant-capability-broker"
 $ToolName = "messenger_notifications_read"
 $PresenceCommand = "assistant.presence.v1"
 $ExecuteCommand = "assistant.execute.v1"
-$LegacyRawCommand = "notifications.list_package"
+$BlockedRawCommands = @(
+    "notifications.actions",
+    "notifications.list",
+    "notifications.list_package"
+)
 $BaseVoiceTools = @("android_media_play", "web_fetch", "web_search")
 $BrokerTools = @(
     "assistant_contacts_search",
@@ -96,8 +100,8 @@ function Set-MessengerPolicy {
 
 - Use `messenger_notifications_read` only when the user asks about Messenger messages or notifications.
 - This is retained notification-preview history for at most seven days, not full Messenger inbox history. State that limitation when it matters.
-- Preview sender and text are spoken only by the unlocked phone and never returned to this model. Do not ask for, infer, repeat, or invent the private preview after the sanitized receipt.
-- The first Messenger read in an unlocked voice session requires a 10-minute on-phone approval. Only `COMPLETED` with `privateDelivery=spoken_on_phone` proves local speech finished.
+- Preview sender and text are spoken only by an installed offline Android voice and never returned to this model, the Gateway, Pocket TTS, or cloud TTS. Do not ask for, infer, repeat, or invent the private preview after the sanitized receipt.
+- A Messenger read requires an on-phone grant bound to the normalized sender and maximum approved count for up to 10 minutes. A changed sender or larger count must prompt again. Only `COMPLETED` with `privateDelivery=spoken_on_phone` proves local speech finished.
 - Never use raw notification, node, browser-control, Phone Link, filesystem, or shell access as a workaround.
 '@
         $current = $current.TrimEnd() + "`n`n$start`n$($policy.Trim())`n$end"
@@ -116,8 +120,8 @@ for ($index = 0; $index -lt $configuredAgents.Count; $index++) {
 if ($agentIndex -lt 0) { throw "Agent '$AgentId' is missing from agents.list." }
 
 $nodeConfig = ((Invoke-OpenClaw config get gateway.nodes) -join "`n") | ConvertFrom-Json
-$allowCommands = @($nodeConfig.allowCommands | Where-Object { $_ -ne $LegacyRawCommand })
-$denyCommands = @(@($nodeConfig.denyCommands) + $LegacyRawCommand) | Sort-Object -Unique
+$allowCommands = @($nodeConfig.allowCommands | Where-Object { $_ -notin $BlockedRawCommands })
+$denyCommands = @(@($nodeConfig.denyCommands) + $BlockedRawCommands) | Sort-Object -Unique
 
 if ($Disable) {
     Invoke-OpenClaw config set "plugins.entries.$PluginId.config.messengerReadsEnabled" false --strict-json | Out-Null

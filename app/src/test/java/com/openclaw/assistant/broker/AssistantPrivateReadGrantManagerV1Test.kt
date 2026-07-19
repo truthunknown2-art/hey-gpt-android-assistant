@@ -86,6 +86,32 @@ class AssistantPrivateReadGrantManagerV1Test {
         assertFalse(manager.isAuthorized(CONTACTS, SESSION, DEVICE))
     }
 
+    @Test
+    fun `Messenger grant requires the same normalized sender`() {
+        val manager = AssistantPrivateReadGrantManagerV1(nowElapsedMs = { 1_000L })
+        manager.grant(MESSENGER, SESSION, DEVICE, messengerScope("  Jen   Thorndale ", 3))
+
+        assertTrue(manager.isAuthorized(MESSENGER, SESSION, DEVICE, messengerScope("jen thorndale", 1)))
+        assertFalse(manager.isAuthorized(MESSENGER, SESSION, DEVICE, messengerScope("Alex", 1)))
+        assertFalse(manager.isAuthorized(MESSENGER, SESSION, DEVICE, messengerScope(null, 1)))
+    }
+
+    @Test
+    fun `Messenger grant cannot authorize a larger result count`() {
+        val manager = AssistantPrivateReadGrantManagerV1(nowElapsedMs = { 1_000L })
+        manager.grant(MESSENGER, SESSION, DEVICE, messengerScope("Jen", 3))
+
+        assertTrue(manager.isAuthorized(MESSENGER, SESSION, DEVICE, messengerScope("Jen", 3)))
+        assertTrue(manager.isAuthorized(MESSENGER, SESSION, DEVICE, messengerScope("Jen", 2)))
+        assertFalse(manager.isAuthorized(MESSENGER, SESSION, DEVICE, messengerScope("Jen", 4)))
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `Messenger grant cannot be capability wide`() {
+        AssistantPrivateReadGrantManagerV1(nowElapsedMs = { 1_000L })
+            .grant(MESSENGER, SESSION, DEVICE)
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun `non private capability cannot receive a grant`() {
         AssistantPrivateReadGrantManagerV1(nowElapsedMs = { 1_000L })
@@ -102,7 +128,13 @@ class AssistantPrivateReadGrantManagerV1Test {
 
     private companion object {
         val CONTACTS = AssistantCapabilityV1.ANDROID_CONTACTS_SEARCH
+        val MESSENGER = AssistantCapabilityV1.ANDROID_MESSENGER_NOTIFICATIONS_READ
         const val SESSION = "agent:voice-main:voice-android-device"
         const val DEVICE = "paired-device"
+
+        fun messengerScope(sender: String?, limit: Int) = AssistantPrivateReadScopeV1.Messenger(
+            normalizedSender = sender?.let(::normalizePrivateReadSenderV1),
+            maxLimit = limit,
+        )
     }
 }

@@ -23,6 +23,7 @@ internal fun selectAndroidTtsEngine(
 internal fun selectBestAndroidTtsVoice(
     candidates: Collection<AndroidTtsVoiceCandidate>,
     targetLocale: Locale,
+    allowNetworkRequired: Boolean = true,
 ): String? {
     val targetLanguage = targetLocale.language
     val targetTag = targetLocale.toLanguageTag()
@@ -30,6 +31,7 @@ internal fun selectBestAndroidTtsVoice(
     return candidates
         .asSequence()
         .filter { it.installed }
+        .filter { allowNetworkRequired || !it.networkRequired }
         .filter { Locale.forLanguageTag(it.languageTag).language == targetLanguage }
         .sortedWith(
             compareByDescending<AndroidTtsVoiceCandidate> {

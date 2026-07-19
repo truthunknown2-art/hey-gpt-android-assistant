@@ -17,6 +17,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import io.mockk.coVerify
 
 class InvokeDispatcherTest {
   private val canvas = mockk<CanvasController>()
@@ -106,11 +107,37 @@ class InvokeDispatcherTest {
   }
 
   @Test
-  fun `notifications list is dispatched to handler`() = runTest {
+  fun `Gateway notification list is rejected before reaching handler`() = runTest {
+    val dispatcher = createDispatcher()
+
+    val result = dispatcher.handleInvoke(OpenClawNotificationsCommand.List.rawValue, null)
+
+    assertEquals(false, result.ok)
+    assertEquals("LOCAL_NOTIFICATION_ACCESS_REQUIRED", result.error?.code)
+    coVerify(exactly = 0) { notificationsHandler.handleList() }
+  }
+
+  @Test
+  fun `Gateway notification actions are rejected before reaching handler`() = runTest {
+    val dispatcher = createDispatcher()
+
+    val result = dispatcher.handleInvoke(OpenClawNotificationsCommand.Actions.rawValue, "{}")
+
+    assertEquals(false, result.ok)
+    assertEquals("LOCAL_NOTIFICATION_ACCESS_REQUIRED", result.error?.code)
+    coVerify(exactly = 0) { notificationsHandler.handleActions(any()) }
+  }
+
+  @Test
+  fun `local voice notification list remains on device`() = runTest {
     val dispatcher = createDispatcher()
     coEvery { notificationsHandler.handleList() } returns GatewaySession.InvokeResult.ok("""{"notifications":[]}""")
 
-    val result = dispatcher.handleInvoke(OpenClawNotificationsCommand.List.rawValue, null)
+    val result = dispatcher.handleInvoke(
+      OpenClawNotificationsCommand.List.rawValue,
+      null,
+      InvocationOrigin.LOCAL_VOICE,
+    )
 
     assertEquals(true, result.ok)
     assertEquals("""{"notifications":[]}""", result.payloadJson)

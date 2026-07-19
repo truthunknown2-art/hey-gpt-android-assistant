@@ -15,21 +15,33 @@ private const val TAG = "TTSManager"
  * Text-to-Speech Manager with support for multiple providers
  * (Local TTS, ElevenLabs, OpenAI, VOICEVOX)
  */
-class TTSManager(private val context: Context) {
-    
-    private val settings = SettingsRepository.getInstance(context)
+class TTSManager private constructor(
+    private val context: Context,
+    initialProviders: Map<String, TTSProvider>?,
+    useInitialProviders: Boolean,
+    private val settings: SettingsRepository,
+) {
+    constructor(context: Context) : this(
+        context,
+        null,
+        false,
+        SettingsRepository.getInstance(context),
+    )
+
+    internal constructor(
+        context: Context,
+        providers: Map<String, TTSProvider>,
+        settings: SettingsRepository,
+    ) : this(context, providers, true, settings)
     
     // Provider instances
     private val providers = mutableMapOf<String, TTSProvider>()
     
     init {
-        // Initialize all providers
-        providers[TTSProviderType.LOCAL] = AndroidTTSProvider(context)
-        providers[TTSProviderType.POCKET] = PocketTTSProvider(context)
-        providers[TTSProviderType.ELEVENLABS] = ElevenLabsProvider(context)
-        providers[TTSProviderType.OPENAI] = OpenAIProvider(context)
-        if (BuildConfig.FLAVOR == "full") {
-            providers[TTSProviderType.VOICEVOX] = VoiceVoxProvider(context)
+        if (useInitialProviders) {
+            providers.putAll(requireNotNull(initialProviders))
+        } else {
+            initializeDefaultProviders()
         }
     }
     
@@ -134,6 +146,22 @@ class TTSManager(private val context: Context) {
         return provider.speakWithProgress(processedText)
     }
 
+    /** Private content must use an installed offline Android voice with no provider fallback. */
+    fun speakPrivateWithProgress(text: String): Flow<TTSState> {
+        val local = providers[TTSProviderType.LOCAL]
+        if (
+            local !is PrivateTTSProvider ||
+            !local.isConfigured() ||
+            !local.isAvailable()
+        ) {
+            return callbackFlow {
+                trySend(TTSState.Error(context.getString(R.string.tts_error_private_offline_unavailable)))
+                close()
+            }
+        }
+        return local.speakPrivateWithProgress(TTSUtils.stripMarkdownForSpeech(text))
+    }
+
     private fun speakWithPocketFallback(provider: PocketTTSProvider, text: String): Flow<TTSState> = channelFlow {
         if (provider.isConfigured() && provider.isAvailable()) {
             var playbackStarted = false
@@ -195,6 +223,10 @@ class TTSManager(private val context: Context) {
      */
     fun reinitialize() {
         shutdown()
+        initializeDefaultProviders()
+    }
+
+    private fun initializeDefaultProviders() {
         providers[TTSProviderType.LOCAL] = AndroidTTSProvider(context)
         providers[TTSProviderType.POCKET] = PocketTTSProvider(context)
         providers[TTSProviderType.ELEVENLABS] = ElevenLabsProvider(context)

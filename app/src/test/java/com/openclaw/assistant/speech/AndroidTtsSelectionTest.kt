@@ -65,6 +65,31 @@ class AndroidTtsSelectionTest {
         )
     }
 
+    @Test
+    fun `private voice selection excludes network required voices`() {
+        val candidates = listOf(
+            candidate("natural-network", "en-US", quality = 500, network = true),
+            candidate("offline", "en-US", quality = 300, network = false),
+        )
+
+        assertEquals(
+            "offline",
+            selectBestAndroidTtsVoice(candidates, Locale.US, allowNetworkRequired = false),
+        )
+    }
+
+    @Test
+    fun `private voice selection fails when every voice requires network`() {
+        val candidates = listOf(
+            candidate("natural-network", "en-US", quality = 500, network = true),
+        )
+
+        assertEquals(
+            null,
+            selectBestAndroidTtsVoice(candidates, Locale.US, allowNetworkRequired = false),
+        )
+    }
+
     private fun candidate(
         name: String,
         languageTag: String,

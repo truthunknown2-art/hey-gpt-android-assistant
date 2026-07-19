@@ -18,7 +18,6 @@ import com.openclaw.assistant.protocol.OpenClawDeviceCommand
 import com.openclaw.assistant.protocol.OpenClawLocationCommand
 import com.openclaw.assistant.protocol.OpenClawScreenCommand
 import com.openclaw.assistant.protocol.OpenClawSmsCommand
-import com.openclaw.assistant.protocol.OpenClawNotificationsCommand
 import com.openclaw.assistant.protocol.OpenClawSystemCommand
 import com.openclaw.assistant.protocol.OpenClawPhotosCommand
 import com.openclaw.assistant.protocol.OpenClawContactsCommand
@@ -29,7 +28,6 @@ import com.openclaw.assistant.protocol.OpenClawBridgeCommand
 import com.openclaw.assistant.protocol.OpenClawMediaCommand
 import com.openclaw.assistant.LocationMode
 import com.openclaw.assistant.VoiceWakeMode
-import android.provider.Settings
 
 class ConnectionManager(
   private val prefs: SecurePrefs,
@@ -117,11 +115,6 @@ class ConnectionManager(
     return ContextCompat.checkSelfPermission(appContext, permission) == PackageManager.PERMISSION_GRANTED
   }
 
-  private fun isNotificationListenerEnabled(): Boolean {
-    val enabledPackages = Settings.Secure.getString(appContext.contentResolver, "enabled_notification_listeners")
-    return enabledPackages?.contains(appContext.packageName) == true
-  }
-
   fun buildInvokeCommands(): List<String> =
     buildList {
       add(OpenClawCanvasCommand.Present.rawValue)
@@ -153,12 +146,6 @@ class ConnectionManager(
       }
 
       add(OpenClawMediaCommand.PlaySearch.rawValue)
-
-      // Notifications
-      if (isNotificationListenerEnabled()) {
-        add(OpenClawNotificationsCommand.List.rawValue)
-        add(OpenClawNotificationsCommand.Actions.rawValue)
-      }
 
       // System
       add(OpenClawSystemCommand.Notify.rawValue)
@@ -209,10 +196,6 @@ class ConnectionManager(
       add(OpenClawCapability.System.rawValue)
       add(OpenClawCapability.Bridge.rawValue)
       add(OpenClawCapability.Media.rawValue)
-
-      if (isNotificationListenerEnabled()) {
-        add(OpenClawCapability.Notifications.rawValue)
-      }
 
       val photosPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         Manifest.permission.READ_MEDIA_IMAGES
