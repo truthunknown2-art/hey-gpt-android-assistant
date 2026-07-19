@@ -13,6 +13,60 @@ function ConvertTo-PowerShellSingleQuotedLiteral {
     return "'" + $Value.Replace("'", "''") + "'"
 }
 
+function Invoke-ExternalProcessWithTimeout {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$ArgumentList,
+        [Parameter(Mandatory = $true)][ValidateRange(1, 3600000)][int]$TimeoutMilliseconds,
+        [string]$DisplayName = "External process"
+    )
+
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $FilePath
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    if ($null -eq $startInfo.PSObject.Properties["ArgumentList"]) {
+        throw "Invoke-ExternalProcessWithTimeout requires PowerShell 7 and modern .NET."
+    }
+    foreach ($argument in $ArgumentList) {
+        $startInfo.ArgumentList.Add($argument)
+    }
+
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) {
+            throw "$DisplayName could not be started."
+        }
+        $standardOutput = $process.StandardOutput.ReadToEndAsync()
+        $standardError = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+            try {
+                $process.Kill($true)
+            } catch {
+                $process.Kill()
+            }
+            $process.WaitForExit()
+            [void]$standardOutput.GetAwaiter().GetResult()
+            [void]$standardError.GetAwaiter().GetResult()
+            throw "$DisplayName exceeded its $TimeoutMilliseconds millisecond deadline."
+        }
+
+        $output = $standardOutput.GetAwaiter().GetResult()
+        [void]$standardError.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) {
+            throw "$DisplayName failed with exit code $($process.ExitCode)."
+        }
+        if (-not $output) { return @() }
+        return @($output.TrimEnd("`r", "`n") -split '\r?\n')
+    } finally {
+        $process.Dispose()
+    }
+}
+
 function New-AgenticWindowsNodeSupervisorActionArguments {
     [CmdletBinding()]
     param(

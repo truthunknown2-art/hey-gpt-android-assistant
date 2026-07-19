@@ -199,11 +199,11 @@ function Invoke-GatewayBash {
 
     $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Command))
     $runner = "printf '%s' '$encoded' | base64 -d | bash"
-    $output = & wsl.exe -d $Distro -- bash -lc $runner
-    if ($LASTEXITCODE -ne 0) {
-        throw "Gateway command failed."
-    }
-    return $output
+    return Invoke-ExternalProcessWithTimeout `
+        -FilePath (Join-Path $env:SystemRoot "System32\wsl.exe") `
+        -ArgumentList @("-d", $Distro, "--", "bash", "-lc", $runner) `
+        -TimeoutMilliseconds 30000 `
+        -DisplayName "Gateway command"
 }
 
 function Invoke-GatewayOpenClaw {

@@ -9,6 +9,30 @@ Describe "Windows provisioner transaction restore" {
         [IO.File]::WriteAllText($script:taskXmlBackup, $script:priorTaskXml)
     }
 
+    It "captures successful output and terminates a hung external process at its deadline" {
+        $pwsh = (Get-Command pwsh.exe -ErrorAction Stop).Source
+        $probe = Join-Path $TestDrive "external-process-timeout-probe.ps1"
+        $helperLiteral = ConvertTo-PowerShellSingleQuotedLiteral -Value $helper
+        $pwshLiteral = ConvertTo-PowerShellSingleQuotedLiteral -Value $pwsh
+        $probeContent = @"
+. $helperLiteral
+`$output = Invoke-ExternalProcessWithTimeout -FilePath $pwshLiteral -ArgumentList @('-NoProfile', '-Command', 'Write-Output ok') -TimeoutMilliseconds 5000 -DisplayName 'success probe'
+if ((`$output -join '') -cne 'ok') { exit 10 }
+`$stopwatch = [Diagnostics.Stopwatch]::StartNew()
+try {
+    Invoke-ExternalProcessWithTimeout -FilePath $pwshLiteral -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep -Seconds 10') -TimeoutMilliseconds 250 -DisplayName 'timeout probe'
+    exit 11
+} catch {
+    if (`$_.Exception.Message -notmatch 'exceeded its 250 millisecond deadline') { exit 12 }
+    if (`$stopwatch.Elapsed.TotalSeconds -gt 5) { exit 13 }
+}
+"@
+        [IO.File]::WriteAllText($probe, $probeContent, [Text.UTF8Encoding]::new($false))
+
+        & $pwsh -NoProfile -File $probe
+        $LASTEXITCODE | Should Be 0
+    }
+
     It "fails when task unregistration fails" {
         $script:rollbackTask = [pscustomobject]@{ Name = "changed" }
 
