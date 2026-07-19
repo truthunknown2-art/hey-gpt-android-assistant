@@ -4,9 +4,13 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
+import org.bouncycastle.crypto.signers.Ed25519Signer
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.Base64
 
 class AssistantContractV1Test {
     @Test
@@ -96,6 +100,37 @@ class AssistantContractV1Test {
         fixture.signatureValid = true
         fixture.elapsedNow = 6_000L
         assertRejected(fixture, valid, ProposalRejectionV1.PRESENCE_LEASE)
+    }
+
+    @Test
+    fun `calendar epoch rejects values outside javascript safe integer range`() {
+        val fixture = Fixture()
+        val signed = fixture.signedProposal(
+            arguments = buildJsonObject {
+                put("afterEpochMs", AssistantContractV1.MAX_SAFE_INTEGER + 1)
+            },
+        )
+
+        assertRejected(fixture, signed, ProposalRejectionV1.ARGUMENT_SCHEMA)
+    }
+
+    @Test
+    fun `pinned Ed25519 verifier accepts only exact canonical signature and key`() {
+        val privateKey = Ed25519PrivateKeyParameters(ByteArray(32) { (it + 1).toByte() }, 0)
+        val publicKey = privateKey.generatePublicKey().encoded
+        val verifier = PinnedEd25519ProposalSignatureVerifierV1(mapOf("gateway-key-1" to publicKey))
+        val payload = "proposal".toByteArray()
+        val signer = Ed25519Signer().apply {
+            init(true, privateKey)
+            update(payload, 0, payload.size)
+        }
+        val signature = Base64.getUrlEncoder().withoutPadding().encodeToString(signer.generateSignature())
+
+        assertTrue(verifier.verify(payload, "gateway-key-1", signature))
+        assertFalse(verifier.verify("mutated".toByteArray(), "gateway-key-1", signature))
+        assertFalse(verifier.verify(payload, "unknown-key", signature))
+        assertFalse(verifier.verify(payload, "gateway-key-1", "$signature="))
+        assertFalse(verifier.verify(payload, "gateway-key-1", "not-base64!"))
     }
 
     private fun assertRejected(

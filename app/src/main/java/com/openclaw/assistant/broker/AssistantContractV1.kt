@@ -9,7 +9,10 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
+import org.bouncycastle.crypto.params.Ed25519PublicKeyParameters
+import org.bouncycastle.crypto.signers.Ed25519Signer
 import java.security.MessageDigest
+import java.util.Base64
 import java.util.UUID
 
 internal object AssistantContractV1 {
@@ -80,6 +83,41 @@ internal data class SignedAssistantProposalV1(
 
 internal fun interface ProposalSignatureVerifierV1 {
     fun verify(payload: ByteArray, keyId: String, signatureBase64Url: String): Boolean
+}
+
+/** Verifies proposals only against explicitly pinned raw Ed25519 public keys. */
+internal class PinnedEd25519ProposalSignatureVerifierV1(
+    pinnedPublicKeys: Map<String, ByteArray>,
+) : ProposalSignatureVerifierV1 {
+    private val publicKeys = pinnedPublicKeys.mapValues { (keyId, keyBytes) ->
+        require(keyId.matches(KEY_ID_PATTERN))
+        require(keyBytes.size == Ed25519PublicKeyParameters.KEY_SIZE)
+        Ed25519PublicKeyParameters(keyBytes.copyOf(), 0)
+    }
+
+    override fun verify(payload: ByteArray, keyId: String, signatureBase64Url: String): Boolean {
+        val publicKey = publicKeys[keyId] ?: return false
+        val signature = runCatching { Base64.getUrlDecoder().decode(signatureBase64Url) }
+            .getOrNull()
+            ?: return false
+        if (
+            signature.size != ED25519_SIGNATURE_SIZE ||
+            Base64.getUrlEncoder().withoutPadding().encodeToString(signature) != signatureBase64Url
+        ) {
+            return false
+        }
+        return runCatching {
+            val verifier = Ed25519Signer()
+            verifier.init(false, publicKey)
+            verifier.update(payload, 0, payload.size)
+            verifier.verifySignature(signature)
+        }.getOrDefault(false)
+    }
+
+    private companion object {
+        val KEY_ID_PATTERN = Regex("[A-Za-z0-9._-]{1,128}")
+        const val ED25519_SIGNATURE_SIZE = 64
+    }
 }
 
 internal enum class ProposalRejectionV1 {
@@ -237,7 +275,7 @@ private object AssistantArgumentsV1 {
         AssistantCapabilityV1.ANDROID_DEVICE_STATUS -> arguments.isEmpty()
         AssistantCapabilityV1.ANDROID_CALENDAR_NEXT ->
             arguments.hasOnly("afterEpochMs", "limit") &&
-                arguments.optionalLong("afterEpochMs", 0L..Long.MAX_VALUE) &&
+                arguments.optionalLong("afterEpochMs", 0L..AssistantContractV1.MAX_SAFE_INTEGER) &&
                 arguments.optionalLong("limit", 1L..10L)
         AssistantCapabilityV1.ANDROID_CONTACTS_SEARCH ->
             arguments.hasOnly("query", "limit") &&
