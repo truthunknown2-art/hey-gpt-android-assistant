@@ -123,19 +123,36 @@ Invoke-OpenClaw gateway restart | Out-Null
 
 $runtime = ((Invoke-OpenClaw plugins inspect $PluginId --runtime --json) -join "`n") | ConvertFrom-Json
 $registered = @($runtime.plugin.toolNames | ForEach-Object { [string]$_ }) | Sort-Object -Unique
-$expected = @(if (-not $Disable) { @("assistant_memory_forget", "assistant_memory_remember") | Sort-Object })
+$brokerConfig = ((Invoke-OpenClaw config get "plugins.entries.$PluginId.config") -join "`n") | ConvertFrom-Json
+$expected = @()
+if (-not $Disable) {
+    $expected += @("assistant_memory_forget", "assistant_memory_remember")
+}
+if ($brokerConfig.privateReadsEnabled -eq $true) {
+    $expected += "assistant_contacts_search"
+}
+$expected = @($expected | Sort-Object -Unique)
 $registrationMismatch =
     $registered.Count -ne $expected.Count -or
     ($registered.Count -gt 0 -and @(Compare-Object -ReferenceObject $registered -DifferenceObject $expected).Count -gt 0)
 if ($registrationMismatch) {
-    throw "Broker memory tool registration did not match the requested state."
+    throw "Broker tool registration did not preserve the requested memory and private-read state."
 }
 
 $status = ((Invoke-OpenClaw gateway call assistant.broker.status --json) -join "`n") | ConvertFrom-Json
 if ($status.modelToolsRegistered -ne $expected.Count) {
-    throw "Broker status did not confirm the requested memory tool count."
+    throw "Broker status did not confirm the requested tool count."
+}
+
+$policyCheckKey = "agent:${AgentId}:memory-policy-$([guid]::NewGuid().ToString('N'))"
+$smoke = ((Invoke-OpenClaw agent --agent $AgentId --session-key $policyCheckKey --timeout 60 `
+    --message "Reply with exactly: explicit memory policy ready" --json) -join "`n") | ConvertFrom-Json
+$effectiveTools = @($smoke.result.meta.systemPromptReport.tools.entries | ForEach-Object name) | Sort-Object -Unique
+$expectedEffectiveTools = @($alsoAllow | Sort-Object -Unique)
+if (@(Compare-Object -ReferenceObject $expectedEffectiveTools -DifferenceObject $effectiveTools).Count -gt 0) {
+    throw "Voice-main tool surface is not exact after memory configuration. Expected [$($expectedEffectiveTools -join ', ')], got [$($effectiveTools -join ', ')]."
 }
 
 $stateLabel = if ($Disable) { "disabled" } else { "enabled" }
 Write-Host "Explicit assistant memory is $stateLabel for '$AgentId'."
-Write-Host "Registered broker memory tools: $($registered.Count)."
+Write-Host "Registered broker tools: $($registered -join ', ')."

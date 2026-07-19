@@ -82,5 +82,5 @@ if ($status.modelToolsRegistered -ne $tools.Count) {
     throw "Broker status tool count does not match its runtime registration."
 }
 
-Write-Host "Assistant capability broker is active on $Distro with durable ledgers and $($tools.Count) optional memory tools registered."
+Write-Host "Assistant capability broker is active on $Distro with durable ledgers and $($tools.Count) optional model tools registered."
 Write-Host "Plans: $($status.plans); pending proposals: $($status.pendingProposals); receipts: $($status.terminalReceipts)."

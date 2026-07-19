@@ -16,7 +16,7 @@ import {
 import { BrokerSigningIdentityV1 } from "../dist/signing-identity-v1.js";
 
 const NODE_ID = "a".repeat(64);
-const SESSION = "agent:voice-main:voice-android-device";
+const SESSION = `agent:voice-main:voice-android-${NODE_ID.slice(0, 32)}`;
 const SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 
 function receiptFor(proposal, overrides = {}) {
@@ -106,7 +106,7 @@ function fixture({ executeResponse } = {}) {
 }
 
 describe("signed private-read tools", () => {
-  it("binds the tool to voice-main owner context and the configured Android node", async () => {
+  it("binds the tool to the configured voice agent session and Android node", async () => {
     const subject = fixture();
     let factory;
     let options;
@@ -120,11 +120,9 @@ describe("signed private-read tools", () => {
         signingIdentity: () => subject.signingIdentity,
       }), 1);
       assert.deepEqual(options, { names: [CONTACTS_TOOL_NAME], optional: true });
-      assert.equal(factory({ agentId: "main", sessionKey: SESSION }), null);
-      assert.equal(factory({ agentId: "voice-main", sessionKey: SESSION, senderIsOwner: false }), null);
-      assert.equal(factory({ agentId: "voice-main", sessionKey: "agent:main:wrong" }), null);
-
-      const tool = factory({ agentId: "voice-main", sessionKey: SESSION, senderIsOwner: true });
+      // OpenClaw caches plugin descriptors without sessionKey. The static optional descriptor
+      // derives the stable phone voice session from trusted agent/node config instead.
+      const tool = factory;
       const result = await tool.execute("tool-call", { query: "Jen", limit: 1 });
 
       assert.equal(result.details.status, "COMPLETED");

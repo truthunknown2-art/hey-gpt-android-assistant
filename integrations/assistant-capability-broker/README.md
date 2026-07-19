@@ -23,10 +23,13 @@ strict argument schemas, canonical JSON, SHA-256 argument hashes, proposal
 lifetimes, and Ed25519 signing helpers.
 
 When `privateReadsEnabled` is explicitly set with one exact `androidNodeId`, the
-broker registers `assistant_contacts_search` only for the configured voice
-agent. The tool obtains a live unlocked-presence lease from that node, creates
+broker registers the optional `assistant_contacts_search` descriptor. The setup
+script exposes it only through the configured voice agent's exact tool policy.
+The tool obtains a live unlocked-presence lease from that node, creates
 and durably records a short-lived proposal, signs it with the broker identity,
-and invokes only `assistant.execute.v1`. Contact names and phone numbers are
+and invokes only `assistant.execute.v1`. Its voice-session binding is derived
+from the configured agent and Android node identity rather than model input or
+OpenClaw's descriptor-cached plugin context. Contact names and phone numbers are
 spoken by the bound phone voice session; only match count, truncation, status,
 and a terminal receipt return to OpenClaw. Lost or malformed execution results
 become durable `UNKNOWN` receipts and are never retried automatically.
@@ -37,14 +40,14 @@ public key, stable key ID, and SHA-256 fingerprint to an authenticated
 `operator.read` client. Malformed or mismatched persisted key state fails closed
 rather than silently rotating trust.
 
-When `memoryEnabled` is explicitly set, the plugin registers two optional tools
-only for the configured agent (default `voice-main`):
+When `memoryEnabled` is explicitly set, the plugin binds two optional tools to
+the unique configured agent workspace (default agent `voice-main`):
 
 - `assistant_memory_remember` stores one user-requested, low-sensitivity fact;
 - `assistant_memory_forget` removes one fact by its exact receipt ID.
 
 Memory entries and privacy-minimized receipts are transactionally stored in
-`.assistant-memory/memory.sqlite` inside that agent's trusted workspace. A
+`.assistant-memory/memory.sqlite` inside that bound trusted workspace. A
 managed section of `MEMORY.md` is rendered atomically so OpenClaw can load it at
 session start. Unmanaged `MEMORY.md` content is preserved. Credentials, tokens,
 payment data, and security answers are rejected, and ordinary conversation or

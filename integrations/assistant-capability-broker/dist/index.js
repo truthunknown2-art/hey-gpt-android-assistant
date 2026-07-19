@@ -37,44 +37,44 @@ function registerMemoryTools(api) {
   const memoryAgentId = typeof api.pluginConfig?.memoryAgentId === "string"
     ? api.pluginConfig.memoryAgentId
     : "voice-main";
-  api.registerTool((context) => {
-    if (
-      context.agentId !== memoryAgentId ||
-      context.senderIsOwner === false ||
-      typeof context.workspaceDir !== "string"
-    ) {
-      return null;
-    }
-    const store = memoryStore(context.workspaceDir);
-    return [{
-      name: "assistant_memory_remember",
-      label: "Remember explicit fact",
-      description: "Persist one low-sensitivity fact only when the user explicitly asks to remember it. Never store message bodies, notification content, credentials, payment data, security answers, tokens, or facts inferred automatically.",
-      parameters: {
-        type: "object",
-        required: ["category", "fact"],
-        properties: {
-          category: { type: "string", enum: ["preference", "person", "project", "decision", "other"] },
-          fact: { type: "string", minLength: 1, maxLength: 500 },
-        },
-        additionalProperties: false,
+  const agentMatches = (api.config?.agents?.list ?? []).filter((agent) => agent?.id === memoryAgentId);
+  const workspaceDir = agentMatches.length === 1 && typeof agentMatches[0].workspace === "string"
+    ? agentMatches[0].workspace.trim()
+    : "";
+  if (!workspaceDir) {
+    throw new Error("assistant-capability-broker requires one configured memory agent workspace");
+  }
+  const tools = [{
+    name: "assistant_memory_remember",
+    label: "Remember explicit fact",
+    description: "Persist one low-sensitivity fact only when the user explicitly asks to remember it. Never store message bodies, notification content, credentials, payment data, security answers, tokens, or facts inferred automatically.",
+    parameters: {
+      type: "object",
+      required: ["category", "fact"],
+      properties: {
+        category: { type: "string", enum: ["preference", "person", "project", "decision", "other"] },
+        fact: { type: "string", minLength: 1, maxLength: 500 },
       },
-      execute: async (_toolCallId, request) => jsonResult(store.remember(request)),
-    }, {
-      name: "assistant_memory_forget",
-      label: "Forget explicit fact",
-      description: "Forget one previously stored explicit memory by its exact memory ID and return a durable receipt.",
-      parameters: {
-        type: "object",
-        required: ["memoryId"],
-        properties: {
-          memoryId: { type: "string", pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
-        },
-        additionalProperties: false,
+      additionalProperties: false,
+    },
+    execute: async (_toolCallId, request) => jsonResult(memoryStore(workspaceDir).remember(request)),
+  }, {
+    name: "assistant_memory_forget",
+    label: "Forget explicit fact",
+    description: "Forget one previously stored explicit memory by its exact memory ID and return a durable receipt.",
+    parameters: {
+      type: "object",
+      required: ["memoryId"],
+      properties: {
+        memoryId: { type: "string", pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       },
-      execute: async (_toolCallId, request) => jsonResult(store.forget(request)),
-    }];
-  }, { names: MEMORY_TOOL_NAMES, optional: true });
+      additionalProperties: false,
+    },
+    execute: async (_toolCallId, request) => jsonResult(memoryStore(workspaceDir).forget(request)),
+  }];
+  for (const tool of tools) {
+    api.registerTool(tool, { name: tool.name, optional: true });
+  }
   return MEMORY_TOOL_NAMES.length;
 }
 

@@ -53,33 +53,30 @@ it("registers durable infrastructure and no model tools by default", async () =>
 it("registers agent-bound optional memory tools only when explicitly enabled", async () => {
   let service;
   const gatewayMethods = new Map();
-  let toolFactory;
-  let toolOptions;
+  const registeredTools = [];
+  const stateDir = mkdtempSync(path.join(tmpdir(), "assistant-broker-state-"));
+  const workspaceDir = mkdtempSync(path.join(tmpdir(), "assistant-broker-memory-"));
   const api = {
     pluginConfig: { memoryEnabled: true, memoryAgentId: "voice-main" },
+    config: { agents: { list: [{ id: "voice-main", workspace: workspaceDir }] } },
     registerService(value) { service = value; },
     registerGatewayMethod(name, handler, options) {
       gatewayMethods.set(name, { name, handler, options });
     },
-    registerTool(factory, options) {
-      toolFactory = factory;
-      toolOptions = options;
+    registerTool(tool, options) {
+      registeredTools.push({ tool, options });
     },
   };
   plugin.register(api);
 
-  assert.deepEqual(toolOptions, {
-    names: ["assistant_memory_remember", "assistant_memory_forget"],
-    optional: true,
-  });
-  assert.equal(toolFactory({ agentId: "locked-voice", workspaceDir: "unused" }), null);
-  assert.equal(toolFactory({ agentId: "voice-main", workspaceDir: "unused", senderIsOwner: false }), null);
+  assert.deepEqual(registeredTools.map(({ tool, options }) => ({ name: tool.name, options })), [
+    { name: "assistant_memory_remember", options: { name: "assistant_memory_remember", optional: true } },
+    { name: "assistant_memory_forget", options: { name: "assistant_memory_forget", optional: true } },
+  ]);
 
-  const stateDir = mkdtempSync(path.join(tmpdir(), "assistant-broker-state-"));
-  const workspaceDir = mkdtempSync(path.join(tmpdir(), "assistant-broker-memory-"));
   try {
     await service.start({ stateDir });
-    const tools = toolFactory({ agentId: "voice-main", workspaceDir });
+    const tools = registeredTools.map(({ tool }) => tool);
     assert.deepEqual(tools.map((tool) => tool.name), [
       "assistant_memory_remember",
       "assistant_memory_forget",
@@ -101,4 +98,15 @@ it("registers agent-bound optional memory tools only when explicitly enabled", a
     rmSync(stateDir, { recursive: true, force: true });
     rmSync(workspaceDir, { recursive: true, force: true });
   }
+});
+
+it("fails closed when the configured memory agent has no unique workspace", () => {
+  const api = {
+    pluginConfig: { memoryEnabled: true, memoryAgentId: "voice-main" },
+    config: { agents: { list: [{ id: "locked-voice", workspace: "/unused" }] } },
+  };
+  assert.throws(
+    () => plugin.register(api),
+    /requires one configured memory agent workspace/,
+  );
 });

@@ -105,14 +105,15 @@ returns only the stable key ID, raw public key, and SHA-256 fingerprint for an
 explicit phone-side trust decision. Invalid persisted key state fails closed
 instead of silently rotating the phone's trust root.
 
-With `privateReadsEnabled=true`, one exact `androidNodeId`, and one configured
-agent, the optional `assistant_contacts_search` tool obtains a live presence
-lease, signs and records a 60-second proposal, invokes the fixed Android
+With `privateReadsEnabled=true`, one exact `androidNodeId`, and an exact agent
+tool policy, the optional `assistant_contacts_search` tool obtains a live
+presence lease, signs and records a 60-second proposal, invokes the fixed Android
 executor, validates the strict receipt, and records it. The model supplies only
-`query` and a bounded `limit`; agent, session, node, command, risk, lease, IDs,
-and signature come from trusted runtime state. Malformed, oversized, or
-privacy-smuggling node results become terminal `UNKNOWN` receipts and are not
-retried automatically.
+`query` and a bounded `limit`; agent and node come from trusted configuration,
+the stable phone voice-session key is derived from those values, and command,
+risk, lease, IDs, and signature come from trusted runtime state. Malformed,
+oversized, or privacy-smuggling node results become terminal `UNKNOWN` receipts
+and are not retried automatically.
 
 The Android trust store validates that descriptor, stores it only in encrypted
 preferences after an explicit trust action, and treats a changed key as a hard
@@ -120,11 +121,11 @@ trust conflict. A changed candidate never overwrites the pinned key. Clearing
 trust is an explicit local operation and is not available to a model tool.
 
 Explicit durable memory is implemented behind `memoryEnabled=false`. When the
-release gates are closed and an operator enables it, the broker registers only
-the optional `assistant_memory_remember` and `assistant_memory_forget` tools for
-the configured agent. Memory facts and privacy-minimized operation receipts are
-transactional in a per-workspace SQLite ledger; a managed `MEMORY.md` section is
-rendered atomically for OpenClaw startup recall. The renderer preserves all
+release gates are closed and an operator enables it, the broker binds only the
+optional `assistant_memory_remember` and `assistant_memory_forget` tools to the
+unique configured agent workspace. Memory facts and privacy-minimized operation
+receipts are transactional in a per-workspace SQLite ledger; a managed
+`MEMORY.md` section is rendered atomically for OpenClaw startup recall. The renderer preserves all
 unmanaged content, escapes marker/fence characters, treats stored facts as data
 rather than instructions, rejects known credential/payment/security material,
 and never harvests ordinary conversation or private phone content automatically.

@@ -165,7 +165,18 @@ if (-not $Disable) {
     $brokerVoiceTools = @($registered | Where-Object {
         $_ -in @($ToolName, "assistant_memory_remember", "assistant_memory_forget")
     })
-    $expectedTools = @($BaseVoiceTools + $brokerVoiceTools) | Sort-Object -Unique
+    $registeredMemoryTools = @($brokerVoiceTools | Where-Object {
+        $_ -in @("assistant_memory_remember", "assistant_memory_forget")
+    })
+    if ($registeredMemoryTools.Count -notin @(0, 2)) {
+        throw "Broker registered an incomplete explicit-memory tool pair."
+    }
+    $memoryTools = if ($registeredMemoryTools.Count -eq 2) {
+        @("memory_get", "memory_search")
+    } else {
+        @()
+    }
+    $expectedTools = @($BaseVoiceTools + $brokerVoiceTools + $memoryTools) | Sort-Object -Unique
     $deny = @($GenericToolDeny | Where-Object {
         $_ -notin $expectedTools -and
         -not ($_ -eq "group:memory" -and "memory_search" -in $expectedTools)

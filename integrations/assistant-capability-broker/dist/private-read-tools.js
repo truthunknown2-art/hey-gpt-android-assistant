@@ -11,7 +11,6 @@ export const EXECUTE_COMMAND = "assistant.execute.v1";
 
 const CONTACTS_CAPABILITY = "android.contacts.search";
 const NODE_ID_PATTERN = /^[a-f0-9]{64}$/;
-const SESSION_KEY_MAX_LENGTH = 512;
 const MAX_NODE_PAYLOAD_BYTES = 16 * 1024;
 const NODE_COMMAND_TIMEOUT_MS = 120_000;
 const PRESENCE_TIMEOUT_MS = 10_000;
@@ -267,44 +266,33 @@ export function registerPrivateReadTools(api, state) {
   if (!NODE_ID_PATTERN.test(nodeId ?? "")) {
     throw new Error("assistant-capability-broker requires one valid androidNodeId for private reads");
   }
-  api.registerTool((context) => {
-    const sessionKey = context.sessionKey;
-    if (
-      context.agentId !== agentId ||
-      context.senderIsOwner === false ||
-      typeof sessionKey !== "string" ||
-      sessionKey.length > SESSION_KEY_MAX_LENGTH ||
-      !sessionKey.startsWith(`agent:${agentId}:`)
-    ) {
-      return null;
-    }
-    return {
-      name: CONTACTS_TOOL_NAME,
-      label: "Search contacts privately",
-      description: "Search contacts on the configured unlocked Android phone. Matching names and phone numbers are spoken only on the phone and are never returned to the model. The first private read in a voice session requires an on-phone 10-minute approval.",
-      parameters: {
-        type: "object",
-        required: ["query"],
-        properties: {
-          query: { type: "string", minLength: 1, maxLength: 100 },
-          limit: { type: "integer", minimum: 1, maximum: 10, default: 5 },
-        },
-        additionalProperties: false,
+  const voiceSessionKey = `agent:${agentId}:voice-android-${nodeId.slice(0, 32)}`;
+  api.registerTool({
+    name: CONTACTS_TOOL_NAME,
+    label: "Search contacts privately",
+    description: "Search contacts on the configured unlocked Android phone. Matching names and phone numbers are spoken only on the phone and are never returned to the model. The first private read in a voice session requires an on-phone 10-minute approval.",
+    parameters: {
+      type: "object",
+      required: ["query"],
+      properties: {
+        query: { type: "string", minLength: 1, maxLength: 100 },
+        limit: { type: "integer", minimum: 1, maximum: 10, default: 5 },
       },
-      execute: async (_toolCallId, request) => {
-        const ledger = state.ledger();
-        const signingIdentity = state.signingIdentity();
-        if (!ledger || !signingIdentity) throw new Error("assistant capability broker is unavailable");
-        return searchContactsPrivately({
-          api,
-          ledger,
-          signingIdentity,
-          nodeId,
-          voiceSessionKey: sessionKey,
-          request,
-        });
-      },
-    };
+      additionalProperties: false,
+    },
+    execute: async (_toolCallId, request) => {
+      const ledger = state.ledger();
+      const signingIdentity = state.signingIdentity();
+      if (!ledger || !signingIdentity) throw new Error("assistant capability broker is unavailable");
+      return searchContactsPrivately({
+        api,
+        ledger,
+        signingIdentity,
+        nodeId,
+        voiceSessionKey,
+        request,
+      });
+    },
   }, { names: [CONTACTS_TOOL_NAME], optional: true });
   return 1;
 }
