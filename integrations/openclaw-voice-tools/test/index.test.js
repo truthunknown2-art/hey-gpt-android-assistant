@@ -38,7 +38,7 @@ describe("voice assistant tools", () => {
     const { api, calls } = fakeApi(["media.play_search"], {
       launched: true,
       playbackConfirmed: true,
-      route: "media_session",
+      route: "media_session_uri",
       confirmedTitle: "Kind of Blue",
       confirmedArtist: "Miles Davis",
     });
@@ -47,13 +47,15 @@ describe("voice assistant tools", () => {
       query: "Miles Davis Kind of Blue",
       title: "Kind of Blue",
       artist: "Miles Davis",
+      spotifyUri: "spotify:track:0Q5VnK2DYzRyfqQRJuUtvi",
     }), {
       launched: true,
       playbackConfirmed: true,
-      route: "media_session",
+      route: "media_session_uri",
       query: "Miles Davis Kind of Blue",
       title: "Kind of Blue",
       artist: "Miles Davis",
+      spotifyUri: "spotify:track:0Q5VnK2DYzRyfqQRJuUtvi",
       confirmedTitle: "Kind of Blue",
       confirmedArtist: "Miles Davis",
     });
@@ -64,6 +66,7 @@ describe("voice assistant tools", () => {
       query: "Miles Davis Kind of Blue",
       title: "Kind of Blue",
       artist: "Miles Davis",
+      spotifyUri: "spotify:track:0Q5VnK2DYzRyfqQRJuUtvi",
       packageName: "com.spotify.music",
     });
   });
@@ -77,6 +80,19 @@ describe("voice assistant tools", () => {
       route: "unknown",
       query: "Pearl Jam",
     });
+  });
+
+  it("rejects arbitrary Spotify resources before invoking the phone", async () => {
+    const { api, calls } = fakeApi(["media.play_search"], { launched: true });
+
+    await assert.rejects(
+      playSpotify(api, CUSTOM_NODE_ID, {
+        query: "Pearl Jam",
+        spotifyUri: "spotify:playlist:37i9dQZF1DX0",
+      }),
+      /must identify one Spotify track/,
+    );
+    assert.equal(calls.length, 0);
   });
 
   it("rejects a configured node that lacks the media command", () => {

@@ -8,6 +8,7 @@ import android.media.MediaMetadata
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
+import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
 import android.provider.MediaStore
@@ -24,6 +25,7 @@ internal data class SpotifyPlaybackRequest(
   val query: String,
   val title: String,
   val artist: String,
+  val spotifyTrackUri: String,
 )
 
 internal data class SpotifyPlaybackReceipt(
@@ -69,6 +71,13 @@ class MediaHandler internal constructor(
       }
       val title = root["title"]?.jsonPrimitive?.content?.trim().orEmpty()
       val artist = root["artist"]?.jsonPrimitive?.content?.trim().orEmpty()
+      val spotifyTrackUri = root["spotifyUri"]?.jsonPrimitive?.content?.trim().orEmpty()
+      if (spotifyTrackUri.isNotBlank() && !SPOTIFY_TRACK_URI.matches(spotifyTrackUri)) {
+        return GatewaySession.InvokeResult.error(
+          "INVALID_SPOTIFY_URI",
+          "spotifyUri must identify one Spotify track",
+        )
+      }
 
       val requestedPackage = root["packageName"]?.jsonPrimitive?.content?.trim()
         ?.takeIf { it.isNotEmpty() }
@@ -86,7 +95,9 @@ class MediaHandler internal constructor(
         )
       }
 
-      val receipt = playbackExecutor.play(SpotifyPlaybackRequest(query, title, artist))
+      val receipt = playbackExecutor.play(
+        SpotifyPlaybackRequest(query, title, artist, spotifyTrackUri),
+      )
       GatewaySession.InvokeResult.ok(
         buildJsonObject {
           put("launched", JsonPrimitive(receipt.launched))
@@ -95,6 +106,9 @@ class MediaHandler internal constructor(
           put("query", JsonPrimitive(query))
           if (title.isNotBlank()) put("title", JsonPrimitive(title))
           if (artist.isNotBlank()) put("artist", JsonPrimitive(artist))
+          if (spotifyTrackUri.isNotBlank()) {
+            put("spotifyUri", JsonPrimitive(spotifyTrackUri))
+          }
           if (receipt.confirmedTitle.isNotBlank()) {
             put("confirmedTitle", JsonPrimitive(receipt.confirmedTitle))
           }
@@ -121,6 +135,7 @@ class MediaHandler internal constructor(
     const val SPOTIFY_PACKAGE = "com.spotify.music"
     internal const val AUDIO_TRACK_FOCUS = "vnd.android.cursor.item/audio"
     internal const val ANY_MEDIA_FOCUS = "vnd.android.cursor.item/*"
+    internal val SPOTIFY_TRACK_URI = Regex("^spotify:track:[A-Za-z0-9]{22}$")
 
     internal fun createSpotifyPlayIntent(
       query: String,
@@ -169,15 +184,15 @@ internal class AndroidSpotifyPlaybackExecutor(
   override suspend fun play(request: SpotifyPlaybackRequest): SpotifyPlaybackReceipt {
     var controller = spotifyController()
     var launchedActivity = false
-    if (controller == null || !controller.supportsPlayFromSearch()) {
+    if (controller == null || !controller.supports(request)) {
       context.startActivity(
-        MediaHandler.createSpotifyPlayIntent(request.query, request.title, request.artist),
+        createLaunchIntent(request),
       )
       launchedActivity = true
       controller = awaitSpotifyController()
     }
 
-    if (controller == null || !controller.supportsPlayFromSearch()) {
+    if (controller == null || !controller.supports(request)) {
       return SpotifyPlaybackReceipt(
         launched = launchedActivity,
         playbackConfirmed = false,
@@ -189,12 +204,20 @@ internal class AndroidSpotifyPlaybackExecutor(
     val extras = Bundle().apply {
       with(MediaHandler) { this@apply.putMediaSearchExtras(request.title, request.artist) }
     }
-    controller.transportControls.playFromSearch(request.query, extras)
+    if (request.spotifyTrackUri.isNotBlank()) {
+      controller.transportControls.playFromUri(Uri.parse(request.spotifyTrackUri), extras)
+    } else {
+      controller.transportControls.playFromSearch(request.query, extras)
+    }
     val confirmed = awaitConfirmedPlayback(controller, request, commandStartedAt)
     return SpotifyPlaybackReceipt(
       launched = true,
       playbackConfirmed = confirmed != null,
-      route = "media_session",
+      route = if (request.spotifyTrackUri.isNotBlank()) {
+        "media_session_uri"
+      } else {
+        "media_session_search"
+      },
       confirmedTitle = confirmed?.first.orEmpty(),
       confirmedArtist = confirmed?.second.orEmpty(),
     )
@@ -237,8 +260,24 @@ internal class AndroidSpotifyPlaybackExecutor(
     return null
   }
 
-  private fun MediaController.supportsPlayFromSearch(): Boolean =
-    playbackState?.actions?.and(PlaybackState.ACTION_PLAY_FROM_SEARCH) != 0L
+  private fun MediaController.supports(request: SpotifyPlaybackRequest): Boolean {
+    val requiredAction = if (request.spotifyTrackUri.isNotBlank()) {
+      PlaybackState.ACTION_PLAY_FROM_URI
+    } else {
+      PlaybackState.ACTION_PLAY_FROM_SEARCH
+    }
+    return playbackState?.actions?.and(requiredAction) != 0L
+  }
+
+  private fun createLaunchIntent(request: SpotifyPlaybackRequest): Intent =
+    if (request.spotifyTrackUri.isNotBlank()) {
+      Intent(Intent.ACTION_VIEW, Uri.parse(request.spotifyTrackUri)).apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        setPackage(MediaHandler.SPOTIFY_PACKAGE)
+      }
+    } else {
+      MediaHandler.createSpotifyPlayIntent(request.query, request.title, request.artist)
+    }
 
   companion object {
     private const val CONTROLLER_TIMEOUT_MS = 2_500L

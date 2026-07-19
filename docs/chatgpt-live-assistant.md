@@ -137,9 +137,11 @@ It receives two optional plugin tools that fail closed against one configured,
 connected Android node:
 
 - `android_media_play` invokes only `media.play_search` with Spotify fixed as
-  the package. The model supplies a bounded query plus optional song title and
-  artist. Android sends structured media focus fields when available so Spotify
-  can start a specific track instead of treating the request as plain search.
+  the package. For exact tracks, the model resolves a public Spotify track page
+  and supplies only a strict `spotify:track:<22-character-id>` plus bounded title
+  and artist fields. Android uses Spotify's media-session URI action and reports
+  success only after observing playing state with matching metadata. The
+  structured play-from-search intent remains an unconfirmed fallback.
 - `messenger_notifications_read` invokes only `notifications.list_package`.
   Android filters to `com.facebook.orca` before returning sender, a bounded text
   preview, and timestamp. Up to 100 previews are retained in app-private storage

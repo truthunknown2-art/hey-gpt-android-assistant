@@ -67,15 +67,20 @@ async function invokeConfiguredNode(api, nodeId, command, params) {
 }
 
 export async function playSpotify(api, nodeId, request) {
-  const { query, title = "", artist = "" } = request;
+  const { query, title = "", artist = "", spotifyUri = "" } = request;
   const normalizedQuery = query.trim();
   if (!normalizedQuery) throw new Error("A Spotify search query is required");
   const normalizedTitle = title.trim();
   const normalizedArtist = artist.trim();
+  const normalizedSpotifyUri = spotifyUri.trim();
+  if (normalizedSpotifyUri && !/^spotify:track:[A-Za-z0-9]{22}$/.test(normalizedSpotifyUri)) {
+    throw new Error("spotifyUri must identify one Spotify track");
+  }
   const payload = await invokeConfiguredNode(api, nodeId, MEDIA_COMMAND, {
     query: normalizedQuery,
     ...(normalizedTitle ? { title: normalizedTitle } : {}),
     ...(normalizedArtist ? { artist: normalizedArtist } : {}),
+    ...(normalizedSpotifyUri ? { spotifyUri: normalizedSpotifyUri } : {}),
     packageName: SPOTIFY_PACKAGE,
   });
   if (payload.launched !== true) throw new Error("Spotify did not accept the playback request");
@@ -86,6 +91,7 @@ export async function playSpotify(api, nodeId, request) {
     query: normalizedQuery,
     ...(normalizedTitle ? { title: normalizedTitle } : {}),
     ...(normalizedArtist ? { artist: normalizedArtist } : {}),
+    ...(normalizedSpotifyUri ? { spotifyUri: normalizedSpotifyUri } : {}),
     ...(typeof payload.confirmedTitle === "string"
       ? { confirmedTitle: payload.confirmedTitle.slice(0, MAX_TEXT_LENGTH) }
       : {}),
@@ -141,7 +147,7 @@ export default {
     api.registerTool({
       name: "android_media_play",
       label: "Play Spotify",
-      description: "Play Spotify on the configured Android phone. Include title and artist whenever known. playbackConfirmed is true only when Android reports playing state with matching track metadata.",
+      description: "Play Spotify on the configured Android phone. For an exact track, first use web_search to find its public open.spotify.com/track URL, convert the final 22-character ID to spotify:track:ID, and pass spotifyUri with title and artist. playbackConfirmed is true only when Android reports playing state with matching metadata.",
       parameters: {
         type: "object",
         required: ["query"],
@@ -149,6 +155,7 @@ export default {
           query: { type: "string", minLength: 1, maxLength: 300 },
           title: { type: "string", minLength: 1, maxLength: 300 },
           artist: { type: "string", minLength: 1, maxLength: 300 },
+          spotifyUri: { type: "string", pattern: "^spotify:track:[A-Za-z0-9]{22}$" },
         },
         additionalProperties: false,
       },

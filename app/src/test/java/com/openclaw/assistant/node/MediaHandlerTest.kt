@@ -79,7 +79,7 @@ class MediaHandlerTest {
         SpotifyPlaybackReceipt(
           launched = true,
           playbackConfirmed = true,
-          route = "media_session",
+          route = "media_session_uri",
           confirmedTitle = "Alive",
           confirmedArtist = "Pearl Jam",
         )
@@ -88,19 +88,23 @@ class MediaHandlerTest {
     )
 
     val result = confirmedHandler.handlePlaySearch(
-      """{"query":"Pearl Jam Alive","title":"Alive","artist":"Pearl Jam"}""",
+      """{"query":"Pearl Jam Alive","title":"Alive","artist":"Pearl Jam","spotifyUri":"spotify:track:4Qbjmdlv1eZDD1u8SWe1pt"}""",
     )
 
     assertTrue(result.ok)
     assertTrue(result.payloadJson.orEmpty().contains("\"playbackConfirmed\":true"))
-    assertTrue(result.payloadJson.orEmpty().contains("\"route\":\"media_session\""))
+    assertTrue(result.payloadJson.orEmpty().contains("\"route\":\"media_session_uri\""))
+    assertTrue(
+      result.payloadJson.orEmpty()
+        .contains("\"spotifyUri\":\"spotify:track:4Qbjmdlv1eZDD1u8SWe1pt\""),
+    )
     assertTrue(result.payloadJson.orEmpty().contains("\"confirmedTitle\":\"Alive\""))
     assertTrue(result.payloadJson.orEmpty().contains("\"confirmedArtist\":\"Pearl Jam\""))
   }
 
   @Test
   fun `metadata confirmation rejects wrong track`() {
-    val request = SpotifyPlaybackRequest("Alive Pearl Jam", "Alive", "Pearl Jam")
+    val request = SpotifyPlaybackRequest("Alive Pearl Jam", "Alive", "Pearl Jam", "")
 
     assertTrue(
       AndroidSpotifyPlaybackExecutor.matchesRequestedMedia(
@@ -116,5 +120,28 @@ class MediaHandlerTest {
         actualArtist = "Pearl Jam",
       ),
     )
+  }
+
+  @Test
+  fun `non-track Spotify URI is rejected before execution`() = runTest {
+    var executed = false
+    val strictHandler = MediaHandler(
+      context = context,
+      json = Json,
+      invokeErrorFromThrowable = { "ERROR" to (it.message ?: "error") },
+      playbackExecutor = SpotifyPlaybackExecutor {
+        executed = true
+        SpotifyPlaybackReceipt(true, false, "unexpected")
+      },
+      isPackageAvailable = { true },
+    )
+
+    val result = strictHandler.handlePlaySearch(
+      """{"query":"Pearl Jam","spotifyUri":"spotify:playlist:37i9dQZF1DX0"}""",
+    )
+
+    assertFalse(result.ok)
+    assertEquals("INVALID_SPOTIFY_URI", result.error?.code)
+    assertFalse(executed)
   }
 }
