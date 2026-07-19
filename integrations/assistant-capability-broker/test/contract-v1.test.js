@@ -85,6 +85,20 @@ describe("assistant contract v1", () => {
     );
   });
 
+  it("rejects NTFS alternate-stream Windows file references", () => {
+    assert.throws(
+      () => createProposal({
+        capability: "windows.files.read",
+        arguments: { path: "documents:Projects/notes.txt:secret", maxBytes: 100 },
+        targetDeviceId: DEVICE_ID,
+        voiceSessionKey: SESSION_KEY,
+        presenceLeaseId: "lease-1",
+        nowMs: NOW,
+      }),
+      (error) => error instanceof ContractError && error.code === "ARGUMENT_SCHEMA",
+    );
+  });
+
   it("types contact SMS as high risk and bounds the complete message", () => {
     const sms = createProposal({
       capability: "android.sms.send_contact",

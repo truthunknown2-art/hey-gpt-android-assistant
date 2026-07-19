@@ -24,6 +24,8 @@ $RestrictedNodeCommands = @(
     "system.which"
 )
 
+. (Join-Path $PSScriptRoot "lib\windows-files-provisioning-transaction.ps1")
+
 function Invoke-LocalOpenClaw {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
 
@@ -115,6 +117,8 @@ $localSnapshotReady = $false
 $gatewaySnapshotReady = $false
 $gatewayPluginExisted = $false
 $rollbackFailed = $false
+$provisioningSucceeded = $false
+$rollbackSucceeded = $false
 
 try {
     Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -237,6 +241,7 @@ fi
     if (Test-Path -LiteralPath $pluginPrevious) {
         Remove-Item -LiteralPath $pluginPrevious -Recurse -Force
     }
+    $provisioningSucceeded = $true
     Write-Host "Windows file bridge is active for '$AgentId' on node $NodeId with root alias 'documents'."
 } catch {
     $provisioningError = $_
@@ -279,12 +284,18 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
             Invoke-GatewayOpenClaw config validate | Out-Null
             Invoke-GatewayOpenClaw gateway restart | Out-Null
         }
+        $rollbackSucceeded = $true
     } catch {
         $rollbackError = $_
     }
 
     if ($rollbackError) {
         $rollbackFailed = $true
+        Write-Warning "Rollback failed. Scheduled task '$TaskName' will remain stopped."
+        Write-Warning "Preserved local config snapshot: $localConfigBackup"
+        Write-Warning "Preserved Gateway config snapshot: ${Distro}:$gatewayConfigBackup"
+        Write-Warning "Preserved Gateway plugin snapshot: ${Distro}:$gatewayPluginBackup"
+        Write-Warning "After manual restoration, validate and restart the Gateway, then run: Start-ScheduledTask -TaskName '$TaskName'"
         throw "Provisioning failed: $($provisioningError.Exception.Message) Rollback also failed: $($rollbackError.Exception.Message)"
     }
     throw $provisioningError
@@ -302,7 +313,10 @@ cp -a '$gatewayConfigBackup' '$gatewayConfigPath'
     if (Test-Path -LiteralPath $pluginNext) {
         Remove-Item -LiteralPath $pluginNext -Recurse -Force -ErrorAction SilentlyContinue
     }
-    if ($taskStopped) {
-        Start-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    }
+    Complete-WindowsNodeTaskState `
+        -TaskStopped $taskStopped `
+        -ProvisioningSucceeded $provisioningSucceeded `
+        -RollbackSucceeded $rollbackSucceeded `
+        -StartTask { Start-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue } |
+        Out-Null
 }

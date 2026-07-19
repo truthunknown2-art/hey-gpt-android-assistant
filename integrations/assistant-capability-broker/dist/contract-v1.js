@@ -71,6 +71,7 @@ function windowsFileReference(value) {
   return /^[a-z][a-z0-9_-]{0,31}$/.test(alias)
     && relative.trim().length > 0
     && !relative.includes("\\")
+    && !relative.includes(":")
     && !/[\u0000-\u001f\u007f]/.test(relative)
     && relative.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
 }

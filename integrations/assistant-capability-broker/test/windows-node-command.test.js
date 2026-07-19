@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   mkdtempSync,
+  linkSync,
   mkdirSync,
   openSync as nativeOpenSync,
   renameSync,
@@ -158,6 +159,48 @@ describe("signed Windows files node command", () => {
       assert.equal(receipt.status, "FAILED");
       assert.equal(receipt.errorCode, "FILE_CHANGED");
       assert.equal("resultSummary" in receipt, false);
+    } finally {
+      subject.close();
+    }
+  });
+
+  it("rejects hard links to files outside the selected root", () => {
+    const subject = fixture();
+    try {
+      const outside = path.join(subject.directory, "outside-private.txt");
+      const linked = path.join(subject.root, "Projects", "innocent.txt");
+      writeFileSync(outside, "outside private content", "utf8");
+      linkSync(outside, linked);
+
+      const search = subject.executor.handle(JSON.stringify(subject.signed(
+        "windows.files.search",
+        { query: "innocent", limit: 10 },
+      )));
+      assert.equal(search.status, "COMPLETED");
+      assert.deepEqual(search.resultSummary.matches, []);
+
+      const read = subject.executor.handle(JSON.stringify(subject.signed(
+        "windows.files.read",
+        { path: "documents:Projects/innocent.txt", maxBytes: 100 },
+      )));
+      assert.equal(read.status, "FAILED");
+      assert.equal(read.errorCode, "FILE_POLICY_DENIED");
+      assert.equal(JSON.stringify(read).includes("outside private content"), false);
+    } finally {
+      subject.close();
+    }
+  });
+
+  it("rejects alternate data stream references before signing", () => {
+    const subject = fixture();
+    try {
+      assert.throws(
+        () => subject.signed("windows.files.read", {
+          path: "documents:Projects/Meeting Notes.md:secret",
+          maxBytes: 100,
+        }),
+        /arguments do not match/i,
+      );
     } finally {
       subject.close();
     }

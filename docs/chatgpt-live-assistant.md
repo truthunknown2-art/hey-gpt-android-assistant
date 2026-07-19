@@ -218,6 +218,11 @@ presence lease immediately before invoking Windows; a locked phone, expired
 lease, or replacement voice session fails closed. The Gateway globally denies generic node shell,
 approval-management, and browser-proxy commands.
 
+Windows references reject NTFS alternate-data-stream separators. Search and
+read also require a single-link regular file and validate BigInt device/inode
+identity before and after descriptor reads, so symbolic links, hard links, and
+path replacement fail closed rather than bypassing the selected root.
+
 Provision an already paired dedicated Windows node idempotently with:
 
 ```powershell
@@ -235,7 +240,8 @@ broker public key, preserves only the `documents` read-root alias by default,
 restarts both sides, and fails unless the connected node advertises exactly the
 fixed command. Before mutation it snapshots the Windows node config plus the
 Gateway config and broker stage; any later failure restores all three before
-the scheduled node is restarted.
+the scheduled node is restarted. If rollback itself fails, every available
+snapshot is preserved and the Windows node remains stopped until manual recovery.
 
 ## Lock transition policy
 

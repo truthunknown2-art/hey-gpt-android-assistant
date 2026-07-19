@@ -146,15 +146,22 @@ function resolveReference(reference, roots, extensions) {
   const alias = reference.slice(0, separator);
   const relative = reference.slice(separator + 1);
   const root = roots.get(alias);
-  if (!root || !relative || path.isAbsolute(relative) || relative.includes("\\")) fail("PATH_INVALID");
+  if (
+    !root || !relative || path.isAbsolute(relative) ||
+    relative.includes("\\") || relative.includes(":")
+  ) {
+    fail("PATH_INVALID");
+  }
   const candidate = path.resolve(root, ...relative.split("/"));
   if (!isInside(root, candidate)) fail("PATH_OUTSIDE_ROOT");
   if (hasDeniedDirectory(path.relative(root, candidate))) fail("PATH_POLICY_DENIED");
   assertNoSymlink(root, candidate);
   const real = realpathSync.native(candidate);
   if (!isInside(root, real)) fail("PATH_OUTSIDE_ROOT");
-  const stat = statSync(real);
-  if (!stat.isFile() || stat.size > MAX_SOURCE_FILE_BYTES) fail("FILE_POLICY_DENIED");
+  const stat = statSync(real, { bigint: true });
+  if (!stat.isFile() || stat.size > BigInt(MAX_SOURCE_FILE_BYTES) || stat.nlink !== 1n) {
+    fail("FILE_POLICY_DENIED");
+  }
   if (deniedName(path.basename(real)) || !extensions.has(path.extname(real).toLowerCase())) {
     fail("FILE_POLICY_DENIED");
   }
@@ -222,12 +229,12 @@ function searchFiles(proposal, roots, extensions) {
         assertNoSymlink(current.root, candidate);
         const real = realpathSync.native(candidate);
         if (!isInside(current.root, real)) continue;
-        const stat = statSync(real);
-        if (!stat.isFile() || stat.size > MAX_SOURCE_FILE_BYTES) continue;
+        const stat = statSync(real, { bigint: true });
+        if (!stat.isFile() || stat.size > BigInt(MAX_SOURCE_FILE_BYTES) || stat.nlink !== 1n) continue;
         matches.push({
           path: encodeReference(current.alias, current.root, real),
-          bytes: stat.size,
-          modifiedAtMs: Math.max(0, Math.trunc(stat.mtimeMs)),
+          bytes: Number(stat.size),
+          modifiedAtMs: Math.max(0, Number(stat.mtimeMs)),
         });
       } catch {
         continue;
@@ -276,15 +283,17 @@ function readFile(proposal, roots, extensions, fileOps) {
   let bytesRead;
   const buffer = Buffer.alloc(maxBytes + 4);
   try {
-    before = fileOps.fstatSync(fd);
+    before = fileOps.fstatSync(fd, { bigint: true });
     bytesRead = fileOps.readSync(fd, buffer, 0, buffer.length, 0);
-    after = fileOps.fstatSync(fd);
+    after = fileOps.fstatSync(fd, { bigint: true });
   } finally {
     fileOps.closeSync(fd);
   }
   if (
     !sameFileIdentity(resolved.stat, before) ||
     !sameFileIdentity(before, after) ||
+    before.nlink !== 1n ||
+    after.nlink !== 1n ||
     before.size !== after.size ||
     before.mtimeMs !== after.mtimeMs
   ) {
@@ -296,7 +305,7 @@ function readFile(proposal, roots, extensions, fileOps) {
     path: resolved.reference,
     content: decoded.text,
     bytes: decoded.bytes.length,
-    truncated: before.size > decoded.consumedBytes,
+    truncated: before.size > BigInt(decoded.consumedBytes),
     sha256: `sha256:${createHash("sha256").update(decoded.bytes).digest("hex")}`,
   };
 }
