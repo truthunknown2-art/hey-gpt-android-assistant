@@ -24,6 +24,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.openclaw.assistant.OpenClawApplication
+import com.openclaw.assistant.AmbientVoiceActivity
 import com.openclaw.assistant.MainActivity
 import com.openclaw.assistant.R
 import com.openclaw.assistant.BuildConfig
@@ -45,6 +46,7 @@ import org.vosk.android.RecognitionListener as VoskRecognitionListener
 import org.vosk.android.SpeechService
 import org.vosk.android.StorageService
 import java.io.IOException
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import org.json.JSONObject
@@ -70,12 +72,21 @@ class HotwordService : Service(), VoskRecognitionListener {
         private const val HOTWORD_RESUME_SETTLE_MS = 500L
         private const val AUDIO_IDLE_DEBOUNCE_MS = 3_500L
         private const val INTERRUPT_CLAIM_WAIT_MS = 350L
+        private const val AMBIENT_VOICE_LAUNCH_TIMEOUT_MS = 5_000L
         const val ACTION_RESUME_HOTWORD = "com.openclaw.assistant.ACTION_RESUME_HOTWORD"
         const val ACTION_PAUSE_HOTWORD = "com.openclaw.assistant.ACTION_PAUSE_HOTWORD"
         const val EXTRA_EXISTING_SESSION_CAN_CLAIM_INTERRUPT =
             "com.openclaw.assistant.EXTRA_EXISTING_SESSION_CAN_CLAIM_INTERRUPT"
         const val ACTION_REQUEST_CHATGPT_HANDOFF =
             "com.openclaw.assistant.ACTION_REQUEST_CHATGPT_HANDOFF"
+        const val ACTION_AMBIENT_UI_ATTACHED =
+            "com.openclaw.assistant.ACTION_AMBIENT_UI_ATTACHED"
+        const val ACTION_STOP_AMBIENT_SESSION =
+            "com.openclaw.assistant.ACTION_STOP_AMBIENT_SESSION"
+        const val ACTION_AMBIENT_SESSION_ENDED =
+            "com.openclaw.assistant.ACTION_AMBIENT_SESSION_ENDED"
+        const val EXTRA_AMBIENT_STOP_REASON =
+            "com.openclaw.assistant.EXTRA_AMBIENT_STOP_REASON"
         
         fun start(context: Context) {
             val intent = Intent(context, HotwordService::class.java)
@@ -174,6 +185,11 @@ class HotwordService : Service(), VoskRecognitionListener {
     private var chatGptMonitorJob: Job? = null
     private var chatGptIdleJob: Job? = null
     private var localCommandCaptureJob: Job? = null
+    private var ambientVoiceLaunchJob: Job? = null
+    private var ambientVoiceLaunchPending = false
+    private var ambientVoiceSession: AmbientVoiceSession? = null
+    private var ambientVoiceSessionToken: String? = null
+    private var isDestroying = false
     private var chatGptHandoffActive = false
     private val chatGptHandoffTracker = ChatGptHandoffTracker()
     private val SESSION_TIMEOUT_MS = 5 * 60 * 1000L // 5 minutes
@@ -186,7 +202,11 @@ class HotwordService : Service(), VoskRecognitionListener {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
                 ACTION_PAUSE_HOTWORD -> {
+                    if (ambientVoiceSession?.isActive == true) return
                     Log.d(TAG, "Pause signal received")
+                    ambientVoiceLaunchPending = false
+                    ambientVoiceLaunchJob?.cancel()
+                    ambientVoiceLaunchJob = null
                     debugLog("Session started — hotword paused")
                     pendingInterruptLaunch = false
                     existingSessionCanClaimInterrupt = false
@@ -198,7 +218,14 @@ class HotwordService : Service(), VoskRecognitionListener {
                     startWatchdog()
                 }
                 ACTION_RESUME_HOTWORD -> {
+                    if (ambientVoiceSession?.isActive == true) {
+                        Log.d(TAG, "Ignoring external hotword resume during ambient voice session")
+                        return
+                    }
                     Log.d(TAG, "Resume signal received")
+                    ambientVoiceLaunchPending = false
+                    ambientVoiceLaunchJob?.cancel()
+                    ambientVoiceLaunchJob = null
                     debugLog("Session ended — resuming hotword")
                     cancelWatchdog()
                     pendingInterruptLaunch = false
@@ -220,6 +247,27 @@ class HotwordService : Service(), VoskRecognitionListener {
                     speechService = null
 
                     resumeHotwordDetection()
+                }
+                ACTION_AMBIENT_UI_ATTACHED -> {
+                    val token = intent.getStringExtra(AmbientVoiceActivity.EXTRA_SESSION_TOKEN)
+                    if (AmbientVoicePolicy.acceptsUiAttachment(
+                            currentToken = ambientVoiceSessionToken,
+                            attachedToken = token,
+                            sessionActive = ambientVoiceSession?.isActive == true,
+                        )
+                    ) {
+                        Log.i(TAG, "Ambient voice UI attached")
+                        ambientVoiceLaunchPending = false
+                        ambientVoiceLaunchJob?.cancel()
+                        ambientVoiceLaunchJob = null
+                    }
+                }
+                ACTION_STOP_AMBIENT_SESSION -> {
+                    val token = intent.getStringExtra(AmbientVoiceActivity.EXTRA_SESSION_TOKEN).orEmpty()
+                    val reason = intent.getStringExtra(EXTRA_AMBIENT_STOP_REASON)
+                        ?.takeIf { it.isNotBlank() }
+                        ?: "ui_stop"
+                    ambientVoiceSession?.stop(token, reason)
                 }
             }
         }
@@ -287,6 +335,8 @@ class HotwordService : Service(), VoskRecognitionListener {
         val filter = IntentFilter().apply {
             addAction(ACTION_RESUME_HOTWORD)
             addAction(ACTION_PAUSE_HOTWORD)
+            addAction(ACTION_AMBIENT_UI_ATTACHED)
+            addAction(ACTION_STOP_AMBIENT_SESSION)
         }
         ContextCompat.registerReceiver(this, controlReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         getSystemService(AudioManager::class.java).registerAudioRecordingCallback(
@@ -354,6 +404,10 @@ class HotwordService : Service(), VoskRecognitionListener {
     }
 
     override fun onDestroy() {
+        isDestroying = true
+        ambientVoiceSessionToken?.let { token ->
+            ambientVoiceSession?.stop(token, "service_destroyed")
+        }
         super.onDestroy()
         cancelWatchdog()
         try {
@@ -834,25 +888,75 @@ class HotwordService : Service(), VoskRecognitionListener {
 
     private fun launchHeyGptMainSession() {
         val runtime = (application as OpenClawApplication).ensureRuntime()
-        launchAssistantSession(
-            Intent(this, OpenClawAssistantService::class.java).apply {
-                action = OpenClawAssistantService.ACTION_SHOW_ASSISTANT
-                putExtra(
-                    OpenClawAssistantService.EXTRA_VOICE_TARGET,
-                    SettingsRepository.VOICE_TARGET_OPENCLAW,
-                )
-                putExtra(
-                    OpenClawAssistantService.EXTRA_VOICE_PROFILE,
-                    OpenClawAssistantService.VOICE_PROFILE_HEY_GPT_MAIN,
-                )
-                putExtra(
-                    OpenClawAssistantService.EXTRA_SESSION_KEY,
-                    VoiceSessionKeys.mainVoice(runtime.deviceId),
-                )
-                putExtra(OpenClawAssistantService.EXTRA_FORCE_CONTINUOUS, true)
-                putExtra(OpenClawAssistantService.EXTRA_REQUIRE_UNLOCKED, true)
-            },
+        if (ambientVoiceSession?.isActive == true) {
+            Log.d(TAG, "Ambient voice session already active")
+            return
+        }
+        val token = UUID.randomUUID().toString()
+        ambientVoiceSessionToken = token
+        val session = AmbientVoiceSession(this, ::finishAmbientVoiceSession)
+        ambientVoiceSession = session
+        if (!session.start(token, VoiceSessionKeys.mainVoice(runtime.deviceId))) return
+        startWatchdog()
+
+        val intent = Intent(this, AmbientVoiceActivity::class.java).apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP,
+            )
+            putExtra(AmbientVoiceActivity.EXTRA_SESSION_TOKEN, token)
+        }
+        ambientVoiceLaunchPending = true
+        try {
+            startActivity(intent)
+            Log.i(TAG, "Ambient OpenClaw voice activity requested")
+            ambientVoiceLaunchJob?.cancel()
+            ambientVoiceLaunchJob = scope.launch {
+                delay(AMBIENT_VOICE_LAUNCH_TIMEOUT_MS)
+                when (AmbientVoicePolicy.uiTimeoutDecision(
+                    currentToken = ambientVoiceSessionToken,
+                    timeoutToken = token,
+                    launchPending = ambientVoiceLaunchPending,
+                    sessionActive = ambientVoiceSession?.isActive == true,
+                )) {
+                    AmbientUiTimeoutDecision.IGNORE -> return@launch
+                    AmbientUiTimeoutDecision.CONTINUE_HEADLESS -> {
+                        ambientVoiceLaunchPending = false
+                        Log.w(TAG, "Ambient voice UI was blocked; continuing headless")
+                    }
+                    AmbientUiTimeoutDecision.END_SESSION -> {
+                        ambientVoiceLaunchPending = false
+                        finishAmbientVoiceSession(token, "ui_and_session_start_failed")
+                    }
+                }
+            }
+        } catch (error: Exception) {
+            Log.w(TAG, "Ambient voice UI unavailable; continuing headless", error)
+            ambientVoiceLaunchPending = false
+            ambientVoiceLaunchJob?.cancel()
+            ambientVoiceLaunchJob = null
+        }
+    }
+
+    private fun finishAmbientVoiceSession(token: String, reason: String) {
+        if (token != ambientVoiceSessionToken) return
+        Log.i(TAG, "Ambient voice session ended: $reason")
+        ambientVoiceLaunchPending = false
+        ambientVoiceLaunchJob?.cancel()
+        ambientVoiceLaunchJob = null
+        ambientVoiceSession = null
+        ambientVoiceSessionToken = null
+        cancelWatchdog()
+        if (isDestroying) return
+        sendBroadcast(
+            Intent(ACTION_AMBIENT_SESSION_ENDED)
+                .setPackage(packageName)
+                .putExtra(AmbientVoiceActivity.EXTRA_SESSION_TOKEN, token),
         )
+        isSessionActive = false
+        isListeningForCommand = false
+        resumeHotwordDetection()
     }
 
     private fun launchAssistantSession(intent: Intent) {
@@ -1297,10 +1401,16 @@ class HotwordService : Service(), VoskRecognitionListener {
         watchdogJob?.cancel()
         watchdogJob = scope.launch {
             delay(SESSION_TIMEOUT_MS)
-            Log.w(TAG, "Watchdog timeout! Auto-resuming hotword detection.")
-            isSessionActive = false
-            isListeningForCommand = false
-            resumeHotwordDetection()
+            val token = ambientVoiceSessionToken
+            if (token != null && ambientVoiceSession?.isActive == true) {
+                Log.w(TAG, "Watchdog timeout! Ending ambient voice session.")
+                ambientVoiceSession?.stop(token, "watchdog_timeout")
+            } else {
+                Log.w(TAG, "Watchdog timeout! Auto-resuming hotword detection.")
+                isSessionActive = false
+                isListeningForCommand = false
+                resumeHotwordDetection()
+            }
         }
     }
 

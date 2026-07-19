@@ -148,6 +148,14 @@
             android:exported="false"
             android:theme="@style/Theme.OpenClawAssistant" />
 
+        <activity
+            android:name="com.openclaw.assistant.AmbientVoiceActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:finishOnTaskLaunch="true"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.OpenClawAssistant.Transparent" />
+
         <!-- WakeHermesClaw multi-backend UI -->
         <activity
             android:name="com.openclaw.assistant.ui.backend.BackendListActivity"

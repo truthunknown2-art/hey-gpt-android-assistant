@@ -47,6 +47,13 @@ Vosk wake word
 Local or Gateway-hosted TTS such as Kokoro/Pocket-TTS can replace Android TTS
 later without changing the agent/session architecture.
 
+`HotwordService` owns the complete unlocked voice lifecycle after the wake:
+Android recognition, the correlated Gateway turn, TTS, lock monitoring, and the
+return to Vosk. The translucent activity is display-only. If One UI blocks that
+background activity, the conversation continues by audio instead of failing.
+This also lets ChatGPT remain Android's selected digital assistant for the
+separate official Live button.
+
 ## One-time phone setup
 
 1. Install the APK and complete Gateway pairing.
@@ -171,7 +178,8 @@ not securely locked. A later transition to secure lock terminates the main lane.
 
 ## Acceptance checklist
 
-- Unlocked Hey GPT opens the OpenClaw overlay, not the ChatGPT app.
+- Unlocked Hey GPT starts the OpenClaw voice session, not the ChatGPT app; the
+  display-only overlay is optional and blocked UI continues headlessly.
 - A second turn without another wake phrase retains the first turn's context.
 - A later Hey GPT wake on the same installation reuses the same main voice key.
 - "Play a Spotify song" reaches the node advertising `media.play_search`.
